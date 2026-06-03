@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ThreeJS UE TPS/FPS Template</title>
+    <link rel="icon" href="data:," />
+    <link rel="preconnect" href="https://fonts.gstatic.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Libre+Barcode+39+Text&family=Roboto:wght@400;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="assets/css/style.css" />
+
+    <!--
+      Buildless ES-module setup (Sandscape game format):
+      1. importmap pins three@0.127.0 + addons (its examples/jsm tree keeps the
+         relative imports to fflate/NURBS/TGA working) and three-pathfinding.
+         All bare `three` specifiers resolve to ONE module instance.
+      2. ammo.wasm.js is a classic UMD script that sets the global window.Ammo
+         factory; it MUST load before the module entry. AmmoLib.js calls it with
+         a locateFile pointing at the vendored .wasm sidecar.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.127.0/build/three.module.js",
+          "three/examples/jsm/": "https://unpkg.com/three@0.127.0/examples/jsm/",
+          "three-pathfinding": "https://unpkg.com/three-pathfinding@0.14.1/dist/three-pathfinding.module.js"
+        }
+      }
+    </script>
+    <script src="assets/vendor/ammo/ammo.wasm.js"></script>
+  </head>
+
+  <body>
+    <div id="debug"></div>
+
+    <div id="menu">
+      <h1>UE TPS / FPS</h1>
+      <p class="subtitle">Three.js &times; Unreal Mannequin &mdash; template</p>
+      <button id="start_game">NEW GAME</button>
+      <p class="hint">
+        WASD move &middot; Mouse look &middot; Shift sprint &middot; Space jump
+        &middot; R reload &middot; <b>V</b> toggle TPS/FPS &middot; <b>P</b> export
+      </p>
+    </div>
+
+    <div id="game_hud">
+      <img id="crosshair" src="assets/ui/crosshair.png" />
+      <div id="weapon_name"></div>
+      <div id="ammo_container">
+        <span id="current_ammo">0</span>
+        <span>|</span>
+        <span id="max_ammo">0</span>
+      </div>
+      <div id="health_container">
+        <div id="health_progress"></div>
+      </div>
+      <div id="camera_mode">TPS</div>
+    </div>
+
+    <div id="progress"></div>
+
+    <script type="module" src="js/entry.js"></script>
+  </body>
+</html>

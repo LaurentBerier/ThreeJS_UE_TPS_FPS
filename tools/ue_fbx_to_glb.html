@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>UE FBX -&gt; GLB converter</title>
+    <!--
+      Build-time converter (NOT part of the game). Loads the UE Mannequin mesh +
+      the four A_Rifle animation FBX files with a MODERN three.js FBXLoader
+      (r160, which parses these UE 2020 anim exports that r127 cannot), merges the
+      four clips onto the mesh, and exports ONE binary GLB:
+        assets/characters/ue/SK_Mannequin.glb  (mesh + skeleton + idle/walk/reload/shoot)
+      The game loads that GLB with its own (r127) GLTFLoader — no dual-instance of
+      three in the runtime. Run via tools/convert_ue.mjs (headless Edge).
+      The GLB is kept in native UE space (Z-up, centimetres); PlayerBody applies
+      the Y-up + metre transform at runtime, and UeExporter reuses that same GLB
+      for the UE round-trip.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <script type="module">
+      import * as THREE from 'three';
+      import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+      import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+
+      const status = { steps: [] };
+      const log = (m) => { status.steps.push(m); document.title = m; };
+
+      try {
+        const loader = new FBXLoader();
+        const base = '../assets/characters/ue/';
+
+        log('loading mesh');
+        const mesh = await loader.loadAsync(base + 'SK_Mannequin.FBX');
+        mesh.name = 'SK_Mannequin';
+
+        // The UE .fbm textures are TGA and don't survive FBXLoader->GLTFExporter
+        // (the exporter throws "No valid image data"). Replace materials with a
+        // neutral PBR material so the GLB exports cleanly; the game can reapply a
+        // body texture at runtime. Skinning is unaffected by the material swap.
+        mesh.traverse((c) => {
+          if (c.isSkinnedMesh || c.isMesh) {
+            const swap = (m) =>
+              new THREE.MeshStandardMaterial({
+                color: 0x9099a4,
+                metalness: 0.1,
+                roughness: 0.75,
+                skinning: true,
+              });
+            c.material = Array.isArray(c.material) ? c.material.map(swap) : swap(c.material);
+          }
+        });
+
+        const animFiles = {
+          idle: 'A_Rifle_Idle_.FBX',
+          walk: 'A_Rifle_Jog_Fwd.FBX',
+          reload: 'A_Rifle_Reload.FBX',
+          shoot: 'A_Rifle_Fire.FBX',
+        };
+
+        const clips = [];
+        for (const [name, file] of Object.entries(animFiles)) {
+          log('loading anim ' + name);
+          const fbx = await loader.loadAsync(base + file);
+          const clip = fbx.animations[0];
+          clip.name = name; // rename "Unreal Take" -> idle/walk/reload/shoot
+          clips.push(clip);
+        }
+
+        // Attach clips so the exporter writes them (also pass via options).
+        mesh.animations = clips;
+
+        log('exporting glb');
+        const exporter = new GLTFExporter();
+        const glb = await new Promise((resolve, reject) => {
+          exporter.parse(
+            mesh,
+            (result) => resolve(result),
+            (err) => reject(err),
+            { binary: true, animations: clips, includeCustomExtensions: true }
+          );
+        });
+
+        // ArrayBuffer -> base64 for transfer back to Node.
+        const bytes = new Uint8Array(glb);
+        let bin = '';
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        window.__GLB_B64 = btoa(bin);
+        status.bytes = bytes.length;
+        status.clips = clips.map((c) => ({ name: c.name, dur: +c.duration.toFixed(3), tracks: c.tracks.length }));
+        status.ok = true;
+        log('done');
+      } catch (e) {
+        status.ok = false;
+        status.error = (e.message || String(e)) + '\n' + (e.stack || '');
+        log('error');
+      }
+      window.__STATUS = status;
+    </script>
+  </body>
+</html>

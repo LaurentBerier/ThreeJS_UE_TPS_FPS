@@ -1,0 +1,83 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "sandscape.mechanics/1.0",
+  "title": "Sandscape Mechanics / Blueprint Data",
+  "description": "Structured description of a game's entities and their tunable mechanics, exported by UeExporter (press P). Intended as the 'blueprint data' a developer maps onto Unreal Engine Blueprints / DataAssets. Coordinates are in the game's native Y-up metres; level_ue.glb ships the same content pre-converted to UE Z-up centimetres.",
+  "type": "object",
+  "required": ["schema", "space", "entities"],
+  "properties": {
+    "schema": { "type": "string", "const": "sandscape.mechanics/1.0" },
+    "space": {
+      "type": "object",
+      "required": ["up", "units", "ueConversion"],
+      "properties": {
+        "up": { "type": "string", "enum": ["Y"] },
+        "units": { "type": "string", "enum": ["metres"] },
+        "ueConversion": {
+          "type": "object",
+          "description": "Apply to convert this game's coordinates into UE Z-up centimetres.",
+          "required": ["rotateXdeg", "scale"],
+          "properties": {
+            "rotateXdeg": { "type": "number", "const": 90 },
+            "scale": { "type": "number", "const": 100 }
+          }
+        }
+      }
+    },
+    "entities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "components"],
+        "properties": {
+          "name": { "type": "string" },
+          "position": { "$ref": "#/$defs/vec3" },
+          "components": {
+            "type": "array",
+            "items": { "$ref": "#/$defs/component" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "vec3": {
+      "type": ["object", "null"],
+      "required": ["x", "y", "z"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "z": { "type": "number" }
+      }
+    },
+    "component": {
+      "type": "object",
+      "required": ["type"],
+      "description": "A component descriptor. 'type' identifies the behaviour; remaining keys are that component's tunable mechanics (open-ended).",
+      "properties": {
+        "type": { "type": "string" },
+        "walkSpeed": { "type": "number" },
+        "sprintMultiplier": { "type": "number" },
+        "jumpVelocity": { "type": "number" },
+        "cameraMode": { "type": "string", "enum": ["TPS", "FPS"] },
+        "tpsDistance": { "type": "number" },
+        "health": { "type": "number" },
+        "attackDistance": { "type": "number" },
+        "maxViewDistance": { "type": "number" },
+        "weapons": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "fireRate": { "type": "number" },
+              "damage": { "type": "number" },
+              "magSize": { "type": "number" },
+              "ammo": { "type": "number" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

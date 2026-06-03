@@ -1,0 +1,15 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+.vscode/
+.idea/
+
+# Node (only used by optional tooling; not required to run the game)
+node_modules/
+npm-debug.log*
+
+# Export outputs produced by the in-game P-key exporter
+level_ue.glb
+mechanics.json

@@ -1,0 +1,126 @@
+/* Ported from the reference three-fps inline <style>, plus TPS/FPS additions. */
+body {
+  margin: 0;
+  overflow: hidden;
+  font-family: 'Roboto', sans-serif;
+  color: white;
+  background: #000;
+}
+
+canvas {
+  display: block;
+}
+
+#crosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 2%;
+  transform: translate(-50%, -50%);
+}
+
+#ammo_container {
+  position: absolute;
+  right: 5%;
+  bottom: 5%;
+  font-size: 3em;
+}
+
+#weapon_name {
+  position: absolute;
+  right: 5%;
+  bottom: 13%;
+  font-size: 1.4em;
+  opacity: 0.85;
+  letter-spacing: 1px;
+}
+
+#camera_mode {
+  position: absolute;
+  left: 5%;
+  top: 5%;
+  font-size: 1.2em;
+  font-weight: 700;
+  letter-spacing: 2px;
+  opacity: 0.8;
+}
+
+#progress {
+  position: absolute;
+  bottom: 9%;
+  left: 0;
+  width: 0;
+  height: 2%;
+  background-color: white;
+}
+
+#health_container {
+  position: absolute;
+  bottom: 8%;
+  left: 5%;
+  width: 18%;
+  height: 2%;
+  border: 1px solid #ffffff;
+}
+
+#health_progress {
+  position: absolute;
+  background-color: #ffffff;
+  width: 100%;
+  height: 100%;
+}
+
+#game_hud {
+  visibility: hidden;
+}
+
+#menu {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  background-color: black;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  visibility: hidden;
+}
+
+#menu .subtitle {
+  opacity: 0.6;
+  letter-spacing: 1px;
+  margin-top: -1em;
+}
+
+#menu .hint {
+  position: absolute;
+  bottom: 6%;
+  opacity: 0.55;
+  font-size: 0.95em;
+}
+
+h1 {
+  font-family: 'Libre Barcode 39 Text', cursive;
+  font-size: 4em;
+}
+
+button {
+  background-color: rgba(0, 0, 0, 0);
+  color: rgb(221, 221, 221);
+  font-size: 1.5em;
+  border: none;
+  cursor: pointer;
+  margin-top: 4%;
+  font-weight: 700;
+}
+
+button:hover {
+  color: #fff;
+}
+
+#debug {
+  position: absolute;
+  right: 5%;
+  top: 5%;
+}
