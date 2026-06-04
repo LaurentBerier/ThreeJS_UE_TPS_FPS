@@ -21,6 +21,8 @@ import {  GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import {  OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import {  SkeletonUtils } from 'three/examples/jsm/utils/SkeletonUtils.js'
 import NpcCharacterController from './entities/NPC/CharacterController.js'
+import UeSoldierController from './entities/NPC/UeSoldierController.js'
+import UeSoldierCollision from './entities/NPC/UeSoldierCollision.js'
 import Input from './Input.js'
 
 // Buildless asset URLs. Webpack used `import x from './assets/..'` (file-loader
@@ -44,6 +46,20 @@ const dieAnim = 'assets/animations/mutant%20dying.fbx'
 // modern loader offline and load clean glTF here.) Kept in native UE space
 // (Z-up, centimetres); PlayerBody applies the Y-up/metre transform at runtime.
 const ueChar = 'assets/characters/ue/SK_Mannequin.glb'
+
+// UE Mannequin body textures from the FBX .fbm sidecar. NOTE: despite the `.tga`
+// (and extension-less) filenames, these files are actually PNG data, so they load
+// with the normal TextureLoader (the browser decodes by content, not by the URL
+// suffix) — TGALoader would choke on the PNG bytes. prim 0 = body, prim 1 = logo.
+const ueBodyColor = 'assets/characters/ue/SK_Mannequin.fbm/M_MannequinUE4_Body_BaseColor.tga'
+const ueBodyNormal = 'assets/characters/ue/SK_Mannequin.fbm/M_MannequinUE4_Body_Normal.tga'
+const ueLogoColor = 'assets/characters/ue/SK_Mannequin.fbm/M_MannequinUE4_ChestLogo_BaseColor'
+const ueLogoNormal = 'assets/characters/ue/SK_Mannequin.fbm/M_MannequinUE4_ChestLogo_Normal'
+
+// Third-person weapon: a UE SkeletalMesh AK exported as FBX (v7300, which r127's
+// FBXLoader parses fine). Socketed into the mannequin's right hand in TPS; the
+// first-person view keeps its own arms+gun viewmodel (Hands/WeaponManager).
+const ak47Tps = 'assets/guns/New/SK_AK47.FBX'
 
 //AK47 Model and textures
 const ak47 = 'assets/guns/ak47/ak47.glb'
@@ -192,6 +208,15 @@ class FPSGameApp{
   async LoadAssets(){
     const gltfLoader = new GLTFLoader();
     const fbxLoader = new FBXLoader();
+    // SK_AK47.FBX references a weapon-tint texture (T_WeaponColors.png) we neither
+    // ship nor need — the gunmetal material is applied at runtime. Resolve that one
+    // reference to a 1x1 pixel so the FBX import doesn't 404 in the console.
+    const akManager = new THREE.LoadingManager();
+    akManager.setURLModifier(url =>
+      /T_WeaponColors\.png$/i.test(url)
+        ? 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+        : url);
+    const akFbxLoader = new FBXLoader(akManager);
     const objLoader = new OBJLoader();
     const audioLoader = new THREE.AudioLoader();
     const texLoader = new THREE.TextureLoader();
@@ -209,6 +234,12 @@ class FPSGameApp{
     promises.push(this.AddAsset(dieAnim, fbxLoader, "dieAnim"));
     //UE Mannequin (player body) — GLB with embedded idle/walk/reload/shoot clips
     promises.push(this.AddAsset(ueChar, gltfLoader, "ueChar"));
+    //UE Mannequin body textures (PNG behind .tga/extension-less names) + third-person AK
+    promises.push(this.AddAsset(ueBodyColor, texLoader, "ueBodyColor"));
+    promises.push(this.AddAsset(ueBodyNormal, texLoader, "ueBodyNormal"));
+    promises.push(this.AddAsset(ueLogoColor, texLoader, "ueLogoColor"));
+    promises.push(this.AddAsset(ueLogoNormal, texLoader, "ueLogoNormal"));
+    promises.push(this.AddAsset(ak47Tps, akFbxLoader, "ak47Tps"));
     //AK47
     promises.push(this.AddAsset(ak47, gltfLoader, "ak47"));
     promises.push(this.AddAsset(muzzleFlash, gltfLoader, "muzzleFlash"));
@@ -252,6 +283,33 @@ class FPSGameApp{
       reload: byName('reload'),
       shoot: byName('shoot'),
     };
+
+    // UE body textures. glTF UVs expect flipY=false; colour maps are sRGB, the
+    // normal map stays linear. If a map looks inverted, flip its `flipY`.
+    const cfgTex = (tex, srgb) => {
+      if(!tex){ return null; }
+      tex.flipY = false;
+      tex.encoding = srgb ? THREE.sRGBEncoding : THREE.LinearEncoding;
+      tex.needsUpdate = true;
+      return tex;
+    };
+    this.ueTextures = {
+      bodyColor: cfgTex(this.assets['ueBodyColor'], true),
+      bodyNormal: cfgTex(this.assets['ueBodyNormal'], false),
+      logoColor: cfgTex(this.assets['ueLogoColor'], true),
+      logoNormal: cfgTex(this.assets['ueLogoNormal'], false),
+    };
+
+    // The SK_AK47 FBX ships no usable r127 material; give it a neutral gunmetal.
+    // It's a SkeletalMesh, so match material.skinning to the mesh type or the
+    // shadow pass warns and mis-renders skinned parts.
+    this.assets['ak47Tps'].traverse(child => {
+      if(child.isMesh || child.isSkinnedMesh){
+        child.material = new THREE.MeshStandardMaterial({
+          color: 0x2b2e33, metalness: 0.9, roughness: 0.45, skinning: child.isSkinnedMesh,
+        });
+      }
+    });
 
     this.assets['ak47'].scene.animations = this.assets['ak47'].animations;
     
@@ -298,7 +356,7 @@ class FPSGameApp{
     playerEntity.SetName("Player");
     playerEntity.AddComponent(new PlayerPhysics(this.physicsWorld, Ammo));
     playerEntity.AddComponent(new PlayerControls(this.camera, this.scene));
-    playerEntity.AddComponent(new PlayerBody(SkeletonUtils.clone(this.ueModel), this.ueAnims, this.scene, this.camera));
+    playerEntity.AddComponent(new PlayerBody(SkeletonUtils.clone(this.ueModel), this.ueAnims, this.scene, this.camera, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps'])));
     playerEntity.AddComponent(new Hands(this.camera, this.assets['ak47'].scene));
     playerEntity.AddComponent(new WeaponManager(this.camera, this.physicsWorld, this.assets['muzzleFlash'], this.assets['ak47Shot'], this.listener ));
     playerEntity.AddComponent(new PlayerHealth());
@@ -319,6 +377,24 @@ class FPSGameApp{
       npcEntity.AddComponent(new CharacterCollision(this.physicsWorld));
       npcEntity.AddComponent(new DirectionDebug(this.scene));
       this.entityManager.Add(npcEntity);
+    });
+
+    // Velocity-driven UE Mannequin soldier(s): same rig/textures/AK as the player,
+    // but AI-driven and moved by an explicit velocity (path-follow at a target
+    // speed) with the animation chosen from the measured speed. Added alongside the
+    // mutant to showcase both locomotion styles (root-motion vs velocity-driven).
+    const soldierLocations = [
+      [13.0, 0.0, 22.0],
+    ];
+
+    soldierLocations.forEach((v,i)=>{
+      const soldierEntity = new Entity();
+      soldierEntity.SetPosition(new THREE.Vector3(v[0], v[1], v[2]));
+      soldierEntity.SetName(`UeSoldier${i}`);
+      soldierEntity.AddComponent(new UeSoldierController(SkeletonUtils.clone(this.ueModel), this.ueAnims, this.scene, this.physicsWorld, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps'])));
+      soldierEntity.AddComponent(new AttackTrigger(this.physicsWorld));
+      soldierEntity.AddComponent(new UeSoldierCollision(this.physicsWorld));
+      this.entityManager.Add(soldierEntity);
     });
 
     const uimanagerEntity = new Entity();

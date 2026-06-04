@@ -68,6 +68,26 @@ round-trips with zero conversion:
 The runtime applies a fixed −90° X tilt + 0.01 scale to render this UE asset upright
 in metres — that is the inverse of the §1 rule and never touches the source file.
 
+**Body textures.** The GLB carries no images (the UE `.fbm` textures are TGA and do
+not survive the FBX→glTF export), so the runtime reapplies them from the original
+`.fbm` sidecar with `TGALoader` (r127 ships it): `M_MannequinUE4_Body_*` on the body
+primitive and `M_MannequinUE4_ChestLogo_*` on the chest-logo primitive. The shared
+builder [`js/entities/Common/UeMannequin.js`](../js/entities/Common/UeMannequin.js)
+applies the import fix, these textures, and the in-hand weapon for **both** the
+player body and the enemy soldier. Colour maps are tagged sRGB and loaded with
+`flipY=false` (glTF UV convention); flip that flag on a map if it renders inverted.
+
+**Third-person weapon.** The mannequin holds `assets/guns/New/SK_AK47.FBX` (a UE
+SkeletalMesh AK, FBX v7300 — old enough for r127's FBXLoader). It is socketed into
+the `hand_r` bone and auto-scaled to a rifle length, so it tracks the rifle clips'
+hand pose. The first-person view keeps its own arms+gun viewmodel; the TPS AK hides
+on the body's render layer in first-person (shadow only), like the body mesh.
+
+**Locomotion clips.** The rifle set has only `idle` + a single jog. The player and
+the soldier both surface a distinct **walk** and **run** from that one jog clip by
+playing it slower for a walk and slightly faster for a sprint (`stateTimeScale` /
+`animTimeScale`); there is no separate walk/run/jump/death source on this rig.
+
 ---
 
 ## 4. Why characters are excluded from `level_ue.glb`
@@ -77,8 +97,11 @@ survive a generic clone cleanly). Characters therefore round-trip from their
 **source assets** instead:
 
 - Player → `SK_Mannequin.FBX` (+ `A_Rifle_*.FBX`) — native UE.
-- Enemy → the mutant FBX in `assets/animations/` (Mixamo rig); import via FBX and
-  retarget as desired.
+- Enemy (mutant) → the mutant FBX in `assets/animations/` (Mixamo rig); import via
+  FBX and retarget as desired.
+- Enemy (UE soldier) → the same `SK_Mannequin` rig + `A_Rifle_*` clips as the
+  player. It reuses the UE source assets unchanged; in UE this is just the
+  Mannequin driven by an AI controller. See §7 for the runtime difference.
 
 This keeps the geometry export robust while giving you lossless characters.
 
@@ -108,3 +131,24 @@ hand into Data Assets.
 fidelity. These require a local **Blender** install (not bundled). The in-browser
 converter (`tools/ue_fbx_to_glb.html`, run via `tools/convert_ue.mjs`) covers the
 mannequin without Blender.
+
+---
+
+## 7. Two enemy locomotion styles (root-motion vs velocity-driven)
+
+The template ships two enemies side by side to contrast how locomotion can be
+driven — useful when mapping to UE's own options:
+
+| | Mutant (Mixamo) | UE soldier |
+|---|---|---|
+| Rig | mutant FBX | UE Mannequin (same as player) |
+| Controller | [`CharacterController`](../js/entities/NPC/CharacterController.js) | [`UeSoldierController`](../js/entities/NPC/UeSoldierController.js) |
+| Movement | **root motion** baked in the clip advances the body | explicit **velocity** (path-follow at a target speed, navmesh-clamped) |
+| Animation | one clip keyed per FSM state | **chosen from the measured speed** (idle/walk/run) each frame |
+
+The UE-soldier path is the one that maps cleanly onto a UE `CharacterMovementComponent`
++ a locomotion blendspace driven by `Velocity` — i.e. "velocity-driven". Both share
+the same navmesh AI (`patrol → chase → attack`), the bullet-hit volumes
+([`UeSoldierCollision`](../js/entities/NPC/UeSoldierCollision.js) reads the UE bone
+names; the mutant's reads Mixamo names), and the melee attack uses the rifle
+`shoot` pose since the rig has no punch/death clip (death is a sink-and-fade).

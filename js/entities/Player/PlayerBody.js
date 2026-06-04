@@ -1,29 +1,29 @@
 import * as THREE from 'three'
 import Component from '../../Component.js'
+import { buildUeMannequin, UE_BODY_LAYER } from '../Common/UeMannequin.js'
 
 
 // Full-body player avatar: the Unreal Engine Mannequin (SK_Mannequin) driven by
-// UE rifle animations (idle / walk / reload / shoot). The avatar lives in the
-// world at the player's physics capsule and faces the look direction. In
-// first-person it is rendered only on a dedicated layer the FP camera ignores
-// (so you still see its shadow, not your own torso); in third-person it is shown
-// normally. See SetCameraMode.
+// UE rifle animations (idle / walk / run / reload / shoot) and holding the AK in
+// its right hand. The avatar lives in the world at the player's physics capsule
+// and faces the look direction. In first-person it is rendered only on a dedicated
+// layer the FP camera ignores (so you still see its shadow, not your own torso);
+// in third-person it is shown normally. See SetCameraMode.
 //
-// UE assets import Z-up and in centimetres, so the raw GLB scene is wrapped in a
-// gameplay group (modelRoot) and the inner model carries a fixed -90deg X tilt +
-// 0.01 scale to land upright in three's Y-up metres (verified: ~1.83 m tall,
-// feet at local Y=0). The UE clips bake root motion onto the 'root' bone, which
-// we lock every frame so locomotion plays in place (the capsule drives movement).
-const BODY_LAYER = 1;
-
+// The UE import fix, body/chest-logo textures and the in-hand weapon socket are
+// shared with the enemy soldier via buildUeMannequin. The UE clips bake root
+// motion onto the 'root' bone, which we lock every frame so locomotion plays in
+// place (the capsule drives movement).
 export default class PlayerBody extends Component{
-    constructor(model, clips, scene, camera){
+    constructor(model, clips, scene, camera, textures = null, weapon = null){
         super();
         this.name = 'PlayerBody';
         this.model = model;            // GLB scene (SkeletonUtils.clone)
         this.clips = clips;            // { idle, walk, run, reload, shoot }
         this.scene = scene;
         this.camera = camera;
+        this.textures = textures;      // { bodyColor, bodyNormal, logoColor, logoNormal }
+        this.weapon = weapon;          // cloned SK_AK47 mesh for the right hand
 
         this.animations = {};
         this.currentState = null;
@@ -31,6 +31,11 @@ export default class PlayerBody extends Component{
         this.playerControls = null;
         this.rootBone = null;
         this.rootRef = null;
+        this.meshes = [];
+
+        // walk and run share the single UE jog clip; play it slower for a walk and
+        // a touch faster for a sprint so the two locomotion states read distinctly.
+        this.stateTimeScale = { idle: 1.0, walk: 0.6, run: 1.15, reload: 1.0, shoot: 1.5 };
 
         // Vertical offset from the capsule-tracked position (camera height) down
         // to the feet. Capsule is ~1.9 m tall and the camera sits 0.5 above its
@@ -61,27 +66,11 @@ export default class PlayerBody extends Component{
     Initialize(){
         this.playerControls = this.GetComponent('PlayerControls');
 
-        // Import-fix transform on the inner model; gameplay transform on the wrapper.
-        this.model.rotation.x = -Math.PI / 2;
-        this.model.scale.setScalar(0.01);
-        this.modelRoot = new THREE.Group();
-        this.modelRoot.add(this.model);
-
-        this.model.traverse(child => {
-            if(child.isMesh || child.isSkinnedMesh){
-                child.frustumCulled = false;       // skinned bounds go stale once posed
-                child.castShadow = true;
-                child.receiveShadow = true;
-                // The GLB's baked material renders black/invisible under r127; use a
-                // fresh skinning-enabled material we control.
-                child.material = new THREE.MeshStandardMaterial({
-                    color: 0x8c95a1, metalness: 0.1, roughness: 0.8, skinning: true,
-                });
-            }
-            if(child.isBone && child.name === 'root'){
-                this.rootBone = child;
-            }
-        });
+        // Shared UE avatar build: import fix, textured material, AK socketed to hand_r.
+        const built = buildUeMannequin(this.model, { textures: this.textures, weapon: this.weapon });
+        this.modelRoot = built.modelRoot;
+        this.rootBone = built.rootBone;
+        this.meshes = built.meshes;
 
         if(this.rootBone){
             this.rootRef = {
@@ -94,11 +83,11 @@ export default class PlayerBody extends Component{
         this.SetupAnimations();
         this.scene.add(this.modelRoot);
 
-        // Let the level's shadow-casting light see BODY_LAYER so the avatar still
+        // Let the level's shadow-casting light see UE_BODY_LAYER so the avatar still
         // throws a shadow even when hidden from the FP camera.
         let light = null;
         this.scene.traverse(o => { if(o.isLight && o.shadow){ light = o; } });
-        if(light){ light.shadow.camera.layers.enable(BODY_LAYER); }
+        if(light){ light.shadow.camera.layers.enable(UE_BODY_LAYER); }
 
         this.SetCameraMode(this.cameraMode);
         this.SetState('idle');
@@ -115,14 +104,13 @@ export default class PlayerBody extends Component{
     OnShoot = () => { this.PlayOneShot('shoot'); }
 
     // Show in third-person, hide from the FP camera (shadow only) in first-person.
+    // The in-hand AK rides the body meshes list so it hides/shows in lock-step.
     SetCameraMode(mode){
         this.cameraMode = mode;
         const fp = mode === 'FPS';
-        this.model.traverse(child => {
-            if(child.isMesh || child.isSkinnedMesh){
-                child.layers.set(fp ? BODY_LAYER : 0);
-            }
-        });
+        for(const mesh of this.meshes){
+            mesh.layers.set(fp ? UE_BODY_LAYER : 0);
+        }
     }
 
     SetState(name){
@@ -132,7 +120,7 @@ export default class PlayerBody extends Component{
         const next = this.animations[name];
         next.reset();
         next.setEffectiveWeight(1.0);
-        next.setEffectiveTimeScale(1.0);
+        next.setEffectiveTimeScale(this.stateTimeScale[name] ?? 1.0);
         next.play();
 
         if(this.currentState && this.animations[this.currentState]){
@@ -148,7 +136,7 @@ export default class PlayerBody extends Component{
         this.oneShot = name;
         action.reset();
         action.setEffectiveWeight(1.0);
-        action.setEffectiveTimeScale(name === 'shoot' ? 1.5 : 1.0);
+        action.setEffectiveTimeScale(this.stateTimeScale[name] ?? 1.0);
         action.play();
         const from = this.currentState && this.animations[this.currentState];
         if(from){ action.crossFadeFrom(from, 0.1, true); }
