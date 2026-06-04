@@ -55,11 +55,18 @@ Pressing **P** in-game downloads two files:
 The player avatar is the **UE Mannequin** and is *already* a UE-native asset, so it
 round-trips with zero conversion:
 
-- **Mesh + animations:** `assets/characters/ue/SK_Mannequin.glb` — a single GLB
-  baked from the source UE FBX (`SK_Mannequin.FBX` + `A_Rifle_*.FBX`) by
-  [`tools/ue_fbx_to_glb.html`](../tools/ue_fbx_to_glb.html). It contains the full
-  UE4 skeleton (`root` / `pelvis` / `spine_01` …) and four clips: `idle`, `walk`,
-  `reload`, `shoot`.
+- **Mesh:** `assets/characters/ue/SK_Mannequin_new.glb` — a **Y-up, metre-scaled**
+  GLB (Blender / Sandscape FBX→GLB converter) with baked PBR materials + OpenGL
+  normal maps. It carries the full UE4 skeleton (`pelvis` / `spine_01` …) but no
+  animation, and lands upright as-is (no tilt/scale; `preOriented: true`).
+- **Animations:** the four clips (`idle`, `walk`, `reload`, `shoot`) come from the
+  legacy `assets/characters/ue/SK_Mannequin.glb` (baked from `SK_Mannequin.FBX` +
+  `A_Rifle_*.FBX` by [`tools/ue_fbx_to_glb.html`](../tools/ue_fbx_to_glb.html)) and
+  are adapted onto the Y-up rig at load. The two rigs are byte-identical below the
+  pelvis; the whole Z-up→Y-up difference is a `rotX(-90)` on the pelvis plus the
+  0.01 armature scale, so `adaptClipToPreOriented` (in
+  [`UeMannequin.js`](../js/entities/Common/UeMannequin.js)) drops the `root` track
+  and rotates only the pelvis tracks.
 - **Back into UE:** import the original FBX (`assets/characters/ue/*.FBX`) the
   normal way — it *is* the Unreal source. Retarget the four rifle animations onto
   your UE5 Manny/Quinn via IK Retargeter if needed (the source `.mb`/`HIK` rigs in

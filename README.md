@@ -60,7 +60,7 @@ js/
     Sky/ UI/ AmmoBox/
   export/UeExporter.js   P-key glTF + mechanics export
 assets/
-  characters/ue/    SK_Mannequin.glb (mesh + idle/walk/reload/shoot clips) + source FBX
+  characters/ue/    SK_Mannequin_new.glb (Y-up mesh, baked PBR) + SK_Mannequin.glb (clip source) + source FBX
   vendor/ammo/      ammo.wasm.js + .wasm
   level.glb, navmesh.obj, guns/, animations/ (enemy), decals/, sounds/, ui/, css/
 data/mechanics.schema.json   schema for the export "blueprint data"
@@ -72,12 +72,17 @@ tools/
 
 ## Swapping in your own content
 
-- **Player character** — replace `assets/characters/ue/SK_Mannequin.glb` with any
-  rigged GLB (mesh + named clips `idle`/`walk`/`reload`/`shoot`). If you only have
-  FBX, drop it next to the converter and re-run `tools/convert_ue.mjs` (needs the
-  dev server running + a Chromium/Edge browser). Tune scale / `yawOffset` /
-  `feetOffset` in [PlayerBody.js](js/entities/Player/PlayerBody.js) if your rig
-  differs from the UE Mannequin.
+- **Player character** — the body mesh is `assets/characters/ue/SK_Mannequin_new.glb`,
+  a **Y-up, metre-scaled** GLB with baked PBR materials (the house convention: ship
+  assets Y-up for clean Three.js integration). Its 4 rifle clips
+  (`idle`/`walk`/`reload`/`shoot`) come from the legacy `SK_Mannequin.glb` and are
+  adapted onto the Y-up rig at load (`adaptClipToPreOriented` in
+  [UeMannequin.js](js/entities/Common/UeMannequin.js)). To swap in your own Y-up
+  rigged GLB, point `ueChar` in [entry.js](js/entry.js) at it and build it with
+  `preOriented: true`; tune `yawOffset` / `feetOffset` in
+  [PlayerBody.js](js/entities/Player/PlayerBody.js) if your rig differs from the UE
+  Mannequin. New FBX assets reorient + convert to Y-up GLB via the Sandscape
+  FBX→GLB converter.
 - **Weapons** — add a `Weapon` registry entry in
   [WeaponManager.js](js/entities/Player/WeaponManager.js).
 - **Level** — replace `assets/level.glb` + `assets/navmesh.obj` (export a matching
