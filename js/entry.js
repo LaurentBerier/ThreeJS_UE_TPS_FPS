@@ -40,21 +40,19 @@ const walkAnim = 'assets/animations/mutant%20walking.fbx'
 const runAnim = 'assets/animations/mutant%20run.fbx'
 const dieAnim = 'assets/animations/mutant%20dying.fbx'
 
-// UE Mannequin player body: a single GLB (mesh + skeleton + 4 named clips:
-// idle/walk/reload/shoot) baked from the UE FBX by tools/ue_fbx_to_glb.html.
-// (r127's FBXLoader cannot parse the UE2020 animation FBX, so we convert with a
-// modern loader offline and load clean glTF here.) Kept in native UE space
-// (Z-up, centimetres); PlayerBody applies the Y-up/metre transform at runtime.
-const ueChar = 'assets/characters/ue/SK_Mannequin.glb'
+// UE Mannequin player body MESH: a Y-up, metre-scaled GLB exported from Blender
+// (our FBXtoGLB converter) with PBR materials + OpenGL normal maps baked in. It
+// drops straight into three's Y-up world — no tilt, scale or material rebuild
+// (PlayerBody/UeSoldierController build it with preOriented:true). This is the new
+// house convention: all assets ship Y-up for smoother Three.js integration.
+const ueChar = 'assets/characters/ue/SK_Mannequin_new.glb'
 
-// UE Mannequin body textures from the FBX .fbm sidecar. NOTE: despite the `.tga`
-// (and extension-less) filenames, these files are actually PNG data, so they load
-// with the normal TextureLoader (the browser decodes by content, not by the URL
-// suffix) — TGALoader would choke on the PNG bytes. prim 0 = body, prim 1 = logo.
-const ueBodyColor = 'assets/characters/ue/SK_Mannequin.fbm/M_MannequinUE4_Body_BaseColor.tga'
-const ueBodyNormal = 'assets/characters/ue/SK_Mannequin.fbm/M_MannequinUE4_Body_Normal.tga'
-const ueLogoColor = 'assets/characters/ue/SK_Mannequin.fbm/M_MannequinUE4_ChestLogo_BaseColor'
-const ueLogoNormal = 'assets/characters/ue/SK_Mannequin.fbm/M_MannequinUE4_ChestLogo_Normal'
+// The new mesh GLB carries no animation, so the 4 named UE rifle clips
+// (idle/walk/reload/shoot) still come from the legacy bake (mesh + clips, baked by
+// tools/ue_fbx_to_glb.html). Both are the SAME UE Mannequin skeleton with identical
+// bone names, so the clips drive the new rig by name. (r127's FBXLoader cannot parse
+// the UE2020 animation FBX, hence the offline glTF bake.)
+const ueClipsSrc = 'assets/characters/ue/SK_Mannequin.glb'
 
 // Third-person weapon: a UE SkeletalMesh AK exported as FBX (v7300, which r127's
 // FBXLoader parses fine). Socketed into the mannequin's right hand in TPS; the
@@ -91,6 +89,7 @@ import CharacterCollision from './entities/NPC/CharacterCollision.js'
 import Hands from './entities/Player/Hands.js'
 import WeaponManager from './entities/Player/WeaponManager.js'
 import PlayerBody from './entities/Player/PlayerBody.js'
+import { adaptClipToPreOriented } from './entities/Common/UeMannequin.js'
 import WeaponPlacementDebug from './entities/Player/WeaponPlacementDebug.js'
 import UIManager from './entities/UI/UIManager.js'
 import AmmoBox from './entities/AmmoBox/AmmoBox.js'
@@ -233,13 +232,10 @@ class FPSGameApp{
     promises.push(this.AddAsset(runAnim, fbxLoader, "runAnim"));
     promises.push(this.AddAsset(attackAnim, fbxLoader, "attackAnim"));
     promises.push(this.AddAsset(dieAnim, fbxLoader, "dieAnim"));
-    //UE Mannequin (player body) — GLB with embedded idle/walk/reload/shoot clips
+    //UE Mannequin player body: Y-up mesh GLB (baked PBR) + legacy GLB for the clips
     promises.push(this.AddAsset(ueChar, gltfLoader, "ueChar"));
-    //UE Mannequin body textures (PNG behind .tga/extension-less names) + third-person AK
-    promises.push(this.AddAsset(ueBodyColor, texLoader, "ueBodyColor"));
-    promises.push(this.AddAsset(ueBodyNormal, texLoader, "ueBodyNormal"));
-    promises.push(this.AddAsset(ueLogoColor, texLoader, "ueLogoColor"));
-    promises.push(this.AddAsset(ueLogoNormal, texLoader, "ueLogoNormal"));
+    promises.push(this.AddAsset(ueClipsSrc, gltfLoader, "ueClips"));
+    //Third-person AK
     promises.push(this.AddAsset(ak47Tps, akFbxLoader, "ak47Tps"));
     //AK47
     promises.push(this.AddAsset(ak47, gltfLoader, "ak47"));
@@ -272,34 +268,25 @@ class FPSGameApp{
     this.SetAnim('attack', this.assets['attackAnim']);
     this.SetAnim('die', this.assets['dieAnim']);
 
-    //Extract UE Mannequin (player body): GLB scene + named clips. Map 'run' to
-    //'walk' since the rifle set has no sprint clip; PlayerBody falls back to it.
+    //Extract UE Mannequin (player body): new Y-up mesh GLB (baked PBR materials) +
+    //the 4 named clips from the legacy bake. Map 'run' to 'walk' since the rifle set
+    //has no sprint clip; PlayerBody falls back to it. The clips drive the new rig by
+    //bone name (same UE skeleton). Textures are baked into the mesh, so no external
+    //texture set is needed.
     this.ueModel = this.assets['ueChar'].scene;
-    const ueClips = this.assets['ueChar'].animations;
-    const byName = (n) => ueClips.find(c => c.name === n);
+    const ueClips = this.assets['ueClips'].animations;
+    // Adapt each legacy clip onto the pre-oriented rig (drop 'root', rotate pelvis;
+    // see adaptClipToPreOriented). Adapt once and share across player + soldier.
+    const byName = (n) => { const c = ueClips.find(c => c.name === n); return c ? adaptClipToPreOriented(c) : undefined; };
+    const walkClip = byName('walk');
     this.ueAnims = {
       idle: byName('idle'),
-      walk: byName('walk'),
-      run: byName('walk'),
+      walk: walkClip,
+      run: walkClip,
       reload: byName('reload'),
       shoot: byName('shoot'),
     };
-
-    // UE body textures. glTF UVs expect flipY=false; colour maps are sRGB, the
-    // normal map stays linear. If a map looks inverted, flip its `flipY`.
-    const cfgTex = (tex, srgb) => {
-      if(!tex){ return null; }
-      tex.flipY = false;
-      tex.encoding = srgb ? THREE.sRGBEncoding : THREE.LinearEncoding;
-      tex.needsUpdate = true;
-      return tex;
-    };
-    this.ueTextures = {
-      bodyColor: cfgTex(this.assets['ueBodyColor'], true),
-      bodyNormal: cfgTex(this.assets['ueBodyNormal'], false),
-      logoColor: cfgTex(this.assets['ueLogoColor'], true),
-      logoNormal: cfgTex(this.assets['ueLogoNormal'], false),
-    };
+    this.ueTextures = null;   // baked into the mesh GLB
 
     // The SK_AK47 FBX ships no usable r127 material; give it a neutral gunmetal.
     // It's a SkeletalMesh, so match material.skinning to the mesh type or the
@@ -357,7 +344,7 @@ class FPSGameApp{
     playerEntity.SetName("Player");
     playerEntity.AddComponent(new PlayerPhysics(this.physicsWorld, Ammo));
     playerEntity.AddComponent(new PlayerControls(this.camera, this.scene));
-    playerEntity.AddComponent(new PlayerBody(SkeletonUtils.clone(this.ueModel), this.ueAnims, this.scene, this.camera, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps'])));
+    playerEntity.AddComponent(new PlayerBody(SkeletonUtils.clone(this.ueModel), this.ueAnims, this.scene, this.camera, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps']), true));
     playerEntity.AddComponent(new Hands(this.camera, this.assets['ak47'].scene));
     playerEntity.AddComponent(new WeaponManager(this.camera, this.physicsWorld, this.assets['muzzleFlash'], this.assets['ak47Shot'], this.listener ));
     playerEntity.AddComponent(new PlayerHealth());
@@ -395,7 +382,7 @@ class FPSGameApp{
       const soldierEntity = new Entity();
       soldierEntity.SetPosition(new THREE.Vector3(v[0], v[1], v[2]));
       soldierEntity.SetName(`UeSoldier${i}`);
-      soldierEntity.AddComponent(new UeSoldierController(SkeletonUtils.clone(this.ueModel), this.ueAnims, this.scene, this.physicsWorld, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps'])));
+      soldierEntity.AddComponent(new UeSoldierController(SkeletonUtils.clone(this.ueModel), this.ueAnims, this.scene, this.physicsWorld, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps']), true));
       soldierEntity.AddComponent(new AttackTrigger(this.physicsWorld));
       soldierEntity.AddComponent(new UeSoldierCollision(this.physicsWorld));
       this.entityManager.Add(soldierEntity);

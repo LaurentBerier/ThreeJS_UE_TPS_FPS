@@ -14,7 +14,7 @@ import { buildUeMannequin } from '../Common/UeMannequin.js'
 // the velocity, not the other way around. Behaviour (idle/patrol/chase/attack/
 // dead) lives in UeSoldierFSM; this class owns the body, movement and animation.
 export default class UeSoldierController extends Component{
-    constructor(model, clips, scene, physicsWorld, textures = null, weapon = null){
+    constructor(model, clips, scene, physicsWorld, textures = null, weapon = null, preOriented = false){
         super();
         this.name = 'UeSoldierController';
         this.model = model;
@@ -23,6 +23,7 @@ export default class UeSoldierController extends Component{
         this.physicsWorld = physicsWorld;
         this.textures = textures;
         this.weapon = weapon;
+        this.preOriented = preOriented;   // true => Y-up, metre-scaled GLB with baked PBR
 
         // Movement intent set by the FSM, realised by Locomote each frame.
         this.walkSpeed = 2.2;      // patrol m/s
@@ -83,7 +84,7 @@ export default class UeSoldierController extends Component{
         this.parent.RegisterEventHandler(this.TakeHit, 'hit');
 
         // Build the shared UE avatar: import fix, textured material, AK in hand.
-        const built = buildUeMannequin(this.model, { textures: this.textures, weapon: this.weapon });
+        const built = buildUeMannequin(this.model, { textures: this.textures, weapon: this.weapon, preOriented: this.preOriented });
         this.modelRoot = built.modelRoot;
         this.rootBone = built.rootBone;
         this.rootRef = this.rootBone ? {

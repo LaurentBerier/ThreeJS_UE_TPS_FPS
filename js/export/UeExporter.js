@@ -13,9 +13,9 @@ import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js'
 //                      This is the "blueprint data" a developer maps onto UE
 //                      Blueprints/DataAssets. Schema: data/mechanics.schema.json.
 //
-// Skinned characters are intentionally excluded from level_ue.glb: the player is
-// already the UE-native SK_Mannequin.glb (Z-up, cm) and the enemy is the mutant
-// FBX, so they round-trip best from their source assets (see docs/UE_IMPORT_GUIDE.md).
+// Skinned characters are intentionally excluded from level_ue.glb: the player/soldier
+// use the UE Mannequin (SK_Mannequin_new.glb) and the enemy is the mutant FBX, so they
+// round-trip best from their source assets (see docs/UE_IMPORT_GUIDE.md).
 export default class UeExporter extends Component{
     constructor(scene, entityManager){
         super();
