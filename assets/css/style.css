@@ -84,9 +84,13 @@ canvas {
      horizontally centered and the Unreal Engine logo at the bottom is never
      cropped; black fills the side bars. No overlay, so it renders fully bright.
      Path is relative to this stylesheet. */
-  background-image: url('../TPS_FPS_Template_Spashscreen.png');
+  background-image: url('../TPS_FPS_Template_Spashscreen1.png');
   background-size: contain;
-  background-position: center;
+  /* The Unreal Engine logo is baked into the art (centered in the PNG), so it can
+     only move by moving the art. Shift the art 30px right so the logo lands 30px
+     right of centre; the NEW GAME button and keyboard hint below are shifted the
+     same 30px so all three stay aligned on one vertical axis. */
+  background-position: calc(50% + 30px) center;
   background-repeat: no-repeat;
   text-align: center;
   display: flex;
@@ -99,6 +103,12 @@ canvas {
 #menu .hint {
   position: absolute;
   bottom: 2%;
+  /* Full-width centered text, then nudged right. */
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  text-align: center;
+  transform: translateX(110px);
   opacity: 0.55;
   font-size: 0.95em;
 }
@@ -120,6 +130,29 @@ button {
 
 button:hover {
   color: #fff;
+}
+
+/* NEW GAME: nudged right (matches the keyboard hint's offset) and down ~20px, with
+   a boxed outline + hover effect so it reads clearly as a clickable button. */
+#start_game {
+  position: relative;
+  left: 110px;
+  top: 20px;
+  padding: 12px 34px;
+  border: 2px solid rgba(255, 255, 255, 0.55);
+  border-radius: 3px;
+  letter-spacing: 2px;
+  background-color: rgba(0, 0, 0, 0.25);
+  transition: background-color 0.18s ease, border-color 0.18s ease,
+              color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+#start_game:hover {
+  color: #fff;
+  border-color: #fff;
+  background-color: rgba(255, 255, 255, 0.18);
+  transform: scale(1.06);
+  box-shadow: 0 0 14px rgba(255, 255, 255, 0.35);
 }
 
 #debug {

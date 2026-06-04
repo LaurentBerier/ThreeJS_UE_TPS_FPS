@@ -71,8 +71,10 @@ export default class PlayerBody extends Component{
         const built = buildUeMannequin(this.model, { textures: this.textures, weapon: this.weapon, preOriented: this.preOriented });
         this.modelRoot = built.modelRoot;
         this.rootBone = built.rootBone;
+        this.headBone = built.headBone;         // first-person camera rides this bone
         this.meshes = built.meshes;
         this.weaponPivot = built.weaponPivot;   // in-hand AK group; used by WeaponPlacementDebug
+        this._headWorld = new THREE.Vector3();
 
         if(this.rootBone){
             this.rootRef = {
@@ -105,14 +107,23 @@ export default class PlayerBody extends Component{
     OnReload = () => { this.PlayOneShot('reload'); }
     OnShoot = () => { this.PlayOneShot('shoot'); }
 
-    // Show in third-person, hide from the FP camera (shadow only) in first-person.
-    // The in-hand AK rides the body meshes list so it hides/shows in lock-step.
+    // The same full-body avatar is rendered in BOTH camera modes now: in TPS the
+    // boom looks at it from behind; in FPS the camera rides its head bone and the
+    // head mesh is culled by the camera's near plane (see PlayerControls). So the
+    // body always stays on the visible layer — we no longer hide it for first-person.
     SetCameraMode(mode){
         this.cameraMode = mode;
-        const fp = mode === 'FPS';
         for(const mesh of this.meshes){
-            mesh.layers.set(fp ? UE_BODY_LAYER : 0);
+            mesh.layers.set(0);
         }
+    }
+
+    // First-person eye anchor: the head bone's current world position. Returns false
+    // if there's no head bone so the caller can fall back to the capsule eye height.
+    GetHeadWorldPosition(target){
+        if(!this.headBone){ return false; }
+        this.headBone.getWorldPosition(target);
+        return true;
     }
 
     SetState(name){

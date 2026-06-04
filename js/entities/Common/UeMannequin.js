@@ -49,10 +49,10 @@ const WEAPON_GRIP = {
     // Hand-tuned in TPS with the in-game placement tool (WeaponPlacementDebug, the `
     // panel). Position is hand-local centimetres; rotation seats the AK upright in the
     // palm with the barrel running forward. Re-tune with the panel and paste here.
-    position: new THREE.Vector3(-21.5, -2.4, 1),
+    position: new THREE.Vector3(-19.6, -2.4, -1.4),
     rotationEuler: new THREE.Euler(
         THREE.MathUtils.degToRad(0),
-        THREE.MathUtils.degToRad(-9),
+        THREE.MathUtils.degToRad(-11),
         THREE.MathUtils.degToRad(272),
     ),
 };
@@ -61,10 +61,10 @@ const WEAPON_GRIP = {
 //   model    : SkeletonUtils.clone() of the loaded SK_Mannequin.glb scene
 //   textures : optional { bodyColor, bodyNormal, logoColor, logoNormal } THREE.Textures
 //   weapon   : optional Object3D (a cloned SK_AK47 mesh) to socket into hand_r
-// Returns { modelRoot, model, rootBone, handBone, meshes } — `modelRoot` is what
-// the caller adds to the scene and transforms; `rootBone` is locked each frame to
-// strip the clips' baked root motion; `meshes` is the skinned-mesh list for
-// per-camera layer toggling.
+// Returns { modelRoot, model, rootBone, handBone, headBone, meshes } — `modelRoot`
+// is what the caller adds to the scene and transforms; `rootBone` is locked each
+// frame to strip the clips' baked root motion; `headBone` is the first-person eye
+// anchor the player camera rides; `meshes` is the skinned-mesh list.
 export function buildUeMannequin(model, { textures = null, weapon = null, preOriented = false } = {}){
     if(!preOriented){
         // Legacy UE-native GLB: tilt Z-up -> Y-up and scale cm -> metres.
@@ -78,6 +78,7 @@ export function buildUeMannequin(model, { textures = null, weapon = null, preOri
     const meshes = [];
     let rootBone = null;
     let handBone = null;
+    let headBone = null;
     let weaponPivot = null;
 
     model.traverse(child => {
@@ -90,6 +91,7 @@ export function buildUeMannequin(model, { textures = null, weapon = null, preOri
         if(child.isBone){
             if(child.name === 'root'){ rootBone = child; }
             if(child.name === 'hand_r'){ handBone = child; }
+            if(child.name === 'head'){ headBone = child; }   // first-person eye anchor
         }
     });
 
@@ -183,7 +185,7 @@ export function buildUeMannequin(model, { textures = null, weapon = null, preOri
         weaponPivot = pivot;
     }
 
-    return { modelRoot, model, rootBone, handBone, weaponPivot, meshes };
+    return { modelRoot, model, rootBone, handBone, headBone, weaponPivot, meshes };
 }
 
 // The default in-hand grip transform, exposed so the placement-debug tool can show

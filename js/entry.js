@@ -279,10 +279,16 @@ class FPSGameApp{
     // see adaptClipToPreOriented). Adapt once and share across player + soldier.
     const byName = (n) => { const c = ueClips.find(c => c.name === n); return c ? adaptClipToPreOriented(c) : undefined; };
     const walkClip = byName('walk');
+    // The rifle set ships no sprint clip, so 'run' reuses the jog clip — but it must
+    // be a SEPARATE clip instance, not the same object as 'walk'. Within one
+    // AnimationMixer two actions bound to the SAME clip share the underlying property
+    // bindings; crossfading walk<->run (sprint start/stop) then briefly leaves the
+    // skeleton with no action driving it, snapping it to the bind (T) pose for a few
+    // frames. Cloning gives 'run' its own bindings so the crossfade stays continuous.
     this.ueAnims = {
       idle: byName('idle'),
       walk: walkClip,
-      run: walkClip,
+      run: walkClip ? walkClip.clone() : undefined,
       reload: byName('reload'),
       shoot: byName('shoot'),
     };
@@ -382,7 +388,7 @@ class FPSGameApp{
       const soldierEntity = new Entity();
       soldierEntity.SetPosition(new THREE.Vector3(v[0], v[1], v[2]));
       soldierEntity.SetName(`UeSoldier${i}`);
-      soldierEntity.AddComponent(new UeSoldierController(SkeletonUtils.clone(this.ueModel), this.ueAnims, this.scene, this.physicsWorld, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps']), true));
+      soldierEntity.AddComponent(new UeSoldierController(SkeletonUtils.clone(this.ueModel), this.ueAnims, this.scene, this.physicsWorld, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps']), true, this.assets['ak47Shot'], this.listener));
       soldierEntity.AddComponent(new AttackTrigger(this.physicsWorld));
       soldierEntity.AddComponent(new UeSoldierCollision(this.physicsWorld));
       this.entityManager.Add(soldierEntity);

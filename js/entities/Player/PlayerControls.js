@@ -48,7 +48,6 @@ export default class PlayerControls extends Component{
         this.tpsDistance = 3.0;   // boom length behind the player (metres)
         this.tpsPivotHeight = 0.25; // pivot above eye height
         this.tpsShoulder = 0.85;  // lateral rig shift: bigger => character further frame-left, reticle further right (in front of the gun)
-        this.tpsCollisionMargin = 0.2; // keep the camera this far off a blocking wall
         this._vLatch = false;
 
         // Precise-aim mode (hold right click in TPS): the boom pulls in over the
@@ -70,17 +69,60 @@ export default class PlayerControls extends Component{
         this._pivot = new THREE.Vector3();
         this._fwd = new THREE.Vector3();
         this._right = new THREE.Vector3();
-        this._desired = new THREE.Vector3();
-        this._boomDir = new THREE.Vector3();
         this._fwdBase = new THREE.Vector3(0, 0, -1);
         this._rightBase = new THREE.Vector3(1, 0, 0);
-        this._rayRes = { intersectionPoint: new THREE.Vector3() };
+
+        // --- First-person camera: rides the body's head bone (same character), with
+        // the head mesh hidden by the camera's near plane ("cull distance"). ---
+        this.body = null;               // PlayerBody, queried for the head-bone position
+        this.fpsEyeForward = 0.14;      // nudge the eye ahead of the head bone...
+        this.fpsEyeUp = 0.08;           // ...and up a touch, onto the real eye line
+        this.fpsNear = 0.18;            // near plane that culls the head at the eye
+        this.tpsNear = 0.01;            // crisp near for the third-person boom (set in Initialize)
+        this._headPos = new THREE.Vector3();
+
+        // --- TPS boom collision (AAA-smooth, radial). The boom is a SWEPT SPHERE
+        // (radius camRadius) cast from the pivot to where the camera wants to sit; if a
+        // wall blocks it, the camera simply DOLLIES straight in along the view axis —
+        // it "gets closer to the character" — keeping camRadius of clearance so it never
+        // clips. There is NO sideways re-projection, so the camera never slides against
+        // the player's input (that was the source of the jumps/fighting). As you pan,
+        // the unobstructed length changes continuously, so the camera glides smoothly
+        // along the wall on its own. Orientation always tracks the look input exactly
+        // (no positional lag on the look), so aiming stays 1:1.
+        //
+        // The boom LENGTH is the only thing smoothed: pulling IN is quick but bounded so
+        // it can never lag into a wall; returning OUT (a wall clearing) is slow and
+        // gentle so it never snaps or "fast-readjusts".
+        this.camRadius = 0.32;          // clearance kept from geometry (metres)
+        this.pullInRate = 14.0;         // boom-shortening smoothing (1/s) — quick, soft
+        this.returnRate = 3.5;          // boom-lengthening smoothing (1/s) — slow, elegant
+        this.softLag = 0.18;            // max the boom may trail the hard limit while pulling in (< camRadius => still no clip)
+        this._curLen = this.tpsDistance; // smoothed boom length
+        this._camTarget = new THREE.Vector3();  // (first-person eye target)
+        this._camInit = false;
+        this._free = new THREE.Vector3();
+        this._sweepRes = { point: new THREE.Vector3(), normal: new THREE.Vector3(), fraction: 1 };
+
+        // --- Camera shake / recoil ("juice"): a subtle trauma-driven shake on taking
+        // a hit and a tiny kick per shot. Kept ROTATION-ONLY (no positional shake) and
+        // small, applied on top of the look orientation so the crosshair stays put. ---
+        this._fxTime = 0.0;
+        this.trauma = 0.0;              // 0..1; decays each frame
+        this.traumaDecay = 1.7;        // trauma/sec
+        this.maxShakeRot = 0.012;      // radians at full trauma (small rotation only)
+        this.recoilPitch = 0.0;        // transient view kick, recovers to 0
+        this.recoilYaw = 0.0;
+        this.recoilRecover = 9.0;      // 1/s settle rate
+        this._shakeEuler = new THREE.Euler();
+        this._shakeQuat = new THREE.Quaternion();
     }
 
     Initialize(){
         this.physicsComponent = this.GetComponent("PlayerPhysics");
         this.physicsBody = this.physicsComponent.body;
         this.physicsWorld = this.physicsComponent.world; // for the TPS boom raycast
+        this.body = this.GetComponent('PlayerBody');     // head-bone eye in first-person
         this.transform = new Ammo.btTransform();
         this.zeroVec = new Ammo.btVector3(0.0, 0.0, 0.0);
         this.angles.setFromQuaternion(this.parent.Rotation);
@@ -91,6 +133,15 @@ export default class PlayerControls extends Component{
         // Capture the resting FOV so precise-aim can zoom from / back to it.
         this.baseFov = this.camera.fov;
         this._curFov = this.camera.fov;
+
+        // Remember the crisp third-person near plane, then apply the near for the
+        // starting mode (FPS uses a larger near to cull the head mesh at the eye).
+        this.tpsNear = this.camera.near;
+        this.ApplyNearForMode();
+
+        // Camera juice: shake on taking a hit, a kick per shot fired.
+        this.parent.RegisterEventHandler(this.OnPlayerHit, 'hit');
+        this.parent.RegisterEventHandler(this.OnWeaponShoot, 'weapon.shoot');
 
         // Right click holds precise-aim. (In FPS the arms viewmodel runs its own ADS
         // via Hands; this TPS aim only applies in the TPS camera branch below.)
@@ -151,18 +202,85 @@ export default class PlayerControls extends Component{
         // re-entering TPS doesn't jump (FPS ADS, owned by Hands, may have changed it).
         this.aiming = false;
         this._curFov = this.camera.fov;
+        // The two modes place the camera in very different spots (head vs boom), so
+        // snap to the new spot next frame rather than flying the camera through the
+        // body, and swap the near plane (FPS culls the head).
+        this._camInit = false;
+        this.ApplyNearForMode();
         this.Broadcast({topic: 'camera.mode', mode: this.cameraMode});
         const label = document.getElementById('camera_mode');
         if(label){ label.textContent = this.cameraMode; }
+    }
+
+    ApplyNearForMode(){
+        this.camera.near = this.cameraMode === 'FPS' ? this.fpsNear : this.tpsNear;
+        this.camera.updateProjectionMatrix();
+    }
+
+    // --- Camera juice hooks ---
+    OnPlayerHit = () => { this.AddTrauma(0.18); }
+    OnWeaponShoot = () => { this.AddRecoil(); }
+
+    AddTrauma(amount){ this.trauma = Math.min(1.0, this.trauma + amount); }
+
+    AddRecoil(){
+        this.trauma = Math.min(1.0, this.trauma + 0.025);
+        this.recoilPitch += 0.005;                          // small kick up
+        this.recoilYaw += (Math.random() - 0.5) * 0.0025;   // very slight horizontal jitter
+    }
+
+    // Apply trauma-driven shake + the per-shot recoil kick on top of the look
+    // orientation, then decay both. Keeps the crosshair fixed while the view shakes.
+    ApplyCameraShake(t){
+        this.trauma = Math.max(0.0, this.trauma - this.traumaDecay * t);
+        const settle = Math.exp(-this.recoilRecover * t);
+        this.recoilPitch *= settle;
+        this.recoilYaw *= settle;
+
+        const shake = this.trauma * this.trauma;   // ease-in so light trauma is subtle
+        const f = this._fxTime;
+
+        // Rotation-only shake (no positional offset) so the camera never lurches in
+        // space — just a small, quickly-settling jitter of the view angle, plus the
+        // per-shot recoil kick.
+        const rp = (shake > 0.0001 ? Math.sin(f * 59.0) * shake * this.maxShakeRot : 0) + this.recoilPitch;
+        const ry = (shake > 0.0001 ? Math.sin(f * 43.0 + 0.5) * shake * this.maxShakeRot : 0) + this.recoilYaw;
+        const rz = shake > 0.0001 ? Math.sin(f * 67.0 + 1.1) * shake * this.maxShakeRot * 0.6 : 0;
+        if(rp || ry || rz){
+            this._shakeEuler.set(rp, ry, rz);
+            this._shakeQuat.setFromEuler(this._shakeEuler);
+            this.camera.quaternion.multiply(this._shakeQuat);
+        }
     }
 
     // Place the camera for the current mode. capPos is the capsule-tracked
     // position (eye height); it is also Player.Position so NPC targeting/raycasts
     // are camera-mode-independent.
     UpdateCamera(capPos, t = 0.016){
+        this._fxTime += t;
+
         if(this.cameraMode === 'FPS'){
-            this.camera.position.copy(capPos);
+            // Same character as third-person: the eye rides the mesh's head bone, so
+            // the walk/run animation gives a subtle, real head bob. Nudge slightly
+            // forward + up toward the eye line; the head mesh itself is hidden by the
+            // camera's near plane (set on the mode switch). Fall back to the capsule
+            // eye height if the head bone isn't available yet.
+            this._fwd.copy(this._fwdBase).applyQuaternion(this.parent.Rotation);
+            if(this.body && this.body.GetHeadWorldPosition(this._headPos)){
+                this._camTarget.copy(this._headPos)
+                    .addScaledVector(this._fwd, this.fpsEyeForward);
+                this._camTarget.y += this.fpsEyeUp;
+            }else{
+                this._camTarget.copy(capPos);
+            }
+            // Lock the eye RIGIDLY to the head bone (no follow lag here): if the camera
+            // lagged, the head mesh — rigged to the same bone — would swing ahead of
+            // the near plane during the walk cycle and we'd see the inside of the skull.
+            // The animated head bob still comes through because the camera rides the bone.
+            this.camera.position.copy(this._camTarget);
+            this._camInit = true;
             this.camera.quaternion.copy(this.parent.Rotation);
+            this.ApplyCameraShake(t);
             return;
         }
 
@@ -191,21 +309,38 @@ export default class PlayerControls extends Component{
         // holds in its right hand. (Applying the offset to the camera alone, as before,
         // just angled the view and kept the character centred under the reticle.)
         this._pivot.addScaledVector(this._right, this._curShoulder);
-        this._desired.copy(this._pivot)
-            .addScaledVector(this._fwd, -this._curDistance);
 
-        // Boom collision: cast from the pivot to the desired camera spot against
-        // STATIC level geometry only (so the player capsule/NPCs never block it),
-        // and pull the camera in to just shy of any wall it would clip into.
-        if(this.physicsWorld && AmmoHelper.CastRay(
-            this.physicsWorld, this._pivot, this._desired, this._rayRes, CollisionFilterGroups.StaticFilter)){
-            this._boomDir.copy(this._desired).sub(this._pivot).normalize();
-            this.camera.position.copy(this._rayRes.intersectionPoint)
-                .addScaledVector(this._boomDir, -this.tpsCollisionMargin);
-        } else {
-            this.camera.position.copy(this._desired);
+        // Where the camera WANTS to sit: straight behind the pivot along the view axis.
+        this._free.copy(this._pivot).addScaledVector(this._fwd, -this._curDistance);
+
+        // Sweep a sphere along that boom. If a wall blocks it, the unobstructed length
+        // is shorter (fraction < 1) and the camera dollies in by exactly that much —
+        // the sphere centre at the hit is already camRadius off the wall, so the camera
+        // never clips. No hit => full length.
+        let rawLen = this._curDistance;
+        if(this.physicsWorld && AmmoHelper.SphereSweep(
+            this.physicsWorld, this.camRadius, this._pivot, this._free, this._sweepRes, CollisionFilterGroups.StaticFilter)){
+            rawLen = this._curDistance * this._sweepRes.fraction;
         }
+
+        // Smooth the boom LENGTH only — purely radial, so the camera never moves
+        // sideways against the player's input. Pull IN quickly but bounded (it may trail
+        // the hard limit by at most softLag, which is < camRadius so there's still no
+        // clip); return OUT slowly and gently. Because rawLen changes continuously as
+        // you pan, the dolly glides — it reads as the camera sliding along the wall.
+        if(!this._camInit){
+            this._curLen = rawLen;
+            this._camInit = true;
+        }else if(rawLen < this._curLen){
+            this._curLen += (rawLen - this._curLen) * (1 - Math.exp(-this.pullInRate * t));
+            if(this._curLen > rawLen + this.softLag){ this._curLen = rawLen + this.softLag; }
+        }else{
+            this._curLen += (rawLen - this._curLen) * (1 - Math.exp(-this.returnRate * t));
+        }
+
+        this.camera.position.copy(this._pivot).addScaledVector(this._fwd, -this._curLen);
         this.camera.lookAt(this._pivot);
+        this.ApplyCameraShake(t);
     }
 
     Accelarate = (direction, t) => {

@@ -8,7 +8,10 @@ export default class PlayerHealth extends Component{
     }
 
     TakeHit = e =>{
-        this.health = Math.max(0, this.health - 10);
+        // Ranged shots pass an explicit `amount`; the mutant's melee hit passes none,
+        // so fall back to the original flat 10.
+        const amount = (e && e.amount) ? e.amount : 10;
+        this.health = Math.max(0, this.health - amount);
         this.uimanager.SetHealth(this.health);
     }
 

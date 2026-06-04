@@ -108,9 +108,11 @@ export default class Hands extends Component{
 
     SetCameraMode(mode){
         this.cameraMode = mode;
-        const fp = mode === 'FPS';
-        this.model.visible = fp;
-        if(!fp){
+        // First-person now renders the full body avatar (the camera rides its head
+        // bone), so the separate arms viewmodel is never drawn in either mode. It
+        // stays alive purely as the animation FSM + ADS/FOV driver, so keep it hidden.
+        this.model.visible = false;
+        if(mode !== 'FPS'){
             // Leaving FP: drop any aim zoom so the TPS camera keeps the default FOV.
             this.aiming = false;
             this.camera.fov = this.defaultFov;

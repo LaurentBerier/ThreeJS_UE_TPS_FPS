@@ -70,12 +70,13 @@ class PatrolState extends State{
     }
 }
 
+// Chase to get within firing range with a clear line of sight, then hand off to the
+// ranged AttackState. (Previously this closed all the way to melee distance.)
 class ChaseState extends State{
     constructor(parent){
         super(parent);
         this.updateFrequency = 0.5;
         this.updateTimer = 0.0;
-        this.switchDelay = 0.2;
     }
 
     get Name(){return 'chase'}
@@ -83,45 +84,46 @@ class ChaseState extends State{
     Enter(){
         this.parent.proxy.SetMoveIntent(this.parent.proxy.runSpeed);
         this.updateTimer = 0.0;
-        this.switchDelay = 0.2;
     }
 
     Update(t){
+        const proxy = this.parent.proxy;
+
+        // In range with a clear shot? Plant and open fire.
+        if(proxy.InShootRange && proxy.HasLineOfSightToPlayer()){
+            proxy.ClearPath();
+            this.parent.SetState('attack');
+            return;
+        }
+
+        // Otherwise keep repathing toward the player to close the gap / get an angle.
         if(this.updateTimer <= 0.0){
-            this.parent.proxy.NavigateToPlayer();
+            proxy.NavigateToPlayer();
             this.updateTimer = this.updateFrequency;
         }
-
-        if(this.parent.proxy.IsCloseToPlayer){
-            this.parent.proxy.ClearPath();
-            this.switchDelay -= t;
-            if(this.switchDelay <= 0.0){
-                this.parent.SetState('attack');
-            }
-        }else{
-            this.switchDelay = 0.1;
-        }
-
         this.updateTimer -= t;
     }
 }
 
+// Ranged fire: stand, face the player, and squeeze off rounds on a cadence. If the
+// shot is lost (player breaks range or ducks behind cover) for a moment, fall back
+// to chasing to reacquire.
 class AttackState extends State{
     constructor(parent){
         super(parent);
-        this.attackTime = 0.0;
-        this.canHit = true;
+        this.fireTimer = 0.0;
+        this.loseSightTimer = 0.0;
     }
 
     get Name(){return 'attack'}
 
     Enter(){
-        this.parent.proxy.SetMoveIntent(0.0);
-        this.parent.proxy.ClearPath();
-        this.parent.proxy.BeginAttack();
-        this.attackTime = this.parent.proxy.attackDuration;
-        this.attackEvent = this.attackTime * 0.85;
-        this.canHit = true;
+        const proxy = this.parent.proxy;
+        proxy.SetMoveIntent(0.0);
+        proxy.ClearPath();
+        proxy.BeginAttack();
+        this.fireTimer = 0.35;      // brief wind-up before the first round
+        this.loseSightTimer = 0.0;
     }
 
     Exit(){
@@ -129,24 +131,24 @@ class AttackState extends State{
     }
 
     Update(t){
-        this.parent.proxy.FacePlayer(t);
+        const proxy = this.parent.proxy;
+        proxy.FacePlayer(t);
 
-        if(!this.parent.proxy.IsCloseToPlayer && this.attackTime <= 0.0){
-            this.parent.SetState('chase');
+        const hasShot = proxy.InShootRange && proxy.HasLineOfSightToPlayer();
+        if(!hasShot){
+            this.loseSightTimer += t;
+            if(this.loseSightTimer >= 0.6){
+                this.parent.SetState('chase');
+            }
             return;
         }
+        this.loseSightTimer = 0.0;
 
-        if(this.canHit && this.attackTime <= this.attackEvent && this.parent.proxy.IsPlayerInHitbox){
-            this.parent.proxy.HitPlayer();
-            this.canHit = false;
+        this.fireTimer -= t;
+        if(this.fireTimer <= 0.0){
+            proxy.FireAtPlayer();
+            this.fireTimer = proxy.fireInterval;
         }
-
-        if(this.attackTime <= 0.0){
-            this.attackTime = this.parent.proxy.attackDuration;
-            this.canHit = true;
-        }
-
-        this.attackTime -= t;
     }
 }
 

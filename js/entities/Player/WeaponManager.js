@@ -74,18 +74,19 @@ export default class WeaponManager extends Component{
         this.tpsFlash.renderOrder = 999;   // additive flash draws last, over the gun
         this.body.scene.add(this.tpsFlash);
 
-        // Size it for the third-person boom distance rather than reusing the FPS
-        // flash's tiny up-close viewmodel scale (which is near-invisible at ~3 m).
-        // Measure the quad's native size at unit scale and scale to a fixed world
-        // size so it reads clearly off the muzzle.
-        const TPS_FLASH_SIZE = 0.45;   // metres
+        // The body's AK muzzle flash is rendered in BOTH camera modes now (the full
+        // body avatar is shown in FPS too, camera on its head bone). Size it per mode:
+        // big for the ~3 m third-person boom, small for the point-blank first-person
+        // muzzle right under the camera. Measure the quad's native size once at unit
+        // scale; UpdateTpsMuzzleFlash scales to the active mode's world size each shot.
+        this._tpsFlashSize = 0.45;   // metres, third-person
+        this._fpsFlashSize = 0.13;   // metres, first-person (muzzle is ~0.5 m away)
+        this._flashStretch = 1.0;    // per-shot width variety (set in TriggerTpsFlash)
         this.tpsFlash.scale.set(1, 1, 1);
         this.tpsFlash.updateMatrixWorld(true);
         const native = new THREE.Box3().setFromObject(this.tpsFlash).getSize(new THREE.Vector3());
-        const longest = Math.max(native.x, native.y, native.z) || 1;
-        const s = TPS_FLASH_SIZE / longest;
-        this._tpsFlashScale = new THREE.Vector3(s, s, s);
-        this.tpsFlash.scale.copy(this._tpsFlashScale);
+        this._flashLongest = Math.max(native.x, native.y, native.z) || 1;
+        this.tpsFlash.scale.setScalar(this._tpsFlashSize / this._flashLongest);
 
         // Anchor the flash at the AK's real muzzle, in the gun's own frame, so it
         // tracks the barrel regardless of camera angle (placing it by camera-forward
@@ -146,26 +147,26 @@ export default class WeaponManager extends Component{
         pivot.add(this.muzzleAnchor);
     }
 
-    // Re-roll the TPS flash's spin and width on each shot, mirroring the FPS flash.
+    // Re-roll the body flash's spin and width on each shot.
     TriggerTpsFlash(){
         if(!this.tpsFlash){ return; }
         this._tpsRoll = Math.PI * Math.random();
-        const stretch = Math.random() * (1.5 - 0.8) + 0.8;
-        this.tpsFlash.scale.set(
-            this._tpsFlashScale.x * stretch,
-            this._tpsFlashScale.y,
-            this._tpsFlashScale.z,
-        );
+        this._flashStretch = Math.random() * (1.5 - 0.8) + 0.8;
     }
 
     UpdateTpsMuzzleFlash(){
         if(!this.tpsFlash){ return; }
-        const inTps = !this.controls || this.controls.cameraMode === 'TPS';
         const life = this.flash.life;
-        if(!inTps || life <= 0 || !this.active){
+        if(life <= 0 || !this.active){
             this.tpsFlash.visible = false;
             return;
         }
+        // Scale to the active camera mode (small up-close in FPS, large for the TPS
+        // boom), with the per-shot width stretch on the local X.
+        const fps = this.controls && this.controls.cameraMode === 'FPS';
+        const base = (fps ? this._fpsFlashSize : this._tpsFlashSize) / this._flashLongest;
+        this.tpsFlash.scale.set(base * this._flashStretch, base, base);
+
         // Park the flash at the AK's muzzle anchor (in the gun's own frame, so it
         // sits on the barrel tip whatever the camera/gun orientation), nudged up a
         // touch since the barrel runs along the top of the gun's bounding box.

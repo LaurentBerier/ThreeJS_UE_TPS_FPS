@@ -6,6 +6,15 @@ let rayOrigin = null;
 let rayDest = null;
 let closestRayResultCallback = null;
 
+// Reused objects for SphereSweep (a convex sweep of a sphere — a "thick raycast").
+let sweepShape = null;
+let sweepRadius = 0;
+let sweepFromT = null;
+let sweepToT = null;
+let sweepFromV = null;
+let sweepToV = null;
+let convexResultCallback = null;
+
 const CollisionFlags = { CF_NO_CONTACT_RESPONSE: 4 }
 const CollisionFilterGroups = { 
   DefaultFilter: 1,
@@ -134,6 +143,62 @@ class AmmoHelper{
     else {
         return false;
     }
+  }
+
+  // Sweep a sphere of `radius` from `origin` to `dest` and report the first contact.
+  // This is a "thick raycast": unlike CastRay (a zero-width line that can slip past
+  // edges / let the camera's near plane poke through a wall), the sphere keeps a
+  // clearance of `radius` from all geometry. On a hit, fills result.point (the sphere
+  // centre at contact), result.normal (surface normal) and result.fraction (0..1
+  // along the sweep) and returns true; otherwise sets result.fraction = 1 and returns
+  // false. Objects are reused; the sphere radius is fixed on the first call and any
+  // later change rebuilds the shape.
+  static SphereSweep(world, radius, origin, dest, result = {}, collisionFilterMask = CollisionFilterGroups.AllFilter){
+    if(!sweepShape || sweepRadius !== radius){
+        if(sweepShape){ Ammo.destroy(sweepShape); }
+        sweepShape = new Ammo.btSphereShape(radius);
+        sweepRadius = radius;
+    }
+    if(!sweepFromT){
+        sweepFromT = new Ammo.btTransform();
+        sweepToT = new Ammo.btTransform();
+        sweepFromV = new Ammo.btVector3();
+        sweepToV = new Ammo.btVector3();
+        convexResultCallback = new Ammo.ClosestConvexResultCallback(sweepFromV, sweepToV);
+    }
+
+    sweepFromT.setIdentity();
+    sweepFromT.getOrigin().setValue(origin.x, origin.y, origin.z);
+    sweepToT.setIdentity();
+    sweepToT.getOrigin().setValue(dest.x, dest.y, dest.z);
+
+    sweepFromV.setValue(origin.x, origin.y, origin.z);
+    sweepToV.setValue(dest.x, dest.y, dest.z);
+    convexResultCallback.set_m_convexFromWorld(sweepFromV);
+    convexResultCallback.set_m_convexToWorld(sweepToV);
+    // Reset the closest-hit fraction so a previous call's hit doesn't shadow this one;
+    // a real hit this call drives it below 1 (we test the fraction, not hasHit(), so a
+    // stale hit-object reference from a previous sweep can't be mistaken for a hit).
+    convexResultCallback.set_m_closestHitFraction(1);
+    convexResultCallback.m_collisionFilterMask = collisionFilterMask;
+
+    world.convexSweepTest(sweepShape, sweepFromT, sweepToT, convexResultCallback, 0);
+
+    const fraction = convexResultCallback.get_m_closestHitFraction();
+    if(fraction < 1.0){
+        if(result.point){
+            const p = convexResultCallback.get_m_hitPointWorld();
+            result.point.set(p.x(), p.y(), p.z());
+        }
+        if(result.normal){
+            const n = convexResultCallback.get_m_hitNormalWorld();
+            result.normal.set(n.x(), n.y(), n.z());
+        }
+        result.fraction = fraction;
+        return true;
+    }
+    result.fraction = 1.0;
+    return false;
   }
 
 }

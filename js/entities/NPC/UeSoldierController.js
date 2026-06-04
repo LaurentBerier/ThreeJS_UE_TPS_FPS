@@ -14,7 +14,7 @@ import { buildUeMannequin } from '../Common/UeMannequin.js'
 // the velocity, not the other way around. Behaviour (idle/patrol/chase/attack/
 // dead) lives in UeSoldierFSM; this class owns the body, movement and animation.
 export default class UeSoldierController extends Component{
-    constructor(model, clips, scene, physicsWorld, textures = null, weapon = null, preOriented = false){
+    constructor(model, clips, scene, physicsWorld, textures = null, weapon = null, preOriented = false, shotBuffer = null, audioListener = null){
         super();
         this.name = 'UeSoldierController';
         this.model = model;
@@ -24,6 +24,8 @@ export default class UeSoldierController extends Component{
         this.textures = textures;
         this.weapon = weapon;
         this.preOriented = preOriented;   // true => Y-up, metre-scaled GLB with baked PBR
+        this.shotBuffer = shotBuffer;     // optional AK shot AudioBuffer for ranged fire
+        this.audioListener = audioListener;
 
         // Movement intent set by the FSM, realised by Locomote each frame.
         this.walkSpeed = 2.2;      // patrol m/s
@@ -48,12 +50,19 @@ export default class UeSoldierController extends Component{
         this.navNode = null;
         this.waypointRadius = 0.6;
 
-        // Perception / combat.
+        // Perception / combat. This soldier is a RANGED gunner: he holds an AK and
+        // shoots the player from a distance (hitscan) rather than closing to melee.
         this.viewAngle = Math.cos(Math.PI / 4.0);
         this.maxViewDistance = 20.0 * 20.0;
-        this.attackDistance = 2.2;
-        this.attackDuration = 1.0;     // melee cadence (no punch clip; uses 'shoot')
-        this.health = 100;
+        this.shootRange = 16.0;        // start shooting once this close (with line of sight)
+        this.shootRangeSq = this.shootRange * this.shootRange;
+        this.fireInterval = 0.85;      // seconds between shots
+        this.shotDamage = 8;           // damage dealt to the player per landed shot
+        this.hitChance = 0.5;          // chance a shot with clear LOS actually lands
+        this.attackDuration = 1.0;     // legacy cadence field (unused by ranged FSM)
+        // Lower than before so the player drops him in fewer bullets (player AK does
+        // 2 dmg/shot => ~15 hits; previously 100 hp => ~50 hits).
+        this.health = 30;
 
         // Facing: a smoothed yaw the body turns toward (movement dir or the player).
         this.facingYaw = 0.0;
@@ -64,6 +73,16 @@ export default class UeSoldierController extends Component{
         this.deadTimer = 0.0;
         this.deadDuration = 1.1;
 
+        // Muzzle flash (built in Initialize): a brief warm point light + an additive
+        // sprite-ish sphere parked at the gun barrel each shot, so the ranged fire
+        // reads visually and lights up the surroundings.
+        this.handBone = null;
+        this.flashLight = null;
+        this.flashMesh = null;
+        this.flashTimer = 0.0;
+        this.flashDuration = 0.06;
+        this.shotSound = null;
+
         // Scratch (avoid per-frame allocation).
         this.forwardVec = new THREE.Vector3(0, 0, 1);
         this.upAxis = new THREE.Vector3(0, 1, 0);
@@ -72,6 +91,8 @@ export default class UeSoldierController extends Component{
         this.desiredPos = new THREE.Vector3();
         this.clampTarget = new THREE.Vector3();
         this.facePos = new THREE.Vector3();
+        this.muzzlePos = new THREE.Vector3();
+        this.fireDir = new THREE.Vector3();
         this.parentQuat = new THREE.Quaternion();
     }
 
@@ -87,6 +108,7 @@ export default class UeSoldierController extends Component{
         const built = buildUeMannequin(this.model, { textures: this.textures, weapon: this.weapon, preOriented: this.preOriented });
         this.modelRoot = built.modelRoot;
         this.rootBone = built.rootBone;
+        this.handBone = built.handBone;   // muzzle flash rides forward of the gun hand
         this.rootRef = this.rootBone ? {
             position: this.rootBone.position.clone(),
             quaternion: this.rootBone.quaternion.clone(),
@@ -108,8 +130,37 @@ export default class UeSoldierController extends Component{
 
         this.scene.add(this.modelRoot);
 
+        this.SetupMuzzleFlash();
+
         this.stateMachine = new UeSoldierFSM(this);
         this.stateMachine.SetState('idle');
+    }
+
+    SetupMuzzleFlash(){
+        // Warm point light: cheap (no shadow) and reads as the gun lighting the room.
+        this.flashLight = new THREE.PointLight(0xffd08a, 0.0, 7.0, 2.0);
+        this.flashLight.castShadow = false;
+        this.flashLight.visible = false;
+        this.scene.add(this.flashLight);
+
+        // Small additive blob at the muzzle so the flash is visible from afar.
+        const geo = new THREE.SphereGeometry(0.08, 8, 8);
+        const mat = new THREE.MeshBasicMaterial({
+            color: 0xffe1a8, transparent: true, opacity: 1.0,
+            blending: THREE.AdditiveBlending, depthWrite: false,
+        });
+        this.flashMesh = new THREE.Mesh(geo, mat);
+        this.flashMesh.visible = false;
+        this.scene.add(this.flashMesh);
+
+        // Positional shot audio (optional — guarded if no buffer/listener supplied).
+        if(this.shotBuffer && this.audioListener){
+            this.shotSound = new THREE.PositionalAudio(this.audioListener);
+            this.shotSound.setBuffer(this.shotBuffer);
+            this.shotSound.setRefDistance(8.0);
+            this.shotSound.setVolume(0.7);
+            this.modelRoot.add(this.shotSound);
+        }
     }
 
     SetupAnimations(){
@@ -149,6 +200,8 @@ export default class UeSoldierController extends Component{
         const facing = this.forwardVec.set(Math.sin(this.facingYaw), 0, Math.cos(this.facingYaw));
         if(toPlayer.dot(facing) < this.viewAngle){ return false; }
 
+        // Start the ray ahead of our own hit spheres so we don't self-occlude.
+        eyePos.addScaledVector(toPlayer, 0.6);
         const rayInfo = {};
         const mask = CollisionFilterGroups.AllFilter & ~CollisionFilterGroups.SensorTrigger;
         if(AmmoHelper.CastRay(this.physicsWorld, eyePos, this.player.Position, rayInfo, mask)){
@@ -158,14 +211,71 @@ export default class UeSoldierController extends Component{
         return false;
     }
 
-    get IsCloseToPlayer(){
+    // Within firing range (line-of-sight checked separately).
+    get InShootRange(){
         this.tempVec.copy(this.player.Position).sub(this.position);
-        return this.tempVec.lengthSq() <= this.attackDistance * this.attackDistance;
+        return this.tempVec.lengthSq() <= this.shootRangeSq;
     }
 
-    get IsPlayerInHitbox(){ return this.hitbox.overlapping; }
+    // Clear shot to the player: cast from the soldier's eye to the player and confirm
+    // the first thing the ray hits is the player's body (not a wall/prop in between).
+    HasLineOfSightToPlayer(){
+        const eyePos = this.tempVec2.copy(this.position);
+        eyePos.y += 1.5;
+        // Start the ray a little toward the player so it doesn't begin inside the
+        // soldier's OWN hit spheres (which would self-occlude and report no LOS).
+        this.tempVec.copy(this.player.Position).sub(eyePos);
+        const len = this.tempVec.length();
+        if(len > 1e-3){ eyePos.addScaledVector(this.tempVec, 0.6 / len); }
+        const rayInfo = {};
+        const mask = CollisionFilterGroups.AllFilter & ~CollisionFilterGroups.SensorTrigger;
+        if(AmmoHelper.CastRay(this.physicsWorld, eyePos, this.player.Position, rayInfo, mask)){
+            const body = Ammo.castObject(rayInfo.collisionObject, Ammo.btRigidBody);
+            return body == this.player.GetComponent('PlayerPhysics').body;
+        }
+        return false;
+    }
 
-    HitPlayer(){ this.player.Broadcast({topic: 'hit'}); }
+    // Fire one round at the player: flash + sound, and (with clear LOS) a chance to
+    // land a hit that damages the player. Called on a cadence by the AttackState.
+    FireAtPlayer(){
+        if(this.dead){ return; }
+
+        // Park the flash just forward of the gun hand along the facing direction.
+        this.fireDir.set(Math.sin(this.facingYaw), 0, Math.cos(this.facingYaw));
+        if(this.handBone){ this.handBone.getWorldPosition(this.muzzlePos); }
+        else{ this.muzzlePos.copy(this.position); this.muzzlePos.y += 1.4; }
+        this.muzzlePos.addScaledVector(this.fireDir, 0.55);
+
+        this.flashMesh.position.copy(this.muzzlePos);
+        this.flashLight.position.copy(this.muzzlePos);
+        this.flashMesh.visible = true;
+        this.flashLight.visible = true;
+        this.flashLight.intensity = 6.0;
+        this.flashTimer = this.flashDuration;
+
+        if(this.shotSound){
+            this.shotSound.isPlaying && this.shotSound.stop();
+            this.shotSound.play();
+        }
+
+        // The shot lands if there's a clear line and the accuracy roll succeeds.
+        if(this.HasLineOfSightToPlayer() && Math.random() < this.hitChance){
+            this.player.Broadcast({topic: 'hit', amount: this.shotDamage, from: this.parent});
+        }
+    }
+
+    UpdateMuzzleFlash(t){
+        if(this.flashTimer <= 0.0){ return; }
+        this.flashTimer = Math.max(0.0, this.flashTimer - t);
+        const k = this.flashTimer / this.flashDuration;
+        this.flashLight.intensity = 6.0 * k;
+        this.flashMesh.material.opacity = k;
+        if(this.flashTimer <= 0.0){
+            this.flashLight.visible = false;
+            this.flashMesh.visible = false;
+        }
+    }
 
     FacePlayer(t, rate = 6.0){
         this.tempVec.copy(this.player.Position).sub(this.position);
@@ -206,6 +316,10 @@ export default class UeSoldierController extends Component{
         // UE rifle set). Disable the hit capsules so the corpse stops absorbing fire.
         this.mixer.stopAllAction();
         this.collision && this.collision.Disable();
+        // Kill any in-flight muzzle flash so the corpse doesn't keep glowing.
+        this.flashTimer = 0.0;
+        if(this.flashLight){ this.flashLight.visible = false; }
+        if(this.flashMesh){ this.flashMesh.visible = false; }
         this.modelRoot.traverse(child => {
             if(child.isMesh || child.isSkinnedMesh){
                 const mats = Array.isArray(child.material) ? child.material : [child.material];
@@ -318,6 +432,7 @@ export default class UeSoldierController extends Component{
 
     Update(t){
         this.mixer && this.mixer.update(t);
+        this.UpdateMuzzleFlash(t);
 
         // Strip baked root motion so the clip plays in place; velocity moves us.
         if(this.rootBone && this.rootRef){
