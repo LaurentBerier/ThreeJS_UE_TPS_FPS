@@ -79,11 +79,13 @@ canvas {
   width: 100%;
   height: 100%;
   background-color: black;
-  /* Splashscreen art, with a dark gradient overlay so the title/button/hint
-     stay readable on top of it. Path is relative to this stylesheet. */
-  background-image: linear-gradient(rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0.7)),
-    url('../TPS_FPS_Template_Spashscreen.png');
-  background-size: cover;
+  /* Splashscreen art shown in full (contain) and scaled down to fit, so the
+     whole 3:2 image stays visible whatever the window aspect — the title reads
+     horizontally centered and the Unreal Engine logo at the bottom is never
+     cropped; black fills the side bars. No overlay, so it renders fully bright.
+     Path is relative to this stylesheet. */
+  background-image: url('../TPS_FPS_Template_Spashscreen.png');
+  background-size: contain;
   background-position: center;
   background-repeat: no-repeat;
   text-align: center;
