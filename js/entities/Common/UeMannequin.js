@@ -34,9 +34,15 @@ export const UE_BODY_LAYER = 1;
 // to resize.
 const WEAPON_LENGTH_CM = 72;
 const WEAPON_GRIP = {
-    position: new THREE.Vector3(-4.0, 2.5, 4.0),
-    // Align the rifle so the barrel runs forward along the hand. Hand-tuned.
-    rotationEuler: new THREE.Euler(0, Math.PI / 2, 0),
+    // Hand-tuned in TPS with the in-game placement tool (WeaponPlacementDebug, the `
+    // panel). Position is hand-local centimetres; rotation seats the AK upright in the
+    // palm with the barrel running forward. Re-tune with the panel and paste here.
+    position: new THREE.Vector3(-19.5, -4.5, 4.5),
+    rotationEuler: new THREE.Euler(
+        THREE.MathUtils.degToRad(0),
+        THREE.MathUtils.degToRad(-5),
+        THREE.MathUtils.degToRad(270),
+    ),
 };
 
 // Build the runtime-ready avatar from a freshly-cloned GLB scene.
@@ -56,6 +62,7 @@ export function buildUeMannequin(model, { textures = null, weapon = null } = {})
     const meshes = [];
     let rootBone = null;
     let handBone = null;
+    let weaponPivot = null;
 
     model.traverse(child => {
         if(child.isMesh || child.isSkinnedMesh){
@@ -127,7 +134,13 @@ export function buildUeMannequin(model, { textures = null, weapon = null } = {})
             }
         });
         handBone.add(pivot);
+        weaponPivot = pivot;
     }
 
-    return { modelRoot, model, rootBone, handBone, meshes };
+    return { modelRoot, model, rootBone, handBone, weaponPivot, meshes };
 }
+
+// The default in-hand grip transform, exposed so the placement-debug tool can show
+// the current values and so a found-by-debug transform can be pasted straight back
+// into WEAPON_GRIP above.
+export const WEAPON_GRIP_DEFAULT = WEAPON_GRIP;

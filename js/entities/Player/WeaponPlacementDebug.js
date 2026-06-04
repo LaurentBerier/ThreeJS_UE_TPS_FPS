@@ -1,0 +1,262 @@
+import * as THREE from 'three'
+import Component from '../../Component.js'
+import Input from '../../Input.js'
+import { WEAPON_GRIP_DEFAULT } from '../Common/UeMannequin.js'
+
+
+// Live in-hand weapon placement tool. Toggle with the backquote key (`) in TPS to
+// nudge the AK's grip transform by eye instead of guessing offsets in code. The
+// pivot it drives is the same group seated by buildUeMannequin (hand-local space,
+// centimetres for position / degrees here for rotation), so whatever looks right
+// pastes straight back into WEAPON_GRIP in UeMannequin.js.
+//
+// Keys (only while the panel is open):
+//   [ ]            select previous / next field (posX..rotZ)
+//   ArrowUp/Down   decrease / increase the selected field by the current step
+//   ArrowLeft/Right  cycle the step size (fine <-> coarse)
+//   Enter          print + copy a paste-ready WEAPON_GRIP snippet
+//   Backspace      reset to the WEAPON_GRIP defaults
+//
+// This is a dev aid; it ships off and costs nothing until you press `.
+export default class WeaponPlacementDebug extends Component{
+    constructor(){
+        super();
+        this.name = 'WeaponPlacementDebug';
+        this.active = false;
+        this.pivot = null;
+        this.el = null;
+
+        // Editable state, in the pivot's own units: position in hand-local cm,
+        // rotation in degrees (converted to the Euler radians on apply).
+        this.pos = { x: 0, y: 0, z: 0 };
+        this.rotDeg = { x: 0, y: 0, z: 0 };
+
+        this.fields = ['posX', 'posY', 'posZ', 'rotX', 'rotY', 'rotZ'];
+        this.selected = 0;
+
+        // Shared step index maps to a position step (cm) and a rotation step (deg).
+        this.posSteps = [0.1, 0.5, 1, 2, 5];
+        this.rotSteps = [1, 5, 15, 45, 90];
+        this.stepIndex = 2;   // 1 cm / 15 deg
+
+        // Free-fly camera while the panel is open: WASD to move, Q/E down/up, mouse to
+        // look (Shift = faster). PlayerControls yields the camera and freezes the
+        // player so you can orbit the grip and place it precisely.
+        this.camPos = new THREE.Vector3();
+        this.camYaw = 0;
+        this.camPitch = 0;
+        this.flySpeed = 4.0;     // m/s
+        this.flyFast = 3.0;      // Shift multiplier
+        this.lookSpeed = 0.002;
+        this._q = new THREE.Quaternion();
+        this._e = new THREE.Euler(0, 0, 0, 'YXZ');
+        this._move = new THREE.Vector3();
+        this._fwd = new THREE.Vector3();
+        this._right = new THREE.Vector3();
+        this._up = new THREE.Vector3(0, 1, 0);
+    }
+
+    Initialize(){
+        this.body = this.GetComponent('PlayerBody');
+        this.pivot = this.body ? this.body.weaponPivot : null;
+        this.controls = this.GetComponent('PlayerControls');
+        this.camera = this.controls ? this.controls.camera : null;
+
+        // Seed the editable state from the code defaults so the readout shows clean
+        // numbers (e.g. 90, not a quaternion round-trip).
+        const g = WEAPON_GRIP_DEFAULT;
+        this.pos = { x: g.position.x, y: g.position.y, z: g.position.z };
+        this.rotDeg = {
+            x: THREE.MathUtils.radToDeg(g.rotationEuler.x),
+            y: THREE.MathUtils.radToDeg(g.rotationEuler.y),
+            z: THREE.MathUtils.radToDeg(g.rotationEuler.z),
+        };
+
+        this.BuildPanel();
+        Input.AddKeyDownListner(this.OnKeyDown);
+        Input.AddMouseMoveListner(this.OnMouseMove);
+    }
+
+    // Mouse drives the free-fly look only while the panel is open and the pointer is
+    // locked; otherwise PlayerControls owns the mouse as usual.
+    OnMouseMove = (event) => {
+        if(!this.active || !this.camera || !(this.controls && this.controls.isLocked)){ return; }
+        this.camYaw   -= event.movementX * this.lookSpeed;
+        this.camPitch -= event.movementY * this.lookSpeed;
+        this.camPitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.camPitch));
+    }
+
+    OnKeyDown = (e) => {
+        if(e.code === 'Backquote'){
+            e.preventDefault();
+            this.Toggle();
+            return;
+        }
+        if(!this.active || !this.pivot){ return; }
+
+        switch(e.code){
+            case 'BracketLeft':
+                this.selected = (this.selected + this.fields.length - 1) % this.fields.length; break;
+            case 'BracketRight':
+                this.selected = (this.selected + 1) % this.fields.length; break;
+            case 'ArrowUp':
+                this.Nudge(+1); break;
+            case 'ArrowDown':
+                this.Nudge(-1); break;
+            case 'ArrowLeft':
+                this.stepIndex = Math.max(0, this.stepIndex - 1); break;
+            case 'ArrowRight':
+                this.stepIndex = Math.min(this.posSteps.length - 1, this.stepIndex + 1); break;
+            case 'Enter':
+                this.EmitSnippet(); break;
+            case 'Backspace':
+                this.Reset(); break;
+            default:
+                return;   // let other keys through (WASD look-around still works)
+        }
+        e.preventDefault();
+        this.Apply();
+        this.Render();
+    }
+
+    Nudge(sign){
+        const isRot = this.selected >= 3;
+        const step = sign * (isRot ? this.rotSteps[this.stepIndex] : this.posSteps[this.stepIndex]);
+        const axis = ['x', 'y', 'z'][this.selected % 3];
+        if(isRot){ this.rotDeg[axis] = +(this.rotDeg[axis] + step).toFixed(3); }
+        else      { this.pos[axis]    = +(this.pos[axis] + step).toFixed(3); }
+    }
+
+    Reset(){
+        const g = WEAPON_GRIP_DEFAULT;
+        this.pos = { x: g.position.x, y: g.position.y, z: g.position.z };
+        this.rotDeg = {
+            x: THREE.MathUtils.radToDeg(g.rotationEuler.x),
+            y: THREE.MathUtils.radToDeg(g.rotationEuler.y),
+            z: THREE.MathUtils.radToDeg(g.rotationEuler.z),
+        };
+    }
+
+    Apply(){
+        if(!this.pivot){ return; }
+        this.pivot.position.set(this.pos.x, this.pos.y, this.pos.z);
+        this.pivot.quaternion.setFromEuler(new THREE.Euler(
+            THREE.MathUtils.degToRad(this.rotDeg.x),
+            THREE.MathUtils.degToRad(this.rotDeg.y),
+            THREE.MathUtils.degToRad(this.rotDeg.z),
+        ));
+    }
+
+    Toggle(){
+        this.active = !this.active;
+        if(this.active){
+            this.Apply();
+            this.SyncFlyCamFromCamera();
+        }
+        // Hand the camera to (or back from) the free-fly cam.
+        if(this.controls){ this.controls.SetCameraOverride(this.active); }
+        this.el.style.display = this.active ? 'block' : 'none';
+        this.Render();
+    }
+
+    // Seed the fly-cam yaw/pitch/position from wherever the gameplay camera is now,
+    // so opening the panel doesn't snap the view.
+    SyncFlyCamFromCamera(){
+        if(!this.camera){ return; }
+        this.camPos.copy(this.camera.position);
+        this._e.setFromQuaternion(this.camera.quaternion, 'YXZ');
+        this.camYaw = this._e.y;
+        this.camPitch = this._e.x;
+    }
+
+    // Drive the free-fly camera each frame while the panel is open. Runs after
+    // PlayerControls (which is yielding the camera), so this write wins.
+    Update(t){
+        if(!this.active || !this.camera){ return; }
+
+        this._e.set(this.camPitch, this.camYaw, 0, 'YXZ');
+        this._q.setFromEuler(this._e);
+        this._fwd.set(0, 0, -1).applyQuaternion(this._q);
+        this._right.set(1, 0, 0).applyQuaternion(this._q);
+
+        const f = Input.GetKeyDown('KeyW') - Input.GetKeyDown('KeyS');
+        const r = Input.GetKeyDown('KeyD') - Input.GetKeyDown('KeyA');
+        const u = Input.GetKeyDown('KeyE') - Input.GetKeyDown('KeyQ');
+        this._move.set(0, 0, 0)
+            .addScaledVector(this._fwd, f)
+            .addScaledVector(this._right, r)
+            .addScaledVector(this._up, u);
+
+        if(this._move.lengthSq() > 0){
+            const fast = (Input.GetKeyDown('ShiftLeft') || Input.GetKeyDown('ShiftRight')) ? this.flyFast : 1;
+            this._move.normalize().multiplyScalar(this.flySpeed * fast * t);
+            this.camPos.add(this._move);
+        }
+
+        this.camera.position.copy(this.camPos);
+        this.camera.quaternion.copy(this._q);
+    }
+
+    Snippet(){
+        const p = this.pos, r = this.rotDeg;
+        const n = v => Number.isInteger(v) ? v : +v.toFixed(3);
+        return (
+`const WEAPON_GRIP = {
+    position: new THREE.Vector3(${n(p.x)}, ${n(p.y)}, ${n(p.z)}),
+    rotationEuler: new THREE.Euler(
+        THREE.MathUtils.degToRad(${n(r.x)}),
+        THREE.MathUtils.degToRad(${n(r.y)}),
+        THREE.MathUtils.degToRad(${n(r.z)}),
+    ),
+};`);
+    }
+
+    EmitSnippet(){
+        const text = this.Snippet();
+        console.log('[WeaponPlacementDebug] paste into UeMannequin.js:\n' + text);
+        try { navigator.clipboard && navigator.clipboard.writeText(text); } catch(_){ /* non-secure context */ }
+    }
+
+    BuildPanel(){
+        const el = document.createElement('div');
+        el.id = 'weapon-placement-debug';
+        el.style.cssText = [
+            'position:fixed', 'top:12px', 'right:12px', 'z-index:9999',
+            'display:none', 'font:12px/1.5 monospace', 'color:#cfe',
+            'background:rgba(10,14,20,0.85)', 'border:1px solid #2a3a4a',
+            'border-radius:6px', 'padding:10px 12px', 'white-space:pre',
+            'pointer-events:none', 'min-width:230px',
+        ].join(';');
+        document.body.appendChild(el);
+        this.el = el;
+    }
+
+    Render(){
+        if(!this.el){ return; }
+        if(!this.pivot){
+            this.el.textContent = 'WEAPON DEBUG: no weapon socketed (TPS body only).';
+            return;
+        }
+        const isRot = this.selected >= 3;
+        const step = isRot ? this.rotSteps[this.stepIndex] : this.posSteps[this.stepIndex];
+        const vals = [this.pos.x, this.pos.y, this.pos.z, this.rotDeg.x, this.rotDeg.y, this.rotDeg.z];
+        const units = ['cm', 'cm', 'cm', '°', '°', '°'];
+        const rows = this.fields.map((f, i) => {
+            const cursor = i === this.selected ? '▶' : ' ';
+            const v = Number.isInteger(vals[i]) ? vals[i] : vals[i].toFixed(3);
+            return `${cursor} ${f.padEnd(5)} ${String(v).padStart(8)} ${units[i]}`;
+        }).join('\n');
+
+        this.el.textContent =
+`WEAPON PLACEMENT  (\` to close)
+──────────────────────────
+${rows}
+──────────────────────────
+step  ${String(step).padStart(5)} ${isRot ? '°' : 'cm'}   (←/→ change)
+[ ]=field  ↑/↓=adjust
+Enter=copy snippet  ⌫=reset
+── free cam ──
+WASD move · Q/E down/up
+mouse look · Shift faster`;
+    }
+}

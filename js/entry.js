@@ -91,6 +91,7 @@ import CharacterCollision from './entities/NPC/CharacterCollision.js'
 import Hands from './entities/Player/Hands.js'
 import WeaponManager from './entities/Player/WeaponManager.js'
 import PlayerBody from './entities/Player/PlayerBody.js'
+import WeaponPlacementDebug from './entities/Player/WeaponPlacementDebug.js'
 import UIManager from './entities/UI/UIManager.js'
 import AmmoBox from './entities/AmmoBox/AmmoBox.js'
 import LevelBulletDecals from './entities/Level/BulletDecals.js'
@@ -360,6 +361,9 @@ class FPSGameApp{
     playerEntity.AddComponent(new Hands(this.camera, this.assets['ak47'].scene));
     playerEntity.AddComponent(new WeaponManager(this.camera, this.physicsWorld, this.assets['muzzleFlash'], this.assets['ak47Shot'], this.listener ));
     playerEntity.AddComponent(new PlayerHealth());
+    // Dev aid: press ` in TPS to nudge the in-hand AK and copy a WEAPON_GRIP snippet.
+    // Added after PlayerBody so its weaponPivot exists when this initializes.
+    playerEntity.AddComponent(new WeaponPlacementDebug());
     playerEntity.SetPosition(new THREE.Vector3(2.14, 1.48, -1.36));
     playerEntity.SetRotation(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), -Math.PI * 0.5));
     this.entityManager.Add(playerEntity);

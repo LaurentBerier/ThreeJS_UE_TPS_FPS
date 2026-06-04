@@ -71,6 +71,7 @@ export default class PlayerBody extends Component{
         this.modelRoot = built.modelRoot;
         this.rootBone = built.rootBone;
         this.meshes = built.meshes;
+        this.weaponPivot = built.weaponPivot;   // in-hand AK group; used by WeaponPlacementDebug
 
         if(this.rootBone){
             this.rootRef = {

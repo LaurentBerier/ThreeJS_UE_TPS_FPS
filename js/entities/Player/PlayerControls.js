@@ -25,6 +25,9 @@ export default class PlayerControls extends Component{
         this.mouseSpeed = 0.002;
         this.physicsComponent = null;
         this.isLocked = false;
+        // When a dev tool (WeaponPlacementDebug) takes over the camera, we freeze the
+        // player and stop placing the camera so the tool's free-fly cam can own it.
+        this.cameraOverride = false;
 
         this.angles = new THREE.Euler();
         this.pitch = new THREE.Quaternion();
@@ -89,10 +92,10 @@ export default class PlayerControls extends Component{
     }
 
     OnMouseMove = (event) => {
-        if (!this.isLocked) {
+        if (!this.isLocked || this.cameraOverride) {
           return;
         }
-    
+
         const { movementX, movementY } = event
     
         this.angles.y -= movementX * this.mouseSpeed;
@@ -164,7 +167,29 @@ export default class PlayerControls extends Component{
         this.speed.add(frameDeccel);
     }
 
+    // Hand camera control to a dev tool (or take it back). While overridden the
+    // player is frozen in place and the camera is left for the tool to drive.
+    SetCameraOverride(on){
+        this.cameraOverride = on;
+    }
+
     Update(t){
+        // Dev free-cam owns the camera: hold the player still and skip camera placement.
+        if(this.cameraOverride){
+            const velocity = this.physicsBody.getLinearVelocity();
+            velocity.setX(0); velocity.setZ(0);
+            this.physicsBody.setLinearVelocity(velocity);
+            this.physicsBody.setAngularVelocity(this.zeroVec);
+            const ms = this.physicsBody.getMotionState();
+            if(ms){
+                ms.getWorldTransform(this.transform);
+                const p = this.transform.getOrigin();
+                this._cap.set(p.x(), p.y() + this.yOffset, p.z());
+                this.parent.SetPosition(this._cap);   // keep Player.Position valid for NPCs
+            }
+            return;
+        }
+
         // Toggle TPS/FPS on a V key edge (latched so a held key fires once).
         if(Input.GetKeyDown('KeyV')){
             if(!this._vLatch){ this._vLatch = true; this.ToggleCamera(); }
