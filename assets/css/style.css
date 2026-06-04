@@ -94,15 +94,9 @@ canvas {
   visibility: hidden;
 }
 
-#menu .subtitle {
-  opacity: 0.6;
-  letter-spacing: 1px;
-  margin-top: -1em;
-}
-
 #menu .hint {
   position: absolute;
-  bottom: 6%;
+  bottom: 2%;
   opacity: 0.55;
   font-size: 0.95em;
 }
