@@ -15,15 +15,16 @@ import { buildUeMannequin, UE_BODY_LAYER } from '../Common/UeMannequin.js'
 // motion onto the 'root' bone, which we lock every frame so locomotion plays in
 // place (the capsule drives movement).
 export default class PlayerBody extends Component{
-    constructor(model, clips, scene, camera, textures = null, weapon = null){
+    constructor(model, clips, scene, camera, textures = null, weapon = null, preOriented = false){
         super();
         this.name = 'PlayerBody';
         this.model = model;            // GLB scene (SkeletonUtils.clone)
         this.clips = clips;            // { idle, walk, run, reload, shoot }
         this.scene = scene;
         this.camera = camera;
-        this.textures = textures;      // { bodyColor, bodyNormal, logoColor, logoNormal }
+        this.textures = textures;      // { bodyColor, bodyNormal, logoColor, logoNormal } (legacy only)
         this.weapon = weapon;          // cloned SK_AK47 mesh for the right hand
+        this.preOriented = preOriented;// true => Y-up, metre-scaled GLB with baked PBR
 
         this.animations = {};
         this.currentState = null;
@@ -67,7 +68,7 @@ export default class PlayerBody extends Component{
         this.playerControls = this.GetComponent('PlayerControls');
 
         // Shared UE avatar build: import fix, textured material, AK socketed to hand_r.
-        const built = buildUeMannequin(this.model, { textures: this.textures, weapon: this.weapon });
+        const built = buildUeMannequin(this.model, { textures: this.textures, weapon: this.weapon, preOriented: this.preOriented });
         this.modelRoot = built.modelRoot;
         this.rootBone = built.rootBone;
         this.meshes = built.meshes;
@@ -134,6 +135,16 @@ export default class PlayerBody extends Component{
     PlayOneShot(name){
         const action = this.animations[name];
         if(!action){ return; }
+        // Already mid one-shot of this clip (continuous fire re-triggers 'shoot'
+        // every shot): just restart its time so it pulses again, WITHOUT another
+        // crossFadeFrom. Re-fading in from the locomotion action — already faded to
+        // weight 0 by the first crossfade — drops the total blend weight to ~0 for a
+        // few frames, which snaps the skeleton to its bind (T) pose.
+        if(this.oneShot === name){
+            action.time = 0;
+            action.setEffectiveWeight(1.0);
+            return;
+        }
         this.oneShot = name;
         action.reset();
         action.setEffectiveWeight(1.0);
@@ -143,9 +154,23 @@ export default class PlayerBody extends Component{
         if(from){ action.crossFadeFrom(from, 0.1, true); }
     }
 
-    OnOneShotFinished = () => {
+    OnOneShotFinished = (e) => {
+        // The mixer fires 'finished' for ANY LoopOnce action, so ignore a stale
+        // finish from a one-shot we've already moved on from — e.g. a lingering
+        // 'shoot' action ending just after a reload began. Acting on it would clear
+        // the active one-shot and cut the reload short.
+        if(!this.oneShot || (e && e.action !== this.animations[this.oneShot])){
+            return;
+        }
         const finished = this.oneShot;
         this.oneShot = null;
+        // The third-person body reload is the visible one in TPS, so let it drive the
+        // mag refill — shooting resumes the instant this anim ends instead of waiting
+        // on the longer (hidden) first-person arms reload clip. ReloadDone is
+        // idempotent, so the later FP-clip finish is a harmless no-op.
+        if(finished === 'reload'){
+            this.Broadcast({topic: 'reload.done'});
+        }
         // Blend back to locomotion from the clamped final pose.
         if(finished && this.animations[finished]){
             this.currentState = finished;            // so SetState crossfades out of it

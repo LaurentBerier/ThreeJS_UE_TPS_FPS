@@ -8,7 +8,7 @@ export default class UIManager extends Component{
 
     SetAmmo(mag, rest){
         document.getElementById("current_ammo").innerText = mag;
-        document.getElementById("max_ammo").innerText = rest;
+        document.getElementById("max_ammo").innerText = (rest === Infinity) ? '∞' : rest;
     }
 
     SetHealth(health){

@@ -47,9 +47,24 @@ export default class PlayerControls extends Component{
         this.cameraMode = 'TPS';
         this.tpsDistance = 3.0;   // boom length behind the player (metres)
         this.tpsPivotHeight = 0.25; // pivot above eye height
-        this.tpsShoulder = 0.5;   // lateral over-the-shoulder offset
+        this.tpsShoulder = 0.85;  // lateral rig shift: bigger => character further frame-left, reticle further right (in front of the gun)
         this.tpsCollisionMargin = 0.2; // keep the camera this far off a blocking wall
         this._vLatch = false;
+
+        // Precise-aim mode (hold right click in TPS): the boom pulls in over the
+        // shoulder, the FOV zooms, and the mouse slows for finer aim. Targets are
+        // eased toward each frame so entering/leaving aim glides rather than snaps.
+        this.aiming = false;
+        this.tpsAimDistance = 1.5;    // tighter boom while aiming
+        this.tpsAimShoulder = 0.55;   // pull the shoulder offset in a little
+        this.tpsAimFov = 35;          // zoom (base FOV is captured in Initialize)
+        this.aimLerpSpeed = 12;
+        this.aimSensitivity = 0.55;   // mouse multiplier while aiming
+        this.baseFov = 50;            // overwritten from the camera in Initialize
+        // Smoothed current values driven each frame in UpdateCamera.
+        this._curDistance = this.tpsDistance;
+        this._curShoulder = this.tpsShoulder;
+        this._curFov = this.baseFov;
         // Scratch vectors for the TPS boom (avoid per-frame allocation).
         this._cap = new THREE.Vector3();
         this._pivot = new THREE.Vector3();
@@ -72,6 +87,15 @@ export default class PlayerControls extends Component{
         this.UpdateRotation();
 
         Input.AddMouseMoveListner(this.OnMouseMove);
+
+        // Capture the resting FOV so precise-aim can zoom from / back to it.
+        this.baseFov = this.camera.fov;
+        this._curFov = this.camera.fov;
+
+        // Right click holds precise-aim. (In FPS the arms viewmodel runs its own ADS
+        // via Hands; this TPS aim only applies in the TPS camera branch below.)
+        Input.AddMouseDownListner(e => { if(e.button === 2){ this.aiming = true; } });
+        Input.AddMouseUpListner(e => { if(e.button === 2){ this.aiming = false; } });
 
         document.addEventListener('pointerlockchange', this.OnPointerlockChange)
 
@@ -97,9 +121,14 @@ export default class PlayerControls extends Component{
         }
 
         const { movementX, movementY } = event
-    
-        this.angles.y -= movementX * this.mouseSpeed;
-        this.angles.x -= movementY * this.mouseSpeed;
+
+        // Finer aim while holding precise-aim in third-person.
+        const sens = (this.cameraMode === 'TPS' && this.aiming)
+            ? this.mouseSpeed * this.aimSensitivity
+            : this.mouseSpeed;
+
+        this.angles.y -= movementX * sens;
+        this.angles.x -= movementY * sens;
 
         this.angles.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.angles.x));
 
@@ -118,6 +147,10 @@ export default class PlayerControls extends Component{
 
     ToggleCamera(){
         this.cameraMode = this.cameraMode === 'TPS' ? 'FPS' : 'TPS';
+        // Drop aim on a mode switch; reseed the smoothed FOV from the live camera so
+        // re-entering TPS doesn't jump (FPS ADS, owned by Hands, may have changed it).
+        this.aiming = false;
+        this._curFov = this.camera.fov;
         this.Broadcast({topic: 'camera.mode', mode: this.cameraMode});
         const label = document.getElementById('camera_mode');
         if(label){ label.textContent = this.cameraMode; }
@@ -126,21 +159,40 @@ export default class PlayerControls extends Component{
     // Place the camera for the current mode. capPos is the capsule-tracked
     // position (eye height); it is also Player.Position so NPC targeting/raycasts
     // are camera-mode-independent.
-    UpdateCamera(capPos){
+    UpdateCamera(capPos, t = 0.016){
         if(this.cameraMode === 'FPS'){
             this.camera.position.copy(capPos);
             this.camera.quaternion.copy(this.parent.Rotation);
             return;
         }
+
+        // Ease the boom length / shoulder offset / FOV toward their precise-aim or
+        // hip targets so toggling right click glides in and out of the zoom.
+        const k = Math.min(1, t * this.aimLerpSpeed);
+        const targetDistance = this.aiming ? this.tpsAimDistance : this.tpsDistance;
+        const targetShoulder = this.aiming ? this.tpsAimShoulder : this.tpsShoulder;
+        const targetFov      = this.aiming ? this.tpsAimFov      : this.baseFov;
+        this._curDistance += (targetDistance - this._curDistance) * k;
+        this._curShoulder += (targetShoulder - this._curShoulder) * k;
+        this._curFov      += (targetFov      - this._curFov)      * k;
+        this.camera.fov = this._curFov;
+        this.camera.updateProjectionMatrix();
+
         // TPS orbit-follow boom: pivot near the head, camera pulled back along the
         // look direction (pitch tilts it), with an over-the-shoulder offset.
         this._fwd.copy(this._fwdBase).applyQuaternion(this.parent.Rotation);
         this._right.copy(this._rightBase).applyQuaternion(this.parent.Rotation);
         this._pivot.copy(capPos);
         this._pivot.y += this.tpsPivotHeight;
+        // Shift the whole boom rig (look target AND camera) laterally by tpsShoulder.
+        // Because the camera looks at this shifted target, the character ends up that
+        // far to the LEFT of the view axis (frame-left) while the screen-centre reticle
+        // floats in the open space to their right — in front of the gun the mannequin
+        // holds in its right hand. (Applying the offset to the camera alone, as before,
+        // just angled the view and kept the character centred under the reticle.)
+        this._pivot.addScaledVector(this._right, this._curShoulder);
         this._desired.copy(this._pivot)
-            .addScaledVector(this._fwd, -this.tpsDistance)
-            .addScaledVector(this._right, this.tpsShoulder);
+            .addScaledVector(this._fwd, -this._curDistance);
 
         // Boom collision: cast from the pivot to the desired camera spot against
         // STATIC level geometry only (so the player capsule/NPCs never block it),
@@ -233,7 +285,7 @@ export default class PlayerControls extends Component{
             // modes (NPCs target it), independent of where the TPS boom sits.
             this._cap.set(p.x(), p.y() + this.yOffset, p.z());
             this.parent.SetPosition(this._cap);
-            this.UpdateCamera(this._cap);
+            this.UpdateCamera(this._cap, t);
         }
 
     }

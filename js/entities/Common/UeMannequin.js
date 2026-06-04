@@ -7,10 +7,22 @@ import * as THREE from 'three'
 // (idle / walk / reload / shoot), so the mesh setup, the UE->three import fix, the
 // body/chest-logo textures and the in-hand weapon socket all live here once.
 //
-// UE assets import Z-up and in centimetres. The raw GLB scene is wrapped in a
-// gameplay `modelRoot` group and the inner model carries a fixed -90deg X tilt +
-// 0.01 scale so it lands upright in three's Y-up metres (~1.83 m tall, feet at
-// local Y=0). Callers move/rotate `modelRoot`; the inner model keeps the import fix.
+// Two avatar GLB conventions are supported (selected by the `preOriented` flag):
+//
+//   * Legacy UE-native bake (Z-up, centimetres): the raw GLB scene is wrapped in a
+//     gameplay `modelRoot` group and the inner model carries a fixed -90deg X tilt
+//     + 0.01 scale so it lands upright in three's Y-up metres, and its neutral PBR
+//     material is rebuilt with the supplied UE body/logo textures.
+//   * Pre-oriented bake (`preOriented: true`): a Y-up, metre-scaled GLB exported
+//     from Blender (our FBX->GLB converter) with PBR materials + OpenGL normal maps
+//     already baked in. It needs NO tilt, NO scale and NO material rebuild — it
+//     lands upright (~1.9 m tall, feet at local Y=0, facing +Z) as-is.
+//
+// Either way the model faces +Z and feet sit at local Y=0; callers move/rotate the
+// outer `modelRoot` and never touch the inner model.
+//
+// The four UE rifle clips ship only in the legacy bake. To drive the pre-oriented
+// rig with them, adapt each clip with adaptClipToPreOriented (below) once at load.
 
 // Render layer the avatar's meshes are moved to when their owning camera must NOT
 // see them (the player's own first-person body). The shadow-casting light is told
@@ -37,11 +49,11 @@ const WEAPON_GRIP = {
     // Hand-tuned in TPS with the in-game placement tool (WeaponPlacementDebug, the `
     // panel). Position is hand-local centimetres; rotation seats the AK upright in the
     // palm with the barrel running forward. Re-tune with the panel and paste here.
-    position: new THREE.Vector3(-19.5, -4.5, 4.5),
+    position: new THREE.Vector3(-21.5, -2.4, 1),
     rotationEuler: new THREE.Euler(
         THREE.MathUtils.degToRad(0),
-        THREE.MathUtils.degToRad(-5),
-        THREE.MathUtils.degToRad(270),
+        THREE.MathUtils.degToRad(-9),
+        THREE.MathUtils.degToRad(272),
     ),
 };
 
@@ -53,9 +65,13 @@ const WEAPON_GRIP = {
 // the caller adds to the scene and transforms; `rootBone` is locked each frame to
 // strip the clips' baked root motion; `meshes` is the skinned-mesh list for
 // per-camera layer toggling.
-export function buildUeMannequin(model, { textures = null, weapon = null } = {}){
-    model.rotation.x = -Math.PI / 2;
-    model.scale.setScalar(0.01);
+export function buildUeMannequin(model, { textures = null, weapon = null, preOriented = false } = {}){
+    if(!preOriented){
+        // Legacy UE-native GLB: tilt Z-up -> Y-up and scale cm -> metres.
+        model.rotation.x = -Math.PI / 2;
+        model.scale.setScalar(0.01);
+    }
+    // Pre-oriented GLB is already Y-up, metre-scaled and feet at local Y=0; leave it.
     const modelRoot = new THREE.Group();
     modelRoot.add(model);
 
@@ -77,11 +93,33 @@ export function buildUeMannequin(model, { textures = null, weapon = null } = {})
         }
     });
 
-    // The GLB ships a neutral PBR material that renders black/invisible under r127,
-    // so we always rebuild a skinning-enabled material we control. The mesh exports
-    // two primitives in UE material-slot order: 0 = body, 1 = chest logo. Map the
-    // matching UE .tga set onto each when supplied; otherwise fall back to flat grey.
-    meshes.forEach((mesh, i) => {
+    // Pre-oriented GLBs already carry correct, skinning-enabled PBR materials with
+    // baked body colour + OpenGL normal map (the Blender converter re-encodes them),
+    // so we keep those untouched — but clone each one per instance. SkeletonUtils.clone
+    // shares material instances across clones, and the soldier's death fade mutates
+    // material.transparent/opacity; without a per-instance copy a dying soldier would
+    // fade the player (and other soldiers) too. Cloning keeps the (shared) textures.
+    if(preOriented){
+        meshes.forEach(mesh => {
+            const material = mesh.material.clone();
+            // UE's glTF omits metallicFactor, so GLTFLoader applies the spec default
+            // of 1.0 — a fully-metallic body. A metal's colour comes entirely from the
+            // reflected environment, and this scene has no environment map, so the body
+            // reflects a black void and renders near-black with speckled normal-map
+            // highlights ("too dark and buggy"). The mannequin is matte skin/cloth, so
+            // force it non-metallic (matching the legacy bake's 0.1) and let the scene
+            // lights do the shading.
+            material.metalness = 0.1;
+            mesh.material = material;
+        });
+    }
+
+    // The legacy UE bake instead ships a neutral PBR material that renders
+    // black/invisible under r127, so we rebuild a skinning-enabled material we
+    // control. The mesh exports two primitives in UE material-slot order: 0 = body,
+    // 1 = chest logo. Map the matching UE .tga set onto each when supplied; otherwise
+    // fall back to flat grey.
+    if(!preOriented) meshes.forEach((mesh, i) => {
         const isLogo = i === 1;
         const map = textures ? (isLogo ? textures.logoColor : textures.bodyColor) : null;
         const normalMap = textures ? (isLogo ? textures.logoNormal : textures.bodyNormal) : null;
@@ -128,6 +166,14 @@ export function buildUeMannequin(model, { textures = null, weapon = null } = {})
                 child.castShadow = true;
                 child.receiveShadow = true;
                 child.frustumCulled = false;   // skinned AK bounds also go stale
+                // Per-instance material, same reason as the body meshes above:
+                // SkeletonUtils.clone shares the AK material across every avatar, so
+                // without this the soldier's death fade (material.opacity -> 0) would
+                // also fade the player's (and other soldiers') gun. Clone so each
+                // avatar owns its weapon material.
+                child.material = Array.isArray(child.material)
+                    ? child.material.map(m => m.clone())
+                    : child.material.clone();
                 // Sits inside the rig, so it must follow the same layer toggles as the
                 // body meshes — registering it here lets callers treat it uniformly.
                 meshes.push(child);
@@ -144,3 +190,42 @@ export function buildUeMannequin(model, { textures = null, weapon = null } = {})
 // the current values and so a found-by-debug transform can be pasted straight back
 // into WEAPON_GRIP above.
 export const WEAPON_GRIP_DEFAULT = WEAPON_GRIP;
+
+// Re-target a legacy-bake UE rifle clip onto the pre-oriented (Blender) rig.
+//
+// The two rigs come from the same UE FBX, and a per-bone comparison shows every bone
+// BELOW the pelvis is byte-identical (same rest rotation AND translation). Blender
+// absorbed the entire Z-up -> Y-up conversion into just two places: the pelvis rest
+// transform (exactly a -90deg rotation about X — verified: rotX(-90) * R_old_pelvis
+// == R_new_pelvis, and rotX(-90) maps the pelvis offset [0,1.1,96.8] -> [0,96.8,-1.1])
+// and a 0.01 metre scale on the non-bone armature node named 'root'.
+//
+// So a clip plays correctly on the pre-oriented rig after exactly two edits:
+//   * drop the 'root' track — in this rig 'root' is the armature carrying the 0.01
+//     scale (its scale channel would clobber that and explode the rig 100x); its
+//     baked root motion is stripped in-game anyway (locomotion plays in place).
+//   * rotate ONLY the pelvis quaternion (left-multiply) + position tracks by rotX(-90).
+// Every other bone track applies unchanged. Returns a new clip; the input is untouched.
+const PELVIS_FIX = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
+export function adaptClipToPreOriented(clip){
+    const out = clip.clone();
+    out.tracks = out.tracks.filter(t => !t.name.startsWith('root.'));
+    const q = new THREE.Quaternion();
+    const p = new THREE.Vector3();
+    for(const track of out.tracks){
+        if(track.name === 'pelvis.quaternion'){
+            const v = track.values;
+            for(let i = 0; i < v.length; i += 4){
+                q.set(v[i], v[i+1], v[i+2], v[i+3]).premultiply(PELVIS_FIX);
+                v[i] = q.x; v[i+1] = q.y; v[i+2] = q.z; v[i+3] = q.w;
+            }
+        }else if(track.name === 'pelvis.position'){
+            const v = track.values;
+            for(let i = 0; i < v.length; i += 3){
+                p.set(v[i], v[i+1], v[i+2]).applyQuaternion(PELVIS_FIX);
+                v[i] = p.x; v[i+1] = p.y; v[i+2] = p.z;
+            }
+        }
+    }
+    return out;
+}

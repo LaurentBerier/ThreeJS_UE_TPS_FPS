@@ -15,7 +15,11 @@ export default class Weapon{
         this.damage = config.damage ?? 2;
         this.ammoPerMag = config.magSize ?? 30;
         this.magAmmo = this.ammoPerMag;
-        this.ammo = config.ammo ?? 100;
+        // Infinite reserve: the magazine still depletes per shot (so reloads still
+        // trigger and play), but the reserve never runs out. Reload math is unchanged
+        // since Infinity - n === Infinity, so the mag just refills full each time.
+        this.infiniteAmmo = config.infiniteAmmo ?? false;
+        this.ammo = this.infiniteAmmo ? Infinity : (config.ammo ?? 100);
         // Muzzle-flash anchor in the model-root space (same frame the original AK
         // used), so the flash sits at the barrel.
         this.barrelOffset = config.barrelOffset ?? new THREE.Vector3(-0.3, -0.5, 8.3);
@@ -76,6 +80,9 @@ export default class Weapon{
     }
 
     ReloadDone(){
+        // Idempotent: the FP-arms and TP-body reload clips both try to finish the
+        // reload (whichever ends first wins); ignore the later, redundant call.
+        if(!this.reloading){ return; }
         this.reloading = false;
         const bulletsNeeded = this.ammoPerMag - this.magAmmo;
         this.magAmmo = Math.min(this.ammo + this.magAmmo, this.ammoPerMag);
