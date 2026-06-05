@@ -291,29 +291,37 @@ class FPSGameApp{
     this.SetAnim('attack', this.assets['attackAnim']);
     this.SetAnim('die', this.assets['dieAnim']);
 
-    //Extract UE Mannequin (player body): new Y-up mesh GLB (baked PBR materials) +
-    //the 4 named clips from the legacy bake. Map 'run' to 'walk' since the rifle set
-    //has no sprint clip; PlayerBody falls back to it. The clips drive the new rig by
-    //bone name (same UE skeleton). Textures are baked into the mesh, so no external
-    //texture set is needed.
+    //Extract UE Mannequin (player body): new Y-up mesh GLB (baked PBR materials) + the named
+    //clips from the legacy bake (SK_Mannequin.glb now carries idle, the forward jog ('walk'),
+    //the directional jogs (jog_bwd/left/right), the jump pair (jump_start/jump_fall), reload and
+    //shoot). The clips drive the new rig by bone name (same UE skeleton); textures are baked into
+    //the mesh, so no external texture set is needed.
     this.ueModel = this.assets['ueChar'].scene;
     const ueClips = this.assets['ueClips'].animations;
     // Adapt each legacy clip onto the pre-oriented rig (drop 'root', rotate pelvis;
     // see adaptClipToPreOriented). Adapt once and share across player + soldier.
     const byName = (n) => { const c = ueClips.find(c => c.name === n); return c ? adaptClipToPreOriented(c) : undefined; };
     const walkClip = byName('walk');
-    // The rifle set ships no sprint clip, so 'run' reuses the jog clip — but it must
-    // be a SEPARATE clip instance, not the same object as 'walk'. Within one
-    // AnimationMixer two actions bound to the SAME clip share the underlying property
-    // bindings; crossfading walk<->run (sprint start/stop) then briefly leaves the
-    // skeleton with no action driving it, snapping it to the bind (T) pose for a few
-    // frames. Cloning gives 'run' its own bindings so the crossfade stays continuous.
+    // The AI soldier still uses a 'run' (chase) state which reuses the jog clip — but it must
+    // be a SEPARATE clip instance, not the same object as 'walk'. Within one AnimationMixer two
+    // actions bound to the SAME clip share the underlying property bindings; crossfading
+    // walk<->run then briefly leaves the skeleton with no action driving it, snapping it to the
+    // bind (T) pose for a few frames. Cloning gives 'run' its own bindings.
     this.ueAnims = {
       idle: byName('idle'),
-      walk: walkClip,
-      run: walkClip ? walkClip.clone() : undefined,
+      walk: walkClip,                          // forward jog (soldier 'walk' / player 'jogF')
+      run: walkClip ? walkClip.clone() : undefined,   // soldier chase (separate instance)
       reload: byName('reload'),
       shoot: byName('shoot'),
+      // Player directional locomotion + jump anim graph (see PlayerBody). Forward jog reuses the
+      // 'walk' clip (the player splits it per-layer, so sharing the object is safe); the rest are
+      // the new directional / jump clips, adapted to the pre-oriented rig like the others.
+      jogF: walkClip,
+      jogB: byName('jog_bwd'),
+      jogL: byName('jog_left'),
+      jogR: byName('jog_right'),
+      jumpStart: byName('jump_start'),
+      jumpFall: byName('jump_fall'),
     };
     this.ueTextures = null;   // baked into the mesh GLB
 

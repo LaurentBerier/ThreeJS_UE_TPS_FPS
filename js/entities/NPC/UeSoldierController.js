@@ -40,8 +40,19 @@ export default class UeSoldierController extends Component{
         // walk/run blend thresholds (m/s) for the velocity-driven animation.
         this.runAnimThreshold = 3.2;
         this.walkAnimThreshold = 0.25;
-        // walk and run reuse the single UE jog clip; slow it for a walk.
-        this.animTimeScale = { idle: 1.0, walk: 0.6, run: 1.15, shoot: 1.4 };
+        // idle/shoot play at a fixed rate; walk/run reuse the single UE jog clip and are
+        // FOOT-SYNCED to the measured ground speed (see LocoTimeScale) so the feet match the
+        // floor instead of skating (the old fixed walk:0.6 / run:1.15 slid badly). The jog bakes
+        // a foot speed of authoredJogSpeed m/s at timeScale 1.0 (same source clip as the player).
+        this.animTimeScale = { idle: 1.0, walk: 1.0, run: 1.0, shoot: 1.4 };
+        this.authoredJogSpeed = 5.884628;                     // m/s baked into the jog at timeScale 1.0
+        this.invAuthoredJogSpeed = 1 / this.authoredJogSpeed; // per-(m/s) timeScale factor
+        // This soldier patrols (2.2 m/s -> 0.37x) and chases (4.6 -> 0.78x) BELOW the authored jog
+        // speed, so its foot-sync rates are <1.0 (the jog is slowed). Floor 0.35 keeps patrol
+        // foot-synced (0.37x is left unclamped) while still preventing a near-frozen slow-mo cadence
+        // while accelerating from a stop; the 2.2 cap is insurance (never reached at chase speed).
+        this.locoTimeScaleMin = 0.35;
+        this.locoTimeScaleMax = 2.2;
 
         this.animations = {};
         this.locoState = null;     // 'idle' | 'walk' | 'run'
@@ -634,13 +645,38 @@ export default class UeSoldierController extends Component{
         this.SetLocoState(desired);
     }
 
+    // Per-frame foot-sync: keep the active walk/run clip's timeScale matched to the live
+    // measured speed so the feet track the ground through accel/decel and patrol<->chase.
+    // Single-layer, so there is no upper/lower phase concern. (setEffectiveTimeScale() calls
+    // stopWarping() internally — harmless because walk/run are the SAME clip, so the
+    // walk<->run crossfade warp is a no-op.)
+    UpdateLocoTimeScale(){
+        if(this.override){ return; }
+        if(this.locoState !== 'walk' && this.locoState !== 'run'){ return; }
+        const action = this.animations[this.locoState];
+        if(action){ action.setEffectiveTimeScale(this.LocoTimeScale(this.locoState)); }
+    }
+
+    // Foot-synced timeScale for a locomotion action: walk/run scale with the measured ground
+    // speed so the feet match the floor; idle/shoot keep their fixed rate. Pinned to the floor
+    // under the idle threshold so accelerating from a stop never plays a near-frozen slow-mo
+    // cadence. Multiplies by a constant (never divides by speed) so it can't NaN.
+    LocoTimeScale(name){
+        if(name !== 'walk' && name !== 'run'){
+            return this.animTimeScale[name] ?? 1.0;
+        }
+        if(this.currentSpeed <= this.walkAnimThreshold){ return this.locoTimeScaleMin; }
+        return THREE.MathUtils.clamp(
+            this.currentSpeed * this.invAuthoredJogSpeed, this.locoTimeScaleMin, this.locoTimeScaleMax);
+    }
+
     SetLocoState(name){
         if(this.locoState === name || !this.animations[name]){ return; }
         const next = this.animations[name];
         next.reset();
         next.setLoop(THREE.LoopRepeat);
         next.setEffectiveWeight(1.0);
-        next.setEffectiveTimeScale(this.animTimeScale[name] ?? 1.0);
+        next.setEffectiveTimeScale(this.LocoTimeScale(name));
         next.play();
         if(this.locoState && this.animations[this.locoState]){
             next.crossFadeFrom(this.animations[this.locoState], 0.2, true);
@@ -687,6 +723,7 @@ export default class UeSoldierController extends Component{
 
         this.Locomote(t);
         this.UpdateLocomotionAnim();
+        this.UpdateLocoTimeScale();    // foot-sync the live walk/run playback rate to ground speed
         this.UpdateStuckRecovery(t);   // repath / subtle teleport if wedged (after the move)
 
         // Apply transforms: body follows position + smoothed facing yaw.

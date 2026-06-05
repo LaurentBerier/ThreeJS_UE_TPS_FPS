@@ -2,7 +2,6 @@ import * as THREE from 'three'
 import Component from '../../Component.js'
 import {Ammo, AmmoHelper, CollisionFilterGroups} from '../../AmmoLib.js'
 import CharacterFSM from './CharacterFSM.js'
-import { installProximityDitherOnObject } from '../Common/CameraDither.js'
 import Ragdoll from './Ragdoll.js'
 
 import DebugShapes from '../../DebugShapes.js'
@@ -153,9 +152,11 @@ export default class CharacterController extends Component{
             this.lastPos = this.rootBone.position.clone();
         });
 
-        // The TPS camera passes straight through enemies; dither this mutant out when the lens
-        // clips into it instead of showing the inside of the mesh (the general close-mesh rule).
-        installProximityDitherOnObject(this.model, { near: 0.35, far: 1.0 });
+        // NOTE: the proximity dither-dissolve was removed for the creature — when it lunged in to
+        // hit the player it crowded the TPS lens and stippled away, which read like the camera
+        // "colliding" with it. For now we just keep the creature solid and rely on a small camera
+        // shake on the hit (PlayerControls.OnPlayerHit). Re-add installProximityDitherOnObject here
+        // if camera pass-through ever shows the inside of the mesh again.
 
         this.SetupAnimations();
 

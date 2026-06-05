@@ -60,7 +60,12 @@
 
         const animFiles = {
           idle: 'A_Rifle_Idle_.FBX',
-          walk: 'A_Rifle_Jog_Fwd.FBX',
+          walk: 'A_Rifle_Jog_Fwd.FBX',        // forward jog (name 'walk' kept for soldier back-compat)
+          jog_bwd: 'A_Rifle_Jog_Bwd.fbx',     // strafe/directional locomotion (player anim graph)
+          jog_left: 'A_Rifle_Jog_Left.fbx',
+          jog_right: 'A_Rifle_Jog_Right.fbx',
+          jump_start: 'A_Rifle_Jump_Start.fbx',     // one-shot launch -> transitions to jump_fall
+          jump_fall: 'A_Rifle_Jump_Fall_Loop.fbx',  // looping airborne / fall
           reload: 'A_Rifle_Reload.FBX',
           shoot: 'A_Rifle_Fire.FBX',
         };

@@ -99,6 +99,7 @@ export default class PlayerControls extends Component{
         // (a wall clearing) eases at boomReturnRate so it glides back rather than popping.
         this.boomReturnRate = 10.0;     // pull-OUT ease toward the rest length (1/s); pull-IN is instant
         this._curT = 1;                 // smoothed 0..1 position ALONG the pivot->rest spline (1 = fully out)
+        this._camDist = this.tpsDistance; // live camera->pivot distance (m); drives CameraProximity
         this._camTarget = new THREE.Vector3();  // (first-person eye target)
         this._camInit = false;
         this._free = new THREE.Vector3();       // scratch: over-the-shoulder rest point (far end of the spline)
@@ -255,9 +256,9 @@ export default class PlayerControls extends Component{
     }
 
     // --- Camera juice hooks ---
-    // Getting shot: a small, quickly-settling shake — rotation ONLY (ApplyCameraShake
-    // never moves the camera in space), so the view jolts but the position never lurches.
-    OnPlayerHit = () => { this.AddTrauma(0.55); }
+    // Getting hit: a SMALL, quickly-settling shake — rotation ONLY (ApplyCameraShake never moves
+    // the camera in space). Kept gentle: a bigger trauma read as a lurch/recoil "pull back". Tune.
+    OnPlayerHit = () => { this.AddTrauma(0.25); }
     OnWeaponShoot = () => { this.AddRecoil(); }
 
     AddTrauma(amount){ this.trauma = Math.min(1.0, this.trauma + amount); }
@@ -320,6 +321,7 @@ export default class PlayerControls extends Component{
             this._camInit = true;
             this.camera.quaternion.copy(this.parent.Rotation);
             this.ApplyCameraShake(t);
+            this._camDist = this.tpsDistance;   // FPS: report "far" so TPS-only proximity logic is inert
             return;
         }
 
@@ -419,6 +421,7 @@ export default class PlayerControls extends Component{
         // very close to the lens are clipped rather than smeared across the view. Mapped from the
         // camera's distance to the pivot — tpsNearMax at tpsMinDistance, tpsNear by tpsNearGrowDist.
         const camDist = this._curT * splineLen;
+        this._camDist = camDist;   // expose the live camera->pivot distance for CameraProximity
         this.camera.near = THREE.MathUtils.clamp(
             THREE.MathUtils.mapLinear(camDist, this.tpsMinDistance, this.tpsNearGrowDist, this.tpsNearMax, this.tpsNear),
             this.tpsNear, this.tpsNearMax);
@@ -482,6 +485,12 @@ export default class PlayerControls extends Component{
         if(Input.GetKeyDown('Space') && this.physicsComponent.canJump){
             velocity.setY(this.jumpVelocity);
             this.physicsComponent.canJump = false;
+            // Authoritative take-off signal for the body's jump animation. PlayerBody can't reliably
+            // detect take-off from IsGrounded (canJump): we clear it THIS frame BEFORE PlayerBody
+            // runs, and Input reports HELD keys, so holding Space bunny-hops on the first grounded
+            // frame (inside the body's landing debounce) — without this event the body would keep
+            // looping the fall pose and skip the jumpStart launch on the second hop.
+            this.Broadcast({topic: 'player.jump'});
         }
         
         this.Deccelerate(t);
@@ -518,6 +527,15 @@ export default class PlayerControls extends Component{
     // camera in close and the over-the-shoulder framing collapses.
     get CameraPushIn(){
         return THREE.MathUtils.clamp(1 - this._curT, 0, 1);
+    }
+
+    // Camera-to-character PROXIMITY, 0..1 (0 = at/over the resting boom or farther, 1 = jammed up
+    // against the character at the collision floor). Reads the LIVE camera distance, so it rises
+    // for aim pull-in, sprint/look-down (negative -> clamped 0), AND collision push-in alike. The
+    // body uses this (with conditions) to stabilize the hips and to drive the close-range aim pose.
+    get CameraProximity(){
+        return THREE.MathUtils.clamp(
+            (this.tpsDistance - this._camDist) / (this.tpsDistance - this.tpsMinDistance), 0, 1);
     }
 
     // Current horizontal move speed in m/s (used to drive the weapon bob).

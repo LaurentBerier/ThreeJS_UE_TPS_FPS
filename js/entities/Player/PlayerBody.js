@@ -3,50 +3,85 @@ import Component from '../../Component.js'
 import { buildUeMannequin, UE_BODY_LAYER, collectUpperBoneNames, splitClipByBones } from '../Common/UeMannequin.js'
 
 
-// Full-body player avatar: the Unreal Engine Mannequin (SK_Mannequin) driven by
-// UE rifle animations (idle / walk / run / reload / shoot) and holding the AK in
-// its right hand. The avatar lives in the world at the player's physics capsule
-// and faces the look direction. In first-person it is rendered only on a dedicated
-// layer the FP camera ignores (so you still see its shadow, not your own torso);
-// in third-person it is shown normally. See SetCameraMode.
+// Full-body player avatar: the Unreal Engine Mannequin (SK_Mannequin) driven by UE rifle
+// animations and holding the AK in its right hand. The avatar lives in the world at the player's
+// physics capsule and faces the look direction. In first-person it is rendered only on a dedicated
+// layer the FP camera ignores (so you still see its shadow, not your own torso); in third-person
+// it is shown normally. See SetCameraMode.
 //
-// The UE import fix, body/chest-logo textures and the in-hand weapon socket are
-// shared with the enemy soldier via buildUeMannequin. The UE clips bake root
-// motion onto the 'root' bone, which we lock every frame so locomotion plays in
-// place (the capsule drives movement).
+// The UE import fix, body/chest-logo textures and the in-hand weapon socket are shared with the
+// enemy soldier via buildUeMannequin. The UE clips bake root motion onto the 'root' bone, which
+// we lock every frame so locomotion plays in place (the capsule drives movement).
 //
-// Animation is layered into two independent body halves so the torso can act while
-// the legs keep moving. Each locomotion clip is split (splitClipByBones) into a
-// LOWER half (pelvis + legs) and an UPPER half (spine + arms + head). The lower
-// layer always crossfades idle/walk/run from the player's speed; the upper layer
-// normally mirrors that same locomotion, but a one-shot (reload/shoot) takes over
-// the upper layer alone — so you reload or fire while still walking. The two layers
-// drive disjoint bones, so they compose with no blend conflict on one mixer.
+// ANIM GRAPH. A small directional locomotion state machine — idle + four directional jogs
+// (jogF/jogB/jogL/jogR) chosen from the move direction relative to facing — plus a jump sub-graph
+// (jumpStart one-shot -> jumpFall loop) that overrides the body while airborne. Every state change
+// is a short crossfade; jog<->jog carries the gait phase so the feet don't skate; the directional
+// jogs are FOOT-SYNCED (playback rate = ground speed / authored jog speed) so they match the floor
+// at any speed. See UpdateLocomotion / DesiredLocoState / UpdateAirState / LocoTimeScale.
+//
+// The pose is layered into two independent body halves so the torso can act while the legs keep
+// moving. Each clip is split (splitClipByBones) into a LOWER half (pelvis + legs) and an UPPER half
+// (spine + arms + head). The lower layer plays the resolved locomotion; the upper layer normally
+// mirrors it, but a one-shot (reload/shoot) takes over the upper layer alone — so you reload or fire
+// while still moving. The two layers drive disjoint bones, so they compose on one mixer. An additive
+// spine lean (UpdateAimPose) points the gun at the look altitude while aiming.
 export default class PlayerBody extends Component{
     constructor(model, clips, scene, camera, textures = null, weapon = null, preOriented = false){
         super();
         this.name = 'PlayerBody';
         this.model = model;            // GLB scene (SkeletonUtils.clone)
-        this.clips = clips;            // { idle, walk, run, reload, shoot }
+        this.clips = clips;            // { idle, jogF, jogB, jogL, jogR, jumpStart, jumpFall, reload, shoot }
         this.scene = scene;
         this.camera = camera;
         this.textures = textures;      // { bodyColor, bodyNormal, logoColor, logoNormal } (legacy only)
         this.weapon = weapon;          // cloned SK_AK47 mesh for the right hand
         this.preOriented = preOriented;// true => Y-up, metre-scaled GLB with baked PBR
 
-        this.lowerActions = {};        // idle/walk/run, pelvis + legs
-        this.upperActions = {};        // idle/walk/run + reload/shoot, spine + arms + head
+        // --- Anim graph. The legs (lower) and torso (upper) are two independent layers on one
+        // mixer (disjoint bone sets — see splitClipByBones). Locomotion is a small directional
+        // state machine: idle + four directional jogs (jogF/jogB/jogL/jogR) chosen from the move
+        // direction relative to facing, plus a jump sub-graph (jumpStart one-shot -> jumpFall loop)
+        // that overrides the body while airborne. Every state change is a short crossfade. The
+        // torso mirrors the legs' state unless a reload/shoot one-shot owns it.
+        this.lowerActions = {};        // idle/jogF/jogB/jogL/jogR/jumpStart/jumpFall, pelvis + legs
+        this.upperActions = {};        // same locomotion + reload/shoot, spine + arms + head
         this.lowerState = null;        // locomotion name currently driving the legs
         this.upperState = null;        // locomotion name currently driving the torso
         this.oneShot = null;           // name of an in-progress reload/shoot, or null
+        // Jump sub-graph: null on the ground, else 'start' (jumpStart playing) or 'fall' (jumpFall
+        // loop). _groundedTimer debounces ground re-detection so the 1-frame contact flicker on
+        // take-off can't abort the jump and a brief mid-air graze can't snap the legs to idle.
+        this.airState = null;
+        this._groundedTimer = 0;
+        this.airExitDebounce = 0.1;    // ground must be stable this long (s) before we leave the air state
+        this._jumpRequested = false;   // set by the 'player.jump' event; re-arms the jumpStart launch
         this.playerControls = null;
         this.rootBone = null;
         this.rootRef = null;
         this.meshes = [];
 
-        // walk and run share the single UE jog clip; play it slower for a walk and
-        // a touch faster for a sprint so the two locomotion states read distinctly.
-        this.stateTimeScale = { idle: 1.0, walk: 0.6, run: 1.15, reload: 1.0, shoot: 1.5 };
+        // idle/jump/reload play at a fixed rate; the directional jogs (jogF/jogB/jogL/jogR)
+        // are FOOT-SYNCED instead — their playback rate is derived from the body's ground
+        // speed each frame (see LocoTimeScale), so the feet match the floor at any speed and
+        // the jog reads at its authored cadence. (A fixed slow timeScale skated the feet at
+        // ~2x ground speed — the "weird/glitchy" jog that didn't match the source FBX.)
+        // Names not listed default to 1.0 via the ?? in LocoTimeScale (jumpStart/jumpFall/jogs).
+        this.stateTimeScale = { idle: 1.0, reload: 1.0, shoot: 1.5 };
+
+        // Foot-sync constants. The jog bakes a ground/foot speed of authoredJogSpeed m/s at
+        // timeScale 1.0 (root motion 1020.002 cm * 0.01 armature scale / 1.7333 s, measured
+        // straight from the source jog FBX). Playing it at timeScale = bodySpeed/authoredJogSpeed
+        // makes the feet track the ground with no skate (~1.19x at the 7 m/s jog, ~1.90x at sprint).
+        this.authoredJogSpeed = 5.884628;                     // m/s baked into the jog at timeScale 1.0
+        this.invAuthoredJogSpeed = 1 / this.authoredJogSpeed; // per-(m/s) timeScale factor
+        // Keep cadence sane: no slow-mo crawl at low speed, no flutter at the top. The normal
+        // jog (1.19x) and sprint (1.90x) both sit inside this band so neither is clamped; the
+        // bounds only catch brief sub-jog speeds during accel/decel and act as a safety net
+        // (HorizontalSpeed is hard-clamped to maxSpeed, so 1.90x is the real max — 2.2 is insurance).
+        this.locoTimeScaleMin = 0.7;
+        this.locoTimeScaleMax = 2.2;
+        this.locoSpeedDeadzone = 0.5;                         // below this, idle owns the pose (matches UpdateLocomotion)
 
         // Vertical offset from the capsule-tracked position (camera height) down
         // to the feet. Capsule is ~1.9 m tall and the camera sits 0.5 above its
@@ -146,6 +181,28 @@ export default class PlayerBody extends Component{
         this._aimYawValue = 0;                            // eased / low-passed current yaw (rad)
         this._aimUp = new THREE.Vector3(0, 1, 0);         // world up — the yaw axis
         this._aimYawQ = new THREE.Quaternion();           // scratch: per-bone yaw rotation
+
+        // --- Hip/body stabilization on camera PROXIMITY. When the camera is close to the character
+        // (aiming, or collision pushing the boom in), the locomotion bob/sway reads as an unstable
+        // character right in front of the lens. We damp the PELVIS toward a settled (low-passed)
+        // pose — which calms the hips AND everything that rides them (torso, head, the close camera)
+        // — while the LEGS, children of the pelvis, keep their full stride so the feet still plant.
+        // Capped (hipStabMax < 1) so a subtle wobble always remains to convey the locomotion.
+        this._pelvisBone = null;
+        this._pelvisRefPos = new THREE.Vector3();
+        this._pelvisRefQuat = new THREE.Quaternion();
+        this._hipRefSeeded = false;
+        this._hipStab = 0;                                // eased current stabilization 0..1
+        this.hipStabMax = 0.9;                            // cap (1 = frozen hips); leaves a subtle wobble
+        this.hipStabLerp = 8;                             // ease rate (1/s) entering/leaving stabilization
+        this.hipRefLerp = 1.5;                            // low-pass rate (1/s) for the settled pelvis reference
+
+        // --- Recently-fired window. The additive aim pose ALSO activates when the camera is close
+        // and you're shooting from the hip (not aiming), so the gun re-points at the reticle for the
+        // collapsed close-camera framing. Set on each shot; decays so burst/auto fire keeps it on.
+        this._shootHold = 0;
+        this.shootHoldTime = 0.25;                        // s the aim pose lingers active after a shot
+        this.aimProxThreshold = 0.4;                      // camera proximity above which hip-fire engages the aim pose
     }
 
     SetupAnimations(){
@@ -154,15 +211,32 @@ export default class PlayerBody extends Component{
         // Bones from spine_01 up are the "upper body"; everything else is "lower".
         const upperBones = collectUpperBoneNames(this.model, 'spine_01');
 
-        // Locomotion clips drive BOTH layers: the lower half plays on the legs, the
-        // matching upper half plays on the torso whenever no one-shot owns it.
-        ['idle', 'walk', 'run'].forEach(name => {
+        // Looping locomotion (idle + the four directional jogs) drives BOTH layers: the lower
+        // half plays on the legs, the matching upper half on the torso whenever no one-shot owns it.
+        ['idle', 'jogF', 'jogB', 'jogL', 'jogR'].forEach(name => {
             const clip = this.clips[name];
             if(!clip){ return; }
             const { upper, lower } = splitClipByBones(clip, upperBones);
             this.lowerActions[name] = this.mixer.clipAction(lower);
             this.upperActions[name] = this.mixer.clipAction(upper);
         });
+
+        // Jump sub-graph (full-body, both layers): jumpStart is a one-shot launch that CLAMPS on
+        // its last frame, then hands off to the looping jumpFall (which is also the fall pose).
+        const jumpStartClip = this.clips['jumpStart'];
+        if(jumpStartClip){
+            const { upper, lower } = splitClipByBones(jumpStartClip, upperBones);
+            const lo = this.mixer.clipAction(lower); lo.setLoop(THREE.LoopOnce); lo.clampWhenFinished = true;
+            const up = this.mixer.clipAction(upper); up.setLoop(THREE.LoopOnce); up.clampWhenFinished = true;
+            this.lowerActions['jumpStart'] = lo;
+            this.upperActions['jumpStart'] = up;
+        }
+        const jumpFallClip = this.clips['jumpFall'];
+        if(jumpFallClip){
+            const { upper, lower } = splitClipByBones(jumpFallClip, upperBones);
+            this.lowerActions['jumpFall'] = this.mixer.clipAction(lower);
+            this.upperActions['jumpFall'] = this.mixer.clipAction(upper);
+        }
 
         // reload/shoot are UPPER-body-only one-shots that layer over the torso while
         // the legs keep their locomotion. Only the upper half of each clip is used.
@@ -219,6 +293,14 @@ export default class PlayerBody extends Component{
             if(spineBones[n]){ this.aimBones.push({ bone: spineBones[n], weight: spineWeights[n] }); }
         });
 
+        // Pelvis (hips) for proximity stabilization; seed the settled-pose reference from its bind.
+        this.model.traverse(o => { if(o.isBone && o.name === 'pelvis'){ this._pelvisBone = o; } });
+        if(this._pelvisBone){
+            this._pelvisRefPos.copy(this._pelvisBone.position);
+            this._pelvisRefQuat.copy(this._pelvisBone.quaternion);
+            this._hipRefSeeded = true;
+        }
+
         this.scene.add(this.modelRoot);
 
         // Let the level's shadow-casting light see UE_BODY_LAYER so the avatar still
@@ -236,6 +318,9 @@ export default class PlayerBody extends Component{
         // Optional body reactions to weapon actions.
         this.parent.RegisterEventHandler(this.OnReload, 'weapon.reload');
         this.parent.RegisterEventHandler(this.OnShoot, 'weapon.shoot');
+        // Take-off: PlayerControls fires this the frame a jump is issued (see its comment for why
+        // IsGrounded can't be used). We re-arm the jump sub-graph so the jumpStart pop always plays.
+        this.parent.RegisterEventHandler(this.OnJump, 'player.jump');
     }
 
     // Back-compat alias: the leg (locomotion) state is the body's overall state for
@@ -244,7 +329,8 @@ export default class PlayerBody extends Component{
 
     OnCameraMode = (msg) => { this.SetCameraMode(msg.mode); }
     OnReload = () => { this.PlayOneShot('reload'); }
-    OnShoot = () => { this.PlayOneShot('shoot'); }
+    OnShoot = () => { this.PlayOneShot('shoot'); this._shootHold = this.shootHoldTime; }
+    OnJump = () => { this._jumpRequested = true; }
 
     // The same full-body avatar is rendered in BOTH camera modes now: in TPS the
     // boom looks at it from behind; in FPS the camera rides its head bone and the
@@ -348,17 +434,53 @@ export default class PlayerBody extends Component{
         this.headDither.value += (target - this.headDither.value) * k;
     }
 
-    // Legs: crossfade idle/walk/run independently of anything the torso is doing.
-    SetLowerState(name){
+    // True for the four foot-synced directional jog states (NOT idle/jump/reload/shoot).
+    IsJogState(name){
+        return name === 'jogF' || name === 'jogB' || name === 'jogL' || name === 'jogR';
+    }
+
+    // Foot-synced timeScale for a locomotion action: the directional jogs scale with the body's
+    // ground speed so the feet match the floor; idle/jump/reload/shoot keep their fixed rate.
+    // Pinned to the floor under the idle deadzone so a stop/start never momentarily freezes the
+    // cadence mid-crossfade. Multiplies by a constant (never divides by speed) so it can't NaN.
+    LocoTimeScale(name){
+        if(!this.IsJogState(name)){
+            return this.stateTimeScale[name] ?? 1.0;
+        }
+        const speed = this.playerControls ? this.playerControls.HorizontalSpeed : 0;
+        if(speed <= this.locoSpeedDeadzone){ return this.locoTimeScaleMin; }
+        return THREE.MathUtils.clamp(
+            speed * this.invAuthoredJogSpeed, this.locoTimeScaleMin, this.locoTimeScaleMax);
+    }
+
+    // Short crossfade duration (s) for a locomotion state transition, AAA-style: snap into the
+    // jump launch, hand off start->fall quickly, settle into idle a touch faster than a plain
+    // direction change, and land back to the ground with a brief blend.
+    LocoFade(from, to){
+        if(to === 'jumpStart'){ return 0.08; }                         // into the launch
+        if(from === 'jumpStart' && to === 'jumpFall'){ return 0.10; }  // quick start -> fall
+        if(from === 'jumpStart' || from === 'jumpFall'){ return 0.15; }// landing -> ground
+        if(to === 'idle'){ return 0.12; }                              // settle to idle on stop
+        return 0.15;                                                   // jog<->jog direction change
+    }
+
+    // Legs: crossfade between locomotion states independently of anything the torso is doing.
+    SetLowerState(name, fade = 0.2){
         if(this.lowerState === name || !this.lowerActions[name]){ return; }
         const next = this.lowerActions[name];
+        const prev = this.lowerState ? this.lowerActions[this.lowerState] : null;
         next.reset();
         next.setEffectiveWeight(1.0);
-        next.setEffectiveTimeScale(this.stateTimeScale[name] ?? 1.0);
-        next.play();
-        if(this.lowerState && this.lowerActions[this.lowerState]){
-            next.crossFadeFrom(this.lowerActions[this.lowerState], 0.3, true);
+        next.setEffectiveTimeScale(this.LocoTimeScale(name));
+        // Carry the gait phase across a DIRECTION change so the feet don't snap to a new cycle
+        // phase and skate during the crossfade. The directional jogs have different durations, so
+        // match by NORMALISED phase. idle/jump transitions start fresh (reset()'s time 0 stands).
+        if(prev && this.IsJogState(name) && this.IsJogState(this.lowerState)){
+            const pd = prev.getClip().duration || 1;
+            next.time = (pd > 0 ? (prev.time % pd) / pd : 0) * (next.getClip().duration || 0);
         }
+        next.play();
+        if(prev){ next.crossFadeFrom(prev, fade, true); }
         this.lowerState = name;
     }
 
@@ -376,10 +498,12 @@ export default class PlayerBody extends Component{
         return !!(this.playerControls && this.playerControls.aiming && this.cameraMode === 'TPS');
     }
 
-    // The upper-body locomotion the torso should hold given the legs' state and aim:
-    // the aim pose while aiming, otherwise whatever the legs are doing.
+    // The upper-body locomotion the torso should hold given the legs' state and aim: the steady
+    // aim pose (idle upper) while aiming on the ground, otherwise mirror whatever the legs do
+    // (including the jump sub-states — the torso jumps/falls with the body).
     DesiredUpperState(legs){
-        return this.IsAiming() ? 'idle' : legs;
+        if(this.IsAiming() && legs !== 'jumpStart' && legs !== 'jumpFall'){ return 'idle'; }
+        return legs;
     }
 
     // Start an upper-body locomotion action, phase-matched to the legs so the torso
@@ -388,7 +512,7 @@ export default class PlayerBody extends Component{
         const next = this.upperActions[name];
         if(!next){ return; }
         next.reset();
-        next.setEffectiveTimeScale(this.stateTimeScale[name] ?? 1.0);
+        next.setEffectiveTimeScale(this.LocoTimeScale(name));
         next.play();
         if(this.lowerActions[name]){ next.time = this.lowerActions[name].time; }
         // Make `next` the upper-body primary (full weight now, others fade out) — this is what
@@ -459,26 +583,88 @@ export default class PlayerBody extends Component{
         this.PlayUpperLocomotion(this.DesiredUpperState(this.lowerState || 'idle'), 0.15);
     }
 
-    UpdateLocomotion(){
-        const speed = this.playerControls ? this.playerControls.HorizontalSpeed : 0;
-        const grounded = this.playerControls ? this.playerControls.IsGrounded : true;
-        let legs = 'idle';
-        if(speed > 0.5 && grounded){
-            legs = this.playerControls.isSprinting ? 'run' : 'walk';
+    // Ground locomotion state from the move direction RELATIVE to facing. PlayerControls.speed is
+    // the local (pre-yaw) velocity, and the body faces the same yaw, so speed.x/z are already
+    // relative to facing: +x = right, -z = forward. The dominant axis picks the directional jog
+    // (so W+D reads as a forward jog, A/D as a strafe), and the matching clip is what makes
+    // jogging backward look correct instead of moon-walking the forward clip.
+    DesiredLocoState(){
+        const pc = this.playerControls;
+        const speed = pc ? pc.HorizontalSpeed : 0;
+        if(speed <= 0.5){ return 'idle'; }
+        const vx = pc.speed.x, vz = pc.speed.z;
+        if(Math.abs(vz) >= Math.abs(vx)){ return vz < 0 ? 'jogF' : 'jogB'; }
+        return vx > 0 ? 'jogR' : 'jogL';
+    }
+
+    // Advance the jump sub-graph and return the loco state it wants: 'jumpStart' on entry, then
+    // 'jumpFall' once the (clamped) launch clip has played out — "quickly transition to fall".
+    UpdateAirState(){
+        if(this.airState === null){ this.airState = 'start'; return 'jumpStart'; }
+        if(this.airState === 'start'){
+            const a = this.lowerActions['jumpStart'];
+            if(!a || a.time >= a.getClip().duration - 0.02){ this.airState = 'fall'; return 'jumpFall'; }
+            return 'jumpStart';
         }
-        // Crossfade the upper locomotion a touch slower than the default so the sprint
-        // start/stop on the torso reads smooth rather than snapping between clips.
-        const desiredUpper = this.DesiredUpperState(legs);
+        return 'jumpFall';
+    }
+
+    UpdateLocomotion(t){
+        const pc = this.playerControls;
+        const grounded = pc ? pc.IsGrounded : true;
+        // Debounce ground re-detection: physics only sets canJump on contact, and the contact can
+        // flicker for a frame at take-off. Require stable ground before leaving the air state.
+        if(grounded){ this._groundedTimer += t; } else { this._groundedTimer = 0; }
+        const stableGround = this._groundedTimer >= this.airExitDebounce;
+
+        // A fresh take-off (incl. a bunny-hop re-jumped inside the landing debounce, where airState
+        // would still be 'fall') clears the sub-graph to null so UpdateAirState replays from
+        // 'start' below — SetLowerState('jumpStart') then reset()s the clamped launch clip so its
+        // pop plays again, instead of silently continuing the jumpFall loop.
+        if(this._jumpRequested){ this.airState = null; this._jumpRequested = false; }
+
+        let loco;
+        if(this.airState){
+            if(stableGround){ this.airState = null; loco = this.DesiredLocoState(); }  // landed
+            else { loco = this.UpdateAirState(); }
+        }else{
+            loco = grounded ? this.DesiredLocoState() : this.UpdateAirState();          // take off
+        }
+
+        // Legs always show the resolved locomotion; the torso mirrors it unless a one-shot owns it.
+        this.SetLowerState(loco, this.LocoFade(this.lowerState, loco));
+        const desiredUpper = this.DesiredUpperState(loco);
         if(!this.oneShot && this.upperState !== desiredUpper && this.upperActions[desiredUpper]){
-            this.PlayUpperLocomotion(desiredUpper, 0.3);
+            this.PlayUpperLocomotion(desiredUpper, this.LocoFade(this.upperState, desiredUpper));
         }
-        this.SetLowerState(legs);
+    }
+
+    // Per-frame foot-sync: drive the timeScale of the CURRENTLY active lower (and matching upper)
+    // directional-jog action from the live ground speed, so the feet keep matching the floor
+    // through accel/decel and across every direction + sprint. Writing ONE identical value to both
+    // layers keeps them phase-locked (the mixer advances both by the same delta*timeScale).
+    // NOTE: setEffectiveTimeScale() internally calls stopWarping(), which discards the duration-warp
+    // that crossFadeFrom(warp=true) sets up for a jog<->jog blend. That is intended: foot-sync OWNS
+    // the playback rate (timeScale = ground speed / authored speed), so the warp must yield to it.
+    // Gait phase is instead carried across direction changes by SetLowerState's normalised reseat.
+    UpdateLocoTimeScale(){
+        if(!this.IsJogState(this.lowerState)){ return; }
+        const ts = this.LocoTimeScale(this.lowerState);
+        const lower = this.lowerActions[this.lowerState];
+        if(lower){ lower.setEffectiveTimeScale(ts); }
+        // Mirror onto the upper layer only when it is running that same jog and no one-shot owns
+        // it — so reload/shoot keep their own timing and idle/jump stay at their fixed rate.
+        if(!this.oneShot && this.upperState === this.lowerState){
+            const upper = this.upperActions[this.upperState];
+            if(upper){ upper.setEffectiveTimeScale(ts); }
+        }
     }
 
     Update(t){
         if(!this.mixer){ return; }
 
         this.mixer.update(t);
+        if(this._shootHold > 0){ this._shootHold = Math.max(0, this._shootHold - t); }
 
         // Strip root motion so the clip animates in place; the capsule moves us.
         if(this.rootBone && this.rootRef){
@@ -492,14 +678,51 @@ export default class PlayerBody extends Component{
         const p = this.parent.Position;
         this.modelRoot.position.set(p.x, p.y + this.feetOffset, p.z);
         this.UpdateBodyYaw(t);
-        // Additive lean so the arms + gun aim at the right altitude while aiming. Runs
-        // after the body yaw (it reads the facing) and before the head dither (it moves
+        // Damp the hip bob when the camera is close (aim / collision) so the character is stable in
+        // front of the lens. Runs after the mixer/root-lock and BEFORE the spine aim lean, since the
+        // lean reads the (now-stabilized) pelvis as its parent.
+        this.StabilizeHips(t);
+        // Additive lean so the arms + gun aim at the right altitude while aiming (or hip-firing
+        // close). Runs after the body yaw (it reads the facing) and before the head dither (it moves
         // the head). It edits the animated pose this frame, on top of the mixer.
         this.UpdateAimPose(t);
 
-        this.UpdateLocomotion();
+        this.UpdateLocomotion(t);
+        this.UpdateLocoTimeScale();   // foot-sync the live directional-jog playback rate to ground speed
         // Dissolve the head when the camera crowds it (TPS aim-from-cover).
         this.UpdateHeadDither(t);
+    }
+
+    // Damp the pelvis (hips) toward a settled, low-passed pose when the camera is CLOSE, so the
+    // character is stable in front of the lens while aiming / when collision crowds the boom. The
+    // legs are children of the pelvis, so they keep their full stride (feet still plant); only the
+    // bob/sway that would ride up through the torso, head and the close camera is removed. The cap
+    // (hipStabMax) always leaves a subtle wobble to convey the locomotion. Proximity-driven with
+    // conditions: engages on aim OR collision proximity, and only while actually moving.
+    StabilizeHips(t){
+        if(!this._pelvisBone){ return; }
+        const pc = this.playerControls;
+        // Close = aiming (boom pulled in) OR raw camera proximity (collision push-in). TPS only.
+        const close = (this.cameraMode === 'TPS')
+            ? Math.max(this.IsAiming() ? 1 : 0, pc ? pc.CameraProximity : 0) : 0;
+        const moving = this.IsJogState(this.lowerState);
+        const target = (moving ? close : 0) * this.hipStabMax;
+        this._hipStab += (target - this._hipStab) * (1 - Math.exp(-this.hipStabLerp * t));
+
+        // Low-pass the freshly-animated pelvis (mixer just wrote it) into the bob-free reference.
+        const b = this._pelvisBone;
+        if(!this._hipRefSeeded){
+            this._pelvisRefPos.copy(b.position); this._pelvisRefQuat.copy(b.quaternion);
+            this._hipRefSeeded = true;
+        }
+        const k = 1 - Math.exp(-this.hipRefLerp * t);
+        this._pelvisRefPos.lerp(b.position, k);
+        this._pelvisRefQuat.slerp(b.quaternion, k);
+
+        if(this._hipStab < 0.001){ return; }
+        // Blend the live pelvis toward the settled pose: removes the bob/sway, keeps the baseline.
+        b.position.lerp(this._pelvisRefPos, this._hipStab);
+        b.quaternion.slerp(this._pelvisRefQuat, this._hipStab);
     }
 
     // Additive look-pitch lean: lean the spine chain by the look pitch so the arms + gun
@@ -511,14 +734,21 @@ export default class PlayerBody extends Component{
     // tracks the camera all the time, not just while aiming), eased in/out and clamped.
     UpdateAimPose(t){
         if(!this.aimBones.length){ return; }
-        // Lean whenever the third-person body is visible — the gun should always point where
-        // the camera looks up/down, not only during precise-aim. (FPS owns its own aim, so 0.)
-        const active = (this.cameraMode === 'TPS') ? 1 : 0;
+        // Apply the additive gun lean when AIMING, or — the close-camera HIP-FIRE case — when the
+        // camera is close (proximity) AND you're shooting: the collapsed close framing leaves the
+        // over-shoulder gun pointing beside the reticle, so the pitch lean + collision-yaw re-aim it
+        // along the new camera angle. Otherwise NOT aiming plays clean (the always-on lean made the
+        // running torso buzz). FPS owns its own aim, so 0 there.
+        const pc = this.playerControls;
+        const prox = (this.cameraMode === 'TPS' && pc) ? pc.CameraProximity : 0;
+        const hipFire = (this._shootHold > 0) && (prox >= this.aimProxThreshold);
+        const aimLean = this.IsAiming() || hipFire;
+        const active = (this.cameraMode === 'TPS' && aimLean) ? 1 : 0;
         this._aimPitchWeight += (active - this._aimPitchWeight) * (1 - Math.exp(-this.aimPitchLerp * t));
 
         // Ease the lean STRENGTH between the subtle idle value and the strong aim value so the
         // torso glides into/out of the aiming lean instead of popping (and stays calm running).
-        const targetGain = this.IsAiming() ? this.aimPitchGainAim : this.aimPitchGainIdle;
+        const targetGain = aimLean ? this.aimPitchGainAim : this.aimPitchGainIdle;
         this._aimGain += (targetGain - this._aimGain) * (1 - Math.exp(-this.aimGainLerp * t));
         if(this._aimPitchWeight < 0.001){ return; }
 
