@@ -2,9 +2,10 @@
 // hostility between factions decides who an agent is willing to attack:
 //
 //   * PLAYER  — you. Not an AI; never auto-selects targets.
-//   * ENEMY   — the standard hostile. Hunts the PLAYER, but treats a CHAOTIC as the
-//               bigger threat and will shoot one that gets near (see target priority
-//               in UeSoldierController.AcquireTarget). Ignores other enemies / neutrals.
+//   * ENEMY   — the standard hostile. ALWAYS hunts the PLAYER the moment it sees you and
+//               never breaks off while you're in view (see target priority in
+//               UeSoldierController.AcquireTarget); only when it can't see you does it turn
+//               on a CHAOTIC instead. Ignores other enemies / neutrals.
 //   * CHAOTIC — aggressive chaotic: attacks EVERYONE (player, enemies, neutrals, and
 //               even other chaotics). The wildcard that makes the arena a free-for-all.
 //   * NEUTRAL — passive. Attacks no one until provoked, then retaliates against whoever

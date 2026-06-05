@@ -71,8 +71,9 @@ class PatrolState extends State{
 }
 
 // Chase to get within firing range of the current target with a clear line of sight, then
-// hand off to the ranged AttackState. Re-acquires the target each tick so it can switch
-// victims mid-chase (e.g. an ENEMY abandons the player to deal with a nearer CHAOTIC).
+// hand off to the ranged AttackState. Re-acquires the target each tick so focus can shift
+// (a CHAOTIC swings to the nearest hostile; an ENEMY stays locked on a visible player and
+// only re-targets once you slip out of sight).
 class ChaseState extends State{
     constructor(parent){
         super(parent);

@@ -31,6 +31,11 @@ import * as THREE from 'three'
 // changing the silhouette of a falling body). Kept bones re-parent across these.
 const SKIP_BONE = /ik_|_twist|twist_|^root$|toe|ball|thumb|index|middle|ring|pinky|finger|weapon|prop|attach|_corrective|_offset/i;
 
+// Leg bones (both rigs): UE 'thigh_l/calf_l/foot_l', mutant 'MutantLeftUpLeg/Leg/...'. Their
+// sticks get extra bending stiffness for the first fraction of a second after death so the legs
+// buckle/fold a beat LATER than the upper body — a real corpse's knees don't go to jelly instantly.
+const LEG_BONE = /leg|thigh|calf|shin|knee|foot|ankle/i;
+
 const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _q = new THREE.Quaternion();
@@ -43,18 +48,24 @@ export default class Ragdoll{
     // options:
     //   groundY  : world Y the corpse rests on (the feet/ground height at death)
     //   impulse  : THREE.Vector3 initial knock-back velocity (m/s) — away from the killer
-    //   gravity  : downward accel (default -9.81)
-    constructor(skinnedMesh, { groundY = 0, impulse = null, gravity = -9.81 } = {}){
+    //   gravity  : downward accel — exaggerated (~2.2x real) so the corpse reads as HEAVY and
+    //              drops/crumples FAST instead of settling in slow motion (default -22).
+    //   twist    : initial angular velocity about vertical (rad/s) — spins the corpse as it falls
+    //              so deaths vary; pass a random per-death value (default 0 = no spin).
+    constructor(skinnedMesh, { groundY = 0, impulse = null, gravity = -22.0, twist = 0 } = {}){
         this.mesh = skinnedMesh;
         this.groundY = groundY;
         this.gravity = gravity;
         this.particleRadius = 0.06;
-        // Fairly heavy drag so the knock-back seed velocity bleeds off in ~half a second —
-        // the body topples and crumples roughly in place instead of sliding across the map.
-        this.damping = 0.94;           // air drag per step
-        this.friction = 0.5;           // horizontal damping while touching the ground
-        this.iterations = 6;           // constraint relaxation passes per step
-        this.substeps = 2;             // verlet sub-steps per frame (stability)
+        // Light air drag (close to 1.0). In verlet, damping caps the fall speed at
+        // gravityStep/(1-damping): the old 0.94 throttled terminal velocity to ~1.4 m/s, which
+        // is exactly why the death looked weightless and slow. At 0.985 the body accelerates to
+        // a heavy ~9 m/s and slams down; the knock-back seed velocity instead bleeds off against
+        // the floor (high ground friction below), not in the air.
+        this.damping = 0.985;          // air drag per step (high value == little drag)
+        this.friction = 0.32;          // strong horizontal damping on contact — a heavy body thuds, doesn't skid
+        this.iterations = 9;           // more relaxation passes so limbs hold length under the higher gravity
+        this.substeps = 3;             // verlet sub-steps per frame (stability at the faster fall)
         this.boneStiffness = 1.0;      // limb (parent) sticks hold their length hard
         // Brace stiffness must stay LOW: grandparent braces are what keep the body from
         // collapsing into a noodle, but if they're too strong they keep the corpse standing
@@ -62,12 +73,20 @@ export default class Ragdoll{
         // never falls — which is exactly why no ragdoll was visible). Keep it floppy.
         this.braceStiffness = 0.16;    // grandparent braces resist bending only gently
 
+        // Early leg rigidity: leg braces start MUCH stiffer and decay to braceStiffness over
+        // legStiffenDuration, so the legs hold the stance for a beat and the body folds from the
+        // torso first (natural), instead of every joint turning to jelly on the same frame.
+        this.legStiffenDuration = 0.45;   // seconds the legs stay firm before going limp
+        this.legBraceStart = 0.85;        // leg-brace stiffness at t=0 (vs 0.16 base) — high but <1 (stable)
+        this._age = 0;                    // seconds since death (drives the leg-stiffness decay)
+        this._legBraceK = this.legBraceStart;
+
         skinnedMesh.skeleton.bones.forEach(b => b.updateWorldMatrix(true, false));
 
-        this._build(impulse);
+        this._build(impulse, twist);
     }
 
-    _build(impulse){
+    _build(impulse, twist = 0){
         const bones = this.mesh.skeleton.bones;
         const keep = b => !SKIP_BONE.test(b.name);
 
@@ -107,14 +126,19 @@ export default class Ragdoll{
         // The graph root = the kept bone with no kept ancestor (pelvis / hips).
         this.root = this.nodes.find(n => !n.parent) || this.nodes[0];
 
-        // Distance sticks: limb (parent) + brace (grandparent, for bending stiffness).
+        // Distance sticks: limb (parent) + brace (grandparent, for bending stiffness). A stick is
+        // tagged `leg` when either endpoint is a leg bone, so _step can stiffen those braces early
+        // (see _legBraceK) and the legs fold a moment after the torso.
+        const isLeg = node => LEG_BONE.test(node.bone.name);
         this.sticks = [];
         for(const node of this.nodes){
             if(node.parent){
-                this.sticks.push({ a: node, b: node.parent, len: node.p.distanceTo(node.parent.p), k: this.boneStiffness });
+                this.sticks.push({ a: node, b: node.parent, len: node.p.distanceTo(node.parent.p),
+                    k: this.boneStiffness, leg: isLeg(node) || isLeg(node.parent) });
             }
             if(node.grand){
-                this.sticks.push({ a: node, b: node.grand, len: node.p.distanceTo(node.grand.p), k: this.braceStiffness });
+                this.sticks.push({ a: node, b: node.grand, len: node.p.distanceTo(node.grand.p),
+                    k: this.braceStiffness, leg: isLeg(node) || isLeg(node.grand) });
             }
         }
 
@@ -168,10 +192,32 @@ export default class Ragdoll{
                     .addScaledVector(_v.set(0, 1, 0), -dt0 * up);
             }
         }
+
+        // Twist seed: give the whole corpse an angular velocity about the vertical axis through its
+        // centre, so it ROTATES as it falls (each death spins a different way/amount). A point at
+        // horizontal offset r from the centre gets tangential velocity twist * (up × r) = twist *
+        // (r.z, 0, -r.x); seeding it into prev (composes with any knock-back above) makes the body
+        // pirouette/topple with variety instead of every corpse crumpling identically.
+        if(twist){
+            const dt0 = 1 / 60;
+            let cx = 0, cz = 0;
+            for(const node of this.nodes){ cx += node.p.x; cz += node.p.z; }
+            cx /= this.nodes.length; cz /= this.nodes.length;
+            for(const node of this.nodes){
+                const rx = node.p.x - cx, rz = node.p.z - cz;
+                node.prev.x -= twist * rz * dt0;             // prev = p - V*dt0, V = twist*(r.z,0,-r.x)
+                node.prev.z += twist * rx * dt0;
+            }
+        }
     }
 
     update(dt){
         if(!this.nodes){ return; }
+        // Age the corpse and decay the early leg rigidity from legBraceStart toward the base brace
+        // stiffness over legStiffenDuration (so the legs are firm at first, then go limp).
+        this._age += dt;
+        const firm = Math.max(0, 1 - this._age / this.legStiffenDuration);
+        this._legBraceK = this.braceStiffness + (this.legBraceStart - this.braceStiffness) * firm;
         const sub = Math.max(1e-3, Math.min(1 / 30, dt)) / this.substeps;
         for(let s = 0; s < this.substeps; s++){ this._step(sub); }
         this._applyToBones();
@@ -196,13 +242,15 @@ export default class Ragdoll{
                 node.p.z = node.prev.z + (node.p.z - node.prev.z) * this.friction;
             }
         }
-        // Relax distance constraints.
+        // Relax distance constraints. Leg sticks use the (decaying) boosted stiffness early so the
+        // legs hold their stance briefly; everything else uses its own constant stiffness.
         for(let it = 0; it < this.iterations; it++){
             for(const st of this.sticks){
                 _v.copy(st.b.p).sub(st.a.p);
                 const d = _v.length();
                 if(d < 1e-5){ continue; }
-                const diff = ((d - st.len) / d) * 0.5 * st.k;
+                const k = st.leg ? Math.max(st.k, this._legBraceK) : st.k;
+                const diff = ((d - st.len) / d) * 0.5 * k;
                 _v.multiplyScalar(diff);
                 st.a.p.add(_v);
                 st.b.p.sub(_v);

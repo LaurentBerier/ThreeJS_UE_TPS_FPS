@@ -509,6 +509,17 @@ export default class PlayerControls extends Component{
 
     }
 
+    // Collision push-in: how far the spring-arm has been dollied IN from its rest length by
+    // geometry (0 = fully out / no collision, →1 = jammed to the floor at tpsMinDistance). _curT
+    // is the smoothed 0..1 position along the pivot→rest spline (1 = fully out), and it only drops
+    // below 1 when the collision sweep pulls the camera in — so 1-_curT isolates the collision
+    // dolly cleanly (aim/sprint/look-down change the boom LENGTH, not _curT). Drives the TPS body's
+    // aim-yaw correction (PlayerBody) so the gun re-converges on the reticle when a wall crowds the
+    // camera in close and the over-the-shoulder framing collapses.
+    get CameraPushIn(){
+        return THREE.MathUtils.clamp(1 - this._curT, 0, 1);
+    }
+
     // Current horizontal move speed in m/s (used to drive the weapon bob).
     get HorizontalSpeed(){
         return this.speed.length();

@@ -94,16 +94,13 @@ export default class UeSoldierController extends Component{
         // ---- Faction / relationships ----
         // Who this soldier is willing to attack is decided by faction hostility (see
         // Factions.js). `target` is the entity currently being hunted/shot — selected each
-        // think-tick by AcquireTarget per the faction's priorities (an ENEMY prefers the
-        // player but switches to a near CHAOTIC; a CHAOTIC takes the nearest of anyone).
+        // think-tick by AcquireTarget per the faction's priorities (an ENEMY always locks onto
+        // the player on sight; a CHAOTIC takes the nearest of anyone).
         this.faction = faction;
         this.target = null;                       // current victim entity (player or another agent)
         this.provokedBy = null;                   // for NEUTRAL: retaliate against whoever hit it
         this.lastSeenPos = new THREE.Vector3();    // last spot the target was visible (chase memory)
         this.hasLastSeen = false;
-        // An ENEMY treats a CHAOTIC within this range as the priority threat over the player.
-        this.chaoticThreatRange = 16.0;
-        this.chaoticThreatRangeSq = this.chaoticThreatRange * this.chaoticThreatRange;
 
         // Death.
         this.dead = false;
@@ -277,8 +274,9 @@ export default class UeSoldierController extends Component{
 
     // Pick the best target for THIS soldier's faction from everyone currently visible:
     //   * CHAOTIC — attacks everyone: the nearest visible hostile.
-    //   * ENEMY   — hunts the player, but a CHAOTIC within chaoticThreatRange is the bigger
-    //               threat and takes priority; otherwise the player, otherwise nearest hostile.
+    //   * ENEMY   — hunts the PLAYER above all else: the instant it can see you it locks on and
+    //               never breaks off for another fight while you're in view. Only when you're out
+    //               of sight does it fall back to the nearest other hostile (e.g. a chaotic).
     //   * NEUTRAL — passive: only whoever provoked it (and only while still visible).
     // Sets this.target (+ remembers its last-seen position) and returns true if one was found.
     AcquireTarget(){
@@ -289,7 +287,6 @@ export default class UeSoldierController extends Component{
         }
 
         let best = null, bestDistSq = Infinity;
-        let chaotic = null, chaoticDistSq = Infinity;
         let playerVisible = false;
 
         for(const entity of this.manager.entities){
@@ -301,15 +298,12 @@ export default class UeSoldierController extends Component{
             const distSq = this.tempVec.copy(entity.Position).sub(this.position).lengthSq();
             if(distSq < bestDistSq){ bestDistSq = distSq; best = entity; }
             if(f === Faction.PLAYER){ playerVisible = true; }
-            if(f === Faction.CHAOTIC && distSq < chaoticDistSq){ chaoticDistSq = distSq; chaotic = entity; }
         }
 
+        // An ENEMY always prioritises the player the moment he is visible; otherwise (and for a
+        // CHAOTIC) it takes the nearest visible hostile.
         let chosen = best;
-        if(this.faction === Faction.ENEMY){
-            // The player is the focus — unless a chaotic is near enough to be the worse threat.
-            if(chaotic && chaoticDistSq <= this.chaoticThreatRangeSq){ chosen = chaotic; }
-            else if(playerVisible){ chosen = this.player; }
-        }
+        if(this.faction === Faction.ENEMY && playerVisible){ chosen = this.player; }
         this._setTarget(chosen);
         return !!chosen;
     }
@@ -534,16 +528,26 @@ export default class UeSoldierController extends Component{
 
         try{
             if(!this.skinnedmesh){ throw new Error('no skinned mesh'); }
-            // Knock the corpse away from whoever killed it (the current target / player).
+            // Knock the corpse away from whoever killed it, with per-death RANDOM variation (shove
+            // DIRECTION ±~26°, STRENGTH, LIFT, plus a random TWIST so the body spins as it falls)
+            // so no two soldier deaths look identical. Gravity + ground friction do the rest.
             const fromPos = (this.target && this.target.Position) ? this.target.Position : this.player.Position;
-            const impulse = this.tempVec.copy(this.position).sub(fromPos);
-            impulse.y = 0;
-            if(impulse.lengthSq() < 1e-4){ impulse.set(0, 0, 1); }
-            impulse.normalize().multiplyScalar(2.8);
-            impulse.y = 2.0;
+            const dir = this.tempVec.copy(this.position).sub(fromPos);
+            dir.y = 0;
+            if(dir.lengthSq() < 1e-4){ dir.set(0, 0, 1); }
+            dir.normalize();
+            const yaw = (Math.random() - 0.5) * 0.9;            // spread the shove ±~26°
+            const cy = Math.cos(yaw), sy = Math.sin(yaw);
+            const mag = 1.8 * (0.7 + Math.random() * 0.6);      // ~1.26 .. 2.34 m/s horizontal
+            const impulse = new THREE.Vector3(
+                (dir.x * cy - dir.z * sy) * mag,
+                1.1 * (0.8 + Math.random() * 0.6),              // lift 0.88 .. 1.54 m/s
+                (dir.x * sy + dir.z * cy) * mag);
+            const twist = (Math.random() - 0.5) * 5.0;          // ±2.5 rad/s spin while falling
             this.ragdoll = new Ragdoll(this.skinnedmesh, {
                 groundY: this.position.y,
-                impulse: impulse.clone(),
+                impulse,
+                twist,
             });
         }catch(e){
             console.error('Soldier ragdoll failed to build:', e);
@@ -591,6 +595,15 @@ export default class UeSoldierController extends Component{
                 const step = Math.min(this.desiredSpeed * t, dist);
                 this.desiredPos.copy(this.position).addScaledVector(this.tempVec, step);
 
+                // A navmesh-bound agent must NEVER move unclamped — that's what lets it slide
+                // straight THROUGH a wall and vanish. If we've lost the navmesh reference,
+                // re-acquire it at our current spot first so the clamp below always runs.
+                if(!this.navNode || this.navGroup === null){
+                    this.navGroup = this.navmesh.GetGroup(this.position);
+                    this.navNode = this.navGroup !== null
+                        ? this.navmesh.GetClosestNode(this.position, this.navGroup) : null;
+                }
+
                 if(this.navNode && this.navGroup !== null){
                     this.navNode = this.navmesh.ClampStep(
                         this.position, this.desiredPos, this.navNode, this.navGroup, this.clampTarget
@@ -599,8 +612,9 @@ export default class UeSoldierController extends Component{
                     moved = this.position.distanceTo(this.clampTarget);
                     this.position.copy(this.clampTarget);
                 }else{
-                    moved = this.position.distanceTo(this.desiredPos);
-                    this.position.copy(this.desiredPos);
+                    // Still off the mesh after re-acquiring: hold at the last on-mesh spot rather
+                    // than moving freely through geometry (recovery will re-route/teleport us).
+                    if(this.lastGoodPos.lengthSq() > 0){ this.position.copy(this.lastGoodPos); }
                 }
             }
         }

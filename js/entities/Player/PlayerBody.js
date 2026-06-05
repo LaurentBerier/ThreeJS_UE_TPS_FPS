@@ -131,6 +131,21 @@ export default class PlayerBody extends Component{
         this._aimPW = new THREE.Quaternion();
         this._aimPWInv = new THREE.Quaternion();
         this._aimDelta = new THREE.Quaternion();
+
+        // --- Additive YAW convergence on camera COLLISION push-in (TPS). At the normal boom length
+        // the over-the-shoulder framing puts the reticle in front of the gun, but when a wall dollies
+        // the camera IN close (collision), the framing collapses and the right-hand gun ends up
+        // pointing BESIDE the reticle. A small additive yaw on the SAME spine chain (about world up)
+        // toes the gun back onto the aim target, scaled by how far collision has pushed the camera in
+        // (PlayerControls.CameraPushIn, 0..1). Sign: + is CCW about vertical (turns the gun LEFT
+        // toward the reticle — the correction needed here); flip the sign if a future rig converges
+        // the other way. Layered on top of the pitch lean, eased/clamped the same way, and purely
+        // cosmetic (the shot ray stays camera-relative). Tune collisionAimYaw in-game like the pitch.
+        this.collisionAimYaw = THREE.MathUtils.degToRad(8); // full correction at max collision push-in (CCW+) — TUNE
+        this.aimYawMax  = THREE.MathUtils.degToRad(20);  // clamp so it can never wrench the torso sideways
+        this._aimYawValue = 0;                            // eased / low-passed current yaw (rad)
+        this._aimUp = new THREE.Vector3(0, 1, 0);         // world up — the yaw axis
+        this._aimYawQ = new THREE.Quaternion();           // scratch: per-bone yaw rotation
     }
 
     SetupAnimations(){
@@ -516,10 +531,26 @@ export default class PlayerBody extends Component{
         // feeding it straight to the spine made the upper body judder. Easing it smooths that out.
         this._aimPitchValue += (targetPitch - this._aimPitchValue) * (1 - Math.exp(-this.aimPitchLerp * t));
         const pitch = this._aimPitchValue * this._aimPitchWeight;
+
+        // Collision yaw convergence: a small toe-in so the right-hand gun re-points AT the reticle
+        // when a wall dollies the camera in close and the framing collapses. Scaled by the collision
+        // push-in (0 = no correction at rest, →full at a jammed-in camera); clamped and low-passed
+        // (shares the pitch ease rate so the two read as one smooth aim pose).
+        const pushIn = this.playerControls ? this.playerControls.CameraPushIn : 0;
+        const targetYaw = THREE.MathUtils.clamp(
+            this.collisionAimYaw * pushIn, -this.aimYawMax, this.aimYawMax);
+        this._aimYawValue += (targetYaw - this._aimYawValue) * (1 - Math.exp(-this.aimPitchLerp * t));
+        const yaw = this._aimYawValue * this._aimPitchWeight;
+
         // Character right axis in world: local +X carried through the yaw-only facing.
         this._aimRight.set(Math.cos(this._bodyYaw), 0, -Math.sin(this._bodyYaw));
         for(const ab of this.aimBones){
+            // World-space additive rotation for this bone's share: pitch about the character's
+            // right axis, yaw about world up. Compose as world quaternions (yaw * pitch), then
+            // convert into the bone's local space below.
             this._aimR.setFromAxisAngle(this._aimRight, pitch * ab.weight);
+            this._aimYawQ.setFromAxisAngle(this._aimUp, yaw * ab.weight);
+            this._aimR.premultiply(this._aimYawQ);
             ab.bone.parent.getWorldQuaternion(this._aimPW);   // reflects any earlier edits up-chain
             this._aimPWInv.copy(this._aimPW).invert();
             // newLocal = parentWorld^-1 * R * parentWorld * oldLocal

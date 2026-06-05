@@ -44,24 +44,51 @@ export default class CharacterController extends Component{
         // it round corners instead of orbiting them and arcing into walls.
         this.waypointRadius = 1.0;
 
-        // Stuck detection & recovery — OSCILLATION-PROOF. The old detector sampled raw displacement
-        // per interval, so an agent jittering/sliding against a wall (root motion shoves it, the
-        // navmesh clamp slides it tangentially) registered as "progress" and never recovered. This
-        // version anchors a position and only counts real progress once we travel progressRadius
-        // AWAY from that anchor; jittering in place can never reset it, so the no-progress timer
-        // always climbs when wedged. Escalation is purely time-based (decoupled from path churn):
-        // two repath tries, then — while chasing — a forward-biased teleport that can never fail to
-        // free the beast.
+        // ---- AAA path following (the real cornering fix) ----
+        // 1) Agent-radius clearance: every fresh path is pushed off the wall corners it would
+        //    otherwise hug (Navmesh.SmoothPath) so this wide beast has room to round them.
+        // 2) Look-ahead steering: the body steers toward a point a short distance AHEAD along the
+        //    path, not the next waypoint, so it anticipates and arcs through corners smoothly
+        //    instead of overshooting a corner waypoint and grinding into the wall past it.
+        // 3) Wall-slide deflection: if the navmesh clamp eats most of a step (we're pressed on a
+        //    wall), we steer along the direction the clamp DID allow — the wall tangent — so the
+        //    beast follows the wall around the corner instead of pushing straight into it.
+        // Effective agent radius. Bumped above the beast's ~0.7 m body so paths are held WELL off
+        // the walls (the navmesh isn't eroded, so this "narrows" the walkable corridors the beast
+        // is routed down — see Navmesh.SmoothPath). Too small and the wide body still clips the
+        // corner it's routed flush against; this keeps it walking down the middle.
+        this.agentClearance = 1.0;     // how far paths hold off wall corners (m) — narrows the route
+        this.lookAhead = 2.0;          // steer toward this far along the path (m) — smooths corners
+        this.turnRate = 11.0;          // body slerp rate toward the steer heading (rad/s-ish)
+        this.wallSlideBias = 0.8;      // 0..1: how hard a blocked step bends the heading to the wall tangent
+        this.blockedThreshold = 0.65;  // a step shorter than this fraction of intended == "wall contact"
+        this.isBlocked = false;        // set each frame by ApplyRootMotion, read by MoveAlongPath
+        this.blockedTangent = new THREE.Vector3();   // unit wall-tangent the clamp allowed (when blocked)
+        this.steerTarget = new THREE.Vector3();      // scratch: look-ahead steer point
+        this.steerFrom = new THREE.Vector3();        // scratch: look-ahead walk cursor
+        this.steerDir = new THREE.Vector3();         // scratch: final steer direction
+
+        // Stuck detection & recovery — WAYPOINT-CENTRIC. Progress is anchor-based and oscillation
+        // proof: it's only credited once we travel progressRadius AWAY from an anchor dropped the
+        // moment we last advanced, so jittering/sliding against a wall can never look like progress
+        // and the no-progress timer always climbs when wedged. Escalation models "keep trying the
+        // current waypoint for a couple seconds, with a retry or two, then give up on it and head
+        // somewhere else": retry the path at ~1 s and ~2 s, and if STILL wedged at ~2.5 s, ABANDON
+        // the waypoint and commit to a fresh detour node off the stuck axis (FindAnotherWaypoint).
+        // A teleport remains only as the last resort after several detours fail to free us.
         this.progressAnchor = new THREE.Vector3();
         this.lastGoodPos = new THREE.Vector3();   // last spot we were provably making progress
         this.progressRadius = 0.5;                // must travel this far from the anchor to count as progress
         this.progressRadiusSq = this.progressRadius * this.progressRadius;
         this.noProgressTime = 0.0;                // seconds since we last genuinely advanced
-        this.stuckRepathTime = 0.5;               // 1st reroute try
-        this.stuckRepath2Time = 0.95;             // 2nd reroute try
-        this.stuckTeleportTime = 1.4;             // still wedged => teleport (chasing) / random repath (else)
-        this._didRepath1 = false;
-        this._didRepath2 = false;
+        this.retryInterval = 1.0;                 // attempt a repath each ~1 s of no progress...
+        this.maxRetries = 2;                      // ...for at most this many retries (1-2) before giving up
+        this.stuckRetries = 0;                    // repaths already tried at the current wedge
+        this.abandonTime = 2.5;                   // total no-progress budget (≈2-3 s) before abandoning the waypoint
+        this.detourTimer = 0.0;                   // time still committed to a detour (suppresses target repaths)
+        this.detourDuration = 2.0;                // how long to commit to a detour so it isn't instantly overwritten
+        this.detourAttempts = 0;                  // consecutive detours that failed to free us
+        this.maxDetours = 3;                      // after this many failed detours => last-resort teleport
 
         // Death ragdoll (built on death; drives the skinned mesh in place of the mixer).
         this.dead = false;
@@ -183,16 +210,22 @@ export default class CharacterController extends Component{
         return false;
     }
 
+    // Build a path and give it agent-radius corner clearance so the wide beast can round corners
+    // (see Navmesh.SmoothPath). Falls back to the raw path if smoothing isn't possible.
+    SetPath(raw){
+        this.path = this.navmesh.SmoothPath(this.model.position, raw, this.agentClearance) || raw || [];
+    }
+
     NavigateToRandomPoint(){
         const node = this.navmesh.GetRandomNode(this.model.position, 50);
         if(!node){ return; }
-        this.path = this.navmesh.FindPath(this.model.position, node);
+        this.SetPath(this.navmesh.FindPath(this.model.position, node));
     }
 
     NavigateToPlayer(){
         this.tempVec.copy(this.player.Position);
         this.tempVec.y = 0.5;
-        this.path = this.navmesh.FindPath(this.model.position, this.tempVec);
+        this.SetPath(this.navmesh.FindPath(this.model.position, this.tempVec));
 
         /*
         if(this.path){
@@ -254,84 +287,200 @@ export default class CharacterController extends Component{
         }
     }
 
+    // Find the point `lookAhead` metres along the remaining path from the agent's current
+    // position (interpolating within the segment it lands in). Steering toward this look-ahead
+    // point — rather than the immediate next waypoint — lets the beast anticipate corners and arc
+    // through them smoothly instead of running to a corner waypoint and pivoting hard into the
+    // wall. Writes the result into outVec (kept at the model's Y) and returns it.
+    SteerTarget(lookAhead, outVec){
+        let remaining = lookAhead;
+        const from = this.steerFrom.set(this.model.position.x, 0, this.model.position.z);
+        for(let i = 0; i < this.path.length; i++){
+            const wp = this.path[i];
+            const segX = wp.x - from.x, segZ = wp.z - from.z;
+            const segLen = Math.sqrt(segX * segX + segZ * segZ);
+            if(segLen >= remaining || i === this.path.length - 1){
+                const f = segLen > 1e-6 ? Math.min(1.0, remaining / segLen) : 1.0;
+                return outVec.set(from.x + segX * f, this.model.position.y, from.z + segZ * f);
+            }
+            remaining -= segLen;
+            from.set(wp.x, 0, wp.z);
+        }
+        const last = this.path[this.path.length - 1];
+        return outVec.set(last.x, this.model.position.y, last.z);
+    }
+
     MoveAlongPath(t){
         if(!this.path?.length) return;
 
-        const target = this.path[0].clone().sub( this.model.position );
-        target.y = 0.0;
+        // Steer toward the look-ahead point (smooth cornering)...
+        this.SteerTarget(this.lookAhead, this.steerTarget);
+        this.steerDir.set(
+            this.steerTarget.x - this.model.position.x, 0.0,
+            this.steerTarget.z - this.model.position.z
+        );
+        // ...biased along the wall tangent when the last step was blocked, so the beast follows
+        // the wall around the corner instead of grinding into it.
+        if(this.isBlocked){
+            if(this.steerDir.lengthSq() > 1e-8){ this.steerDir.normalize(); }
+            this.steerDir.lerp(this.blockedTangent, this.wallSlideBias);
+        }
+        if(this.steerDir.lengthSq() > 1e-8){
+            this.steerDir.normalize();
+            this.YawToward(this.steerDir, this.tempRot);
+            this.model.quaternion.slerp(this.tempRot, this.turnRate * t);
+        }
 
-        if (target.lengthSq() > this.waypointRadius * this.waypointRadius) {
-            target.normalize();
-            this.YawToward(target, this.tempRot);
-            // Turn briskly so the agent doesn't arc wide into walls on corners (a touch faster
-            // now it's 2x scale and covering ground quicker).
-            this.model.quaternion.slerp(this.tempRot, 10.0 * t);
-        } else {
-            // Remove node from the path we calculated
+        // Advance past every waypoint we've reached this frame (root motion can skip several when
+        // moving fast or when clearance shifted them), so we never sit pinned waiting on one.
+        while(this.path.length){
+            const wp = this.path[0];
+            const dx = wp.x - this.model.position.x, dz = wp.z - this.model.position.z;
+            if(dx * dx + dz * dz > this.waypointRadius * this.waypointRadius){ break; }
             this.path.shift();
-
-            if(this.path.length===0){
-                this.Broadcast({topic: 'nav.end', agent: this});
-            }
+        }
+        if(this.path.length === 0){
+            this.detourTimer = 0.0;   // a detour (if any) is reached — let the chase repath resume
+            this.Broadcast({topic: 'nav.end', agent: this});
         }
     }
 
     ClearPath(){
+        this.detourTimer = 0.0;   // dropping the path also drops any detour commitment, so the
+                                  // chase repath isn't gated out next frame (avoids a stale-detour stall)
         if(this.path){
             this.path.length = 0;
         }
     }
 
-    // Oscillation-proof stuck detection. Runs every frame (cheap) while we should be travelling.
+    // Waypoint-centric stuck detection. Runs every frame (cheap) while we should be travelling.
     // "Progress" is only credited when we get progressRadius AWAY from an anchor we drop the
     // moment we last advanced — so sliding/jittering in place against a wall can never look like
-    // progress and the no-progress timer always climbs when wedged. Escalation is time-based and
-    // independent of how often the path is rebuilt: reroute, reroute again, then teleport.
+    // progress and the no-progress timer always climbs when wedged. Escalation models "try the
+    // current waypoint for a couple seconds, with a retry or two, then give up on it and head
+    // elsewhere": repath at ~1 s and ~2 s, then at ~2.5 s ABANDON the waypoint for a fresh detour.
     CheckStuck(t){
-        // Only meaningful while we're actively trying to walk a path.
-        if(!this.canMove || !this.path?.length){
+        // Always bleed down a committed detour, even when standing/attacking.
+        if(this.detourTimer > 0.0){ this.detourTimer -= t; }
+
+        // Not trying to travel (idle / attacking): nothing to recover from.
+        if(!this.canMove){
             this.noProgressTime = 0.0;
-            this._didRepath1 = this._didRepath2 = false;
+            this.stuckRetries = 0;
             this.progressAnchor.copy(this.model.position);
             return;
         }
 
-        // Genuine travel away from the anchor => real progress: re-anchor and clear the timers.
+        // Trying to travel but with NO path at all — e.g. the target keeps returning an empty path
+        // (player on a disconnected navmesh island / momentarily off-mesh). Treat that as being
+        // stuck too, so the timer still climbs to the last-resort escape instead of resetting every
+        // frame and freezing forever (an empty path otherwise bypasses ALL the recovery below).
+        if(!this.path?.length){
+            this.noProgressTime += t;
+            if(this.noProgressTime >= this.abandonTime){
+                this.FindAnotherWaypoint();   // detour to a reachable node, or SubtleTeleport if none
+                this.noProgressTime = 0.0;
+                this.stuckRetries = 0;
+                this.progressAnchor.copy(this.model.position);
+            }
+            return;
+        }
+
+        // Genuine travel away from the anchor => real progress: re-anchor and clear everything.
         if(this.progressAnchor.distanceToSquared(this.model.position) >= this.progressRadiusSq){
             this.progressAnchor.copy(this.model.position);
             this.lastGoodPos.copy(this.model.position);
             this.noProgressTime = 0.0;
-            this._didRepath1 = this._didRepath2 = false;
+            this.stuckRetries = 0;
+            this.detourAttempts = 0;   // we got moving again — forget the failed-detour streak
             return;
         }
 
         this.noProgressTime += t;
-        const chasing = this.stateMachine?.currentState?.Name === 'chase';
 
-        // Try 1: reroute (the player may have moved; a fresh path can route around the obstacle).
-        if(this.noProgressTime >= this.stuckRepathTime && !this._didRepath1){
-            this._didRepath1 = true;
-            this.RepathForRecovery();
-            return;
-        }
-        // Try 2: reroute once more.
-        if(this.noProgressTime >= this.stuckRepath2Time && !this._didRepath2){
-            this._didRepath2 = true;
-            this.RepathForRecovery();
-            return;
-        }
-        // Still pinned after two tries: break it loose. While chasing this is a forward-biased
-        // teleport (can never fail to free it); off-chase, a gentler fresh random route.
-        if(this.noProgressTime >= this.stuckTeleportTime){
-            if(chasing){
-                this.SubtleTeleport();
-            }else{
-                this.NavigateToRandomPoint();
+        // While committed to a detour, DON'T repath to the target (that route is what wedged us);
+        // let the detour play out. Only if even the detour stalls past the budget do we pick yet
+        // another waypoint.
+        if(this.detourTimer > 0.0){
+            if(this.noProgressTime >= this.abandonTime){
+                this.FindAnotherWaypoint();
+                this.noProgressTime = 0.0;
+                this.stuckRetries = 0;
+                this.progressAnchor.copy(this.model.position);
             }
-            this.noProgressTime = 0.0;
-            this._didRepath1 = this._didRepath2 = false;
-            this.progressAnchor.copy(this.model.position);
+            return;
         }
+
+        // Normal path: a retry or two (one per retryInterval of no progress) before the budget runs out.
+        if(this.noProgressTime < this.abandonTime){
+            const dueRetries = Math.min(this.maxRetries, Math.floor(this.noProgressTime / this.retryInterval));
+            if(dueRetries > this.stuckRetries){
+                this.stuckRetries = dueRetries;
+                this.RepathForRecovery();
+            }
+            return;
+        }
+
+        // Budget (~2-3 s) exhausted with retries spent: abandon this waypoint and go elsewhere.
+        this.FindAnotherWaypoint();
+        this.noProgressTime = 0.0;
+        this.stuckRetries = 0;
+        this.progressAnchor.copy(this.model.position);
+    }
+
+    // Give up on the unreachable waypoint and commit to a DIFFERENT one: a fresh, reachable navmesh
+    // node off the stuck axis, held for detourDuration so the chase logic can't instantly re-route
+    // us back into the same corner. Only after several detours in a row fail to free us (genuinely
+    // wedged / off-mesh) do we fall back to the last-resort teleport.
+    FindAnotherWaypoint(){
+        this.detourAttempts++;
+        // Several detours in a row failed to free us => genuinely wedged/off-mesh: last-resort hop.
+        if(this.detourAttempts > this.maxDetours){
+            this.SubtleTeleport();
+            this.detourAttempts = 0;
+            this.detourTimer = 0.0;
+            return;
+        }
+
+        // Pick a reachable alternate node and commit to it — but only if a real path exists, so we
+        // never freeze for detourDuration on an empty path.
+        const detour = this.PickDetourNode();
+        const raw = detour ? this.navmesh.FindPath(this.model.position, detour) : null;
+        if(raw && raw.length){
+            this.SetPath(raw);
+            this.detourTimer = this.detourDuration;
+            return;
+        }
+        // No usable detour (off the mesh / unreachable): teleport so we can never sit frozen.
+        this.SubtleTeleport();
+        this.detourAttempts = 0;
+        this.detourTimer = 0.0;
+    }
+
+    // Choose a detour destination: sample a few navmesh nodes and prefer one that is LATERAL to our
+    // stuck heading (i.e. sideways AROUND the obstacle, not back into it), well clear of the spot
+    // we're wedged on, with a mild pull toward the player so we still close in. Scores are kept in
+    // comparable ~0..1.5 ranges so lateral preference dominates without a far-player node swamping it.
+    PickDetourNode(){
+        const px = this.player.Position.x, pz = this.player.Position.z;
+        const hx = this.dir.x, hz = this.dir.z;            // current heading (the stuck direction)
+        const myToPlayer = Math.hypot(this.model.position.x - px, this.model.position.z - pz);
+        let best = null, bestScore = -Infinity;
+        for(const range of [2.5, 4.0, 5.5]){
+            for(let i = 0; i < 4; i++){
+                const node = this.navmesh.GetRandomNode(this.model.position, range);
+                if(!node){ continue; }
+                const dx = node.x - this.model.position.x, dz = node.z - this.model.position.z;
+                const len = Math.sqrt(dx * dx + dz * dz);
+                if(len < 0.75){ continue; }                // must actually take us somewhere new
+                const lateral = Math.abs((dx / len) * hz - (dz / len) * hx);   // |sideways vs heading| 0..1
+                const away = Math.min(1.5, Math.hypot(node.x - this.progressAnchor.x, node.z - this.progressAnchor.z) / 4.0);
+                const gain = (myToPlayer - Math.hypot(node.x - px, node.z - pz)) / 5.0;  // + if it closes on the player
+                const score = lateral * 1.5 + away * 0.8 + gain * 0.6;
+                if(score > bestScore){ bestScore = score; best = node; }
+            }
+        }
+        return best;
     }
 
     // Re-evaluate the path: hunt the player if we're onto them, otherwise resume patrol.
@@ -373,7 +522,8 @@ export default class CharacterController extends Component{
         }
         this.progressAnchor.copy(this.model.position);
         this.noProgressTime = 0.0;
-        this._didRepath1 = this._didRepath2 = false;
+        this.stuckRetries = 0;
+        this.detourTimer = 0.0;
         this.RepathForRecovery();
     }
 
@@ -387,16 +537,26 @@ export default class CharacterController extends Component{
         this.ClearPath();
 
         try{
-            // Knock the corpse away from the player (horizontal) with some lift.
-            const impulse = this.tempVec.copy(this.model.position).sub(this.player.Position);
-            impulse.y = 0;
-            if(impulse.lengthSq() < 1e-4){ impulse.set(0, 0, 1); }
-            impulse.normalize().multiplyScalar(3.0);
-            impulse.y = 2.2;
+            // Knock the corpse away from the player, with per-death RANDOM variation so no two
+            // crumples look alike: jitter the shove DIRECTION (±~26°), STRENGTH and LIFT, plus a
+            // random TWIST so the body spins a little as it falls. Gravity + friction do the rest.
+            const dir = this.tempVec.copy(this.model.position).sub(this.player.Position);
+            dir.y = 0;
+            if(dir.lengthSq() < 1e-4){ dir.set(0, 0, 1); }
+            dir.normalize();
+            const yaw = (Math.random() - 0.5) * 0.9;            // spread the shove ±~26°
+            const cy = Math.cos(yaw), sy = Math.sin(yaw);
+            const mag = 2.0 * (0.7 + Math.random() * 0.6);      // 1.4 .. 2.6 m/s horizontal
+            const impulse = new THREE.Vector3(
+                (dir.x * cy - dir.z * sy) * mag,
+                1.2 * (0.8 + Math.random() * 0.6),              // lift 0.96 .. 1.68 m/s
+                (dir.x * sy + dir.z * cy) * mag);
+            const twist = (Math.random() - 0.5) * 5.0;          // ±2.5 rad/s spin while falling
 
             this.ragdoll = new Ragdoll(this.skinnedmesh, {
                 groundY: this.model.position.y,
-                impulse: impulse.clone(),
+                impulse,
+                twist,
             });
         }catch(e){
             console.error('Mutant ragdoll failed to build:', e);
@@ -407,7 +567,18 @@ export default class CharacterController extends Component{
     }
 
     ApplyRootMotion(){
+        this.isBlocked = false;
         if(this.canMove){
+            // Defensive: a navmesh-bound agent must NEVER move unclamped — that's what let root
+            // motion run the beast straight THROUGH a wall/container and vanish off the map (then
+            // the failsafe teleported it back). If we've lost our navmesh reference, re-acquire it
+            // at our current spot first; the clamp below then keeps every step on the mesh.
+            if(!this.navNode || this.navGroup === null){
+                this.navGroup = this.navmesh.GetGroup(this.model.position);
+                this.navNode = this.navGroup !== null
+                    ? this.navmesh.GetClosestNode(this.model.position, this.navGroup) : null;
+            }
+
             const vel = this.rootBone.position.clone();
             // Convert the root bone's local displacement to world metres with the SAME
             // scale applied to the model, so a 2x-bigger beast strides 2x as far per cycle
@@ -429,9 +600,27 @@ export default class CharacterController extends Component{
                     // clampStep projects onto the mesh plane; keep the original
                     // height so the enemy doesn't pop vertically.
                     this.clampTarget.y = this.desiredPos.y;
+
+                    // Wall-contact test: how much of the intended horizontal step survived the
+                    // navmesh clamp? If the clamp slid us along a boundary and ate most of the
+                    // step, we're pressed on a wall/corner — record the (unit) direction the clamp
+                    // DID allow (the wall tangent) so MoveAlongPath steers along the wall and the
+                    // beast rounds the corner instead of grinding into it.
+                    const intendedLen = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
+                    const moveX = this.clampTarget.x - this.model.position.x;
+                    const moveZ = this.clampTarget.z - this.model.position.z;
+                    const movedLen = Math.sqrt(moveX * moveX + moveZ * moveZ);
+                    if(intendedLen > 1e-4 && movedLen > 1e-4 && movedLen < this.blockedThreshold * intendedLen){
+                        this.blockedTangent.set(moveX / movedLen, 0, moveZ / movedLen);
+                        this.isBlocked = true;
+                    }
+
                     this.model.position.copy(this.clampTarget);
                 } else {
-                    this.model.position.add(vel);
+                    // Still no navmesh reference even after re-acquiring => genuinely off the mesh.
+                    // Do NOT move freely (that's the through-the-wall escape). Snap back to the last
+                    // spot we were provably on the mesh and let stuck-recovery take it from there.
+                    if(this.lastGoodPos.lengthSq() > 0){ this.model.position.copy(this.lastGoodPos); }
                 }
             }
         }

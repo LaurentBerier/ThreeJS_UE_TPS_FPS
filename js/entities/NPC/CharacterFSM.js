@@ -130,7 +130,10 @@ class ChaseState extends State{
     }
 
     Update(t){
-        if(this.updateTimer <= 0.0){
+        // Repath to the player on a cadence — UNLESS the controller is committed to a stuck-recovery
+        // detour (detourTimer), in which case we let that alternate waypoint play out instead of
+        // immediately re-routing back into the corner that wedged us.
+        if(this.parent.proxy.detourTimer <= 0.0 && this.updateTimer <= 0.0){
             this.parent.proxy.NavigateToPlayer();
             this.updateTimer = this.updateFrequency;
         }
