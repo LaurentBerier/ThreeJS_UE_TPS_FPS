@@ -52,6 +52,57 @@ canvas {
   width: 0;
   height: 2%;
   background-color: white;
+  /* Above the black curtain so the boot loading bar stays visible on it. */
+  z-index: 60;
+}
+
+/* Full-screen black curtain that cross-fades the onboarding states. Sits above the
+   menu/loading/game but below the boot progress bar; starts opaque (page fades in).
+   Driven from entry.js by toggling opacity between 1 (black) and 0 (clear). */
+#fade {
+  position: fixed;
+  inset: 0;
+  background-color: #000;
+  opacity: 1;
+  z-index: 50;
+  pointer-events: none;
+  transition: opacity 0.6s ease;
+}
+
+/* Loading screen revealed (curtain clear) while the game is built. Below the
+   curtain so a fade-to-black covers it. Its own black bg hides the live render
+   that starts behind it. */
+#loading {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background-color: #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 22px;
+  visibility: hidden;
+}
+
+#loading p {
+  margin: 0;
+  letter-spacing: 6px;
+  font-size: 1.1em;
+  opacity: 0.75;
+}
+
+#loading .spinner {
+  width: 46px;
+  height: 46px;
+  border: 3px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 #health_container {

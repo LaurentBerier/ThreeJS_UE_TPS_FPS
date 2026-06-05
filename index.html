@@ -60,6 +60,17 @@
 
     <div id="progress"></div>
 
+    <!-- Loading screen shown (under the fade curtain) between the menu and gameplay
+         while the level + entities are built. -->
+    <div id="loading">
+      <div class="spinner"></div>
+      <p>LOADING</p>
+    </div>
+
+    <!-- Full-screen black curtain used to cross-fade between onboarding states
+         (boot -> menu -> loading -> gameplay). Starts opaque so the page fades in. -->
+    <div id="fade"></div>
+
     <script type="module" src="js/entry.js"></script>
   </body>
 </html>

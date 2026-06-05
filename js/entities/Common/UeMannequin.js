@@ -193,6 +193,42 @@ export function buildUeMannequin(model, { textures = null, weapon = null, preOri
 // into WEAPON_GRIP above.
 export const WEAPON_GRIP_DEFAULT = WEAPON_GRIP;
 
+// Collect the names of every bone in the "upper body": the split bone (default
+// 'spine_01', the first spine joint above the pelvis on the UE skeleton) and all of
+// its descendants — the whole torso, arms, hands, neck and head. Everything NOT in
+// this set (pelvis + leg chains + the root-level IK helpers) is the "lower body".
+//
+// Used to layer a one-shot upper-body action (reload / shoot / aim) over a separate
+// lower-body locomotion clip so the legs keep walking while the torso acts. See
+// splitClipByBones and PlayerBody's two-layer animation setup.
+export function collectUpperBoneNames(model, splitBoneName = 'spine_01'){
+    let splitBone = null;
+    model.traverse(o => { if(o.isBone && o.name === splitBoneName){ splitBone = o; } });
+    const names = new Set();
+    if(splitBone){ splitBone.traverse(o => { if(o.isBone){ names.add(o.name); } }); }
+    return names;
+}
+
+// Split a full-body clip into a disjoint { upper, lower } pair of clips by bone
+// membership: a track goes to the upper clip when its target bone is in
+// upperBoneNames, otherwise to the lower clip. The two clips together still cover
+// every original track, so playing both (each at weight 1) on one mixer reproduces
+// the full-body animation — but because they drive disjoint bone sets they can also
+// be driven independently (lower = walk, upper = reload) with no blend conflict.
+// Tracks are cloned so the returned clips are fully self-contained.
+export function splitClipByBones(clip, upperBoneNames){
+    const upperTracks = [];
+    const lowerTracks = [];
+    for(const track of clip.tracks){
+        const boneName = track.name.split('.')[0];
+        (upperBoneNames.has(boneName) ? upperTracks : lowerTracks).push(track.clone());
+    }
+    return {
+        upper: new THREE.AnimationClip(`${clip.name}_upper`, clip.duration, upperTracks, clip.blendMode),
+        lower: new THREE.AnimationClip(`${clip.name}_lower`, clip.duration, lowerTracks, clip.blendMode),
+    };
+}
+
 // Re-target a legacy-bake UE rifle clip onto the pre-oriented (Blender) rig.
 //
 // The two rigs come from the same UE FBX, and a per-bone comparison shows every bone

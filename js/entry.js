@@ -32,6 +32,12 @@ import Input from './Input.js'
 const level = 'assets/level.glb'
 const navmesh = 'assets/navmesh.obj'
 
+// Onboarding fade timings. FADE_MS must match the #fade opacity transition in
+// style.css; MIN_LOADING_MS keeps the loading screen up long enough to read even
+// though the assets are already pre-loaded and entity setup is near-instant.
+const FADE_MS = 600
+const MIN_LOADING_MS = 900
+
 // Enemy NPC keeps the mutant rig (root-motion locomotion). Spaces URL-encoded.
 const mutant = 'assets/animations/mutant.fbx'
 const idleAnim = 'assets/animations/mutant%20breathing%20idle.fbx'
@@ -124,6 +130,7 @@ class FPSGameApp{
 		this.renderer.outputEncoding = THREE.sRGBEncoding;
 
     this.camera = new THREE.PerspectiveCamera();
+    this.camera.fov = 60;   // wider base FOV (precise-aim still zooms to its own tight FOV)
     this.camera.near = 0.01;
 
     // create an AudioListener and add it to the camera
@@ -204,6 +211,20 @@ class FPSGameApp{
   ShowMenu(visible=true){
     document.getElementById('menu').style.visibility = visible?'visible':'hidden';
   }
+
+  ShowLoading(visible=true){
+    document.getElementById('loading').style.visibility = visible?'visible':'hidden';
+  }
+
+  // Drive the full-screen black curtain (#fade). opaque=true fades to black,
+  // opaque=false fades back to clear. Resolves once the CSS transition has elapsed
+  // (FADE_MS mirrors the 0.6s opacity transition in style.css).
+  FadeTo(opaque){
+    document.getElementById('fade').style.opacity = opaque ? '1' : '0';
+    return new Promise(res => setTimeout(res, FADE_MS));
+  }
+
+  Delay(ms){ return new Promise(res => setTimeout(res, ms)); }
 
   async LoadAssets(){
     const gltfLoader = new GLTFLoader();
@@ -328,7 +349,9 @@ class FPSGameApp{
     this.assets['ammoboxShape'] = createConvexHullShape(this.assets['ammobox']);
 
     this.HideProgress();
+    // Reveal the start menu by fading the black boot curtain out from over it.
     this.ShowMenu();
+    await this.FadeTo(false);
   }
 
   EntitySetup(){
@@ -424,15 +447,36 @@ class FPSGameApp{
     this.animFrameId = window.requestAnimationFrame(this.OnAnimationFrameHandler);
   }
 
-  StartGame = ()=>{
+  StartGame = async ()=>{
+    // Guard against a double-click re-entering the transition mid-fade.
+    if(this.starting){ return; }
+    this.starting = true;
+
+    // 1. Fade the menu out to black, then swap it for the loading screen.
+    await this.FadeTo(true);
+    this.ShowMenu(false);
+    this.ShowLoading(true);
+    // 2. Fade the loading screen in from black.
+    await this.FadeTo(false);
+
+    // 3. Build the game behind the loading screen (its opaque bg hides the live
+    //    render that begins inside EntitySetup). Yield a frame first so the loading
+    //    screen paints before the synchronous setup briefly blocks the main thread.
     window.cancelAnimationFrame(this.animFrameId);
     Input.ClearEventListners();
-
-    //Create entities and physics
     this.scene.clear();
     this.SetupPhysics();
+    await this.Delay(0);
     this.EntitySetup();
+    await this.Delay(MIN_LOADING_MS);
+
+    // 4. Fade to black over the loading screen, hide it, then fade gameplay in.
+    await this.FadeTo(true);
+    this.ShowLoading(false);
     this.ShowMenu(false);
+    await this.FadeTo(false);
+
+    this.starting = false;
   }
 
   // resize

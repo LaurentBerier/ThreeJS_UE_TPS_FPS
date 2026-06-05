@@ -3,6 +3,7 @@ import Component from '../../Component.js'
 import {Ammo, AmmoHelper, CollisionFilterGroups} from '../../AmmoLib.js'
 import UeSoldierFSM from './UeSoldierFSM.js'
 import { buildUeMannequin } from '../Common/UeMannequin.js'
+import { installProximityDither } from '../Common/CameraDither.js'
 
 
 // A velocity-driven UE Mannequin enemy ("soldier"). It shares the player's rig,
@@ -129,6 +130,15 @@ export default class UeSoldierController extends Component{
         }
 
         this.scene.add(this.modelRoot);
+
+        // The TPS camera passes straight through enemies (it only collides with static
+        // geometry), so dither-dissolve this soldier's body + gun when the lens clips into
+        // it — far more elegant than seeing the inside of the mesh. Materials are already
+        // per-instance clones (buildUeMannequin), so this only affects this soldier.
+        built.meshes.forEach(mesh => {
+            const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+            mats.forEach(m => installProximityDither(m, { near: 0.35, far: 1.0 }));
+        });
 
         this.SetupMuzzleFlash();
 

@@ -45,7 +45,8 @@ export default class PlayerControls extends Component{
         // The same yaw/pitch (this.angles) drives both; only the camera placement
         // differs. Press V to toggle. Combat aim is FP-authoritative in v1.
         this.cameraMode = 'TPS';
-        this.tpsDistance = 3.0;   // boom length behind the player (metres)
+        this.tpsDistance = 2.6;   // boom length behind the player (metres)
+        this.tpsMinDistance = 0.6;// HARD floor on the boom: collision never dollies closer than this (see UpdateCamera)
         this.tpsPivotHeight = 0.25; // pivot above eye height
         this.tpsShoulder = 0.85;  // lateral rig shift: bigger => character further frame-left, reticle further right (in front of the gun)
         this._vLatch = false;
@@ -83,26 +84,50 @@ export default class PlayerControls extends Component{
 
         // --- TPS boom collision (AAA-smooth, radial). The boom is a SWEPT SPHERE
         // (radius camRadius) cast from the pivot to where the camera wants to sit; if a
-        // wall blocks it, the camera simply DOLLIES straight in along the view axis —
-        // it "gets closer to the character" — keeping camRadius of clearance so it never
-        // clips. There is NO sideways re-projection, so the camera never slides against
-        // the player's input (that was the source of the jumps/fighting). As you pan,
-        // the unobstructed length changes continuously, so the camera glides smoothly
-        // along the wall on its own. Orientation always tracks the look input exactly
-        // (no positional lag on the look), so aiming stays 1:1.
+        // wall blocks it, the camera DOLLIES straight in along the view axis — it "gets
+        // closer to the character" — stopping at the swept clearance (sphere centre held
+        // camRadius off the surface) so it can NEVER clip. There is NO sideways
+        // re-projection, so the camera never slides against the player's input. As you pan,
+        // the unobstructed length changes continuously, so the camera glides smoothly along
+        // the wall on its own. Orientation always tracks the look input exactly, so aiming
+        // stays 1:1.
         //
-        // The boom LENGTH is the only thing smoothed: pulling IN is quick but bounded so
-        // it can never lag into a wall; returning OUT (a wall clearing) is slow and
-        // gentle so it never snaps or "fast-readjusts".
-        this.camRadius = 0.32;          // clearance kept from geometry (metres)
-        this.pullInRate = 14.0;         // boom-shortening smoothing (1/s) — quick, soft
-        this.returnRate = 3.5;          // boom-lengthening smoothing (1/s) — slow, elegant
-        this.softLag = 0.18;            // max the boom may trail the hard limit while pulling in (< camRadius => still no clip)
-        this._curLen = this.tpsDistance; // smoothed boom length
+        // Pull-in is INSTANT — the camera snaps to the clearance the very frame a wall
+        // appears, so it can never lag into geometry for even one frame. Return-out (a wall
+        // clearing) is slow and gentle so it never snaps. That asymmetry is what guarantees
+        // no-clip while still reading as smooth and cinematic.
+        this.camRadius = 0.24;          // clearance kept from geometry (metres)
+        this.returnRate = 3.0;          // boom-lengthening smoothing (1/s) — slow, elegant
+        this.shoulderSlideRate = 2.5;   // lateral shoulder-slide ease (1/s) — long & cinematic, both ways; a camRadius safety backstop keeps it no-clip
+        this._curLen = this.tpsDistance; // current boom length (instant in, eased out)
+        this._curShoulderFactor = 1;    // 0..1 collision clamp on the shoulder offset (slides to 0 at a side wall)
+        this._shoulderInit = false;
         this._camTarget = new THREE.Vector3();  // (first-person eye target)
+        this._cCam = new THREE.Vector3();       // centred camera point (behind player, pre-shoulder)
         this._camInit = false;
         this._free = new THREE.Vector3();
         this._sweepRes = { point: new THREE.Vector3(), normal: new THREE.Vector3(), fraction: 1 };
+
+        // --- Sprint pullback. Running pulls the boom back a little for a faster, more
+        // cinematic sense of speed. Eased on its own gentle rate so it breathes in/out
+        // rather than snapping when the player starts/stops sprinting.
+        this.tpsSprintExtra = 0.7;      // extra boom length while sprinting (m)
+        this.sprintLerpSpeed = 3.5;     // gentle ease for the sprint pullback (1/s)
+        this._curSprint = 0.0;          // smoothed sprint extension
+
+        // --- Collision FOV. The camera NEVER imposes any rotation to dodge geometry; the
+        // only thing it may do is dolly along the look axis — pull away or push IN toward
+        // the player (down to a first-person POV at the extreme, which we try to avoid but
+        // allow). When collision PUSHES the boom in, we open the FOV a little so the closer
+        // shot feels less claustrophobic and reveals more around the character. Suspended
+        // while aiming, where the precise-aim zoom FOV must stay exact.
+        this.collisionFovExtra = 12;    // extra degrees of FOV at a full collision push-in
+
+        // --- High-angle pull-back. The further DOWN the camera looks, the further the boom
+        // pulls back & up into a high overhead view, opening a gap so objects can travel
+        // between the camera and the character. This only raises the DESIRED length —
+        // collision still clamps it to the clearance, so it never trades away no-clip.
+        this.tpsLookDownExtra = 1.6;    // extra boom length at full look-down (m) — pull back
 
         // --- Camera shake / recoil ("juice"): a subtle trauma-driven shake on taking
         // a hit and a tiny kick per shot. Kept ROTATION-ONLY (no positional shake) and
@@ -206,6 +231,7 @@ export default class PlayerControls extends Component{
         // snap to the new spot next frame rather than flying the camera through the
         // body, and swap the near plane (FPS culls the head).
         this._camInit = false;
+        this._shoulderInit = false;
         this.ApplyNearForMode();
         this.Broadcast({topic: 'camera.mode', mode: this.cameraMode});
         const label = document.getElementById('camera_mode');
@@ -218,7 +244,9 @@ export default class PlayerControls extends Component{
     }
 
     // --- Camera juice hooks ---
-    OnPlayerHit = () => { this.AddTrauma(0.18); }
+    // Getting shot: a small, quickly-settling shake — rotation ONLY (ApplyCameraShake
+    // never moves the camera in space), so the view jolts but the position never lurches.
+    OnPlayerHit = () => { this.AddTrauma(0.55); }
     OnWeaponShoot = () => { this.AddRecoil(); }
 
     AddTrauma(amount){ this.trauma = Math.min(1.0, this.trauma + amount); }
@@ -284,62 +312,134 @@ export default class PlayerControls extends Component{
             return;
         }
 
+        // Pitch as a normalised factor: -1 looking straight down, +1 straight up.
+        // downN ramps 0 (level/up) -> 1 (straight down) and drives the high-angle behaviour.
+        const pitchN = THREE.MathUtils.clamp(this.angles.x / (Math.PI * 0.5), -1, 1);
+        const downN = Math.max(0, -pitchN);
+
+        // Sprint pullback: ease an extra boom length in/out on its own gentle rate while
+        // running (suspended while aiming so precise-aim stays tight). Folded into the
+        // distance target below, so it rides the same smooth path as everything else.
+        const sprintTarget = (this.isSprinting && !this.aiming) ? this.tpsSprintExtra : 0;
+        this._curSprint += (sprintTarget - this._curSprint) * (1 - Math.exp(-this.sprintLerpSpeed * t));
+
+        // Looking DOWN pulls the boom back & up into a high-angle view (squared so it stays
+        // gentle at shallow angles), opening a gap so objects can pass between the camera
+        // and the character rather than being shoved against the lens.
+        const lookDownExtra = downN * downN * this.tpsLookDownExtra;
+
         // Ease the boom length / shoulder offset / FOV toward their precise-aim or
         // hip targets so toggling right click glides in and out of the zoom.
         const k = Math.min(1, t * this.aimLerpSpeed);
-        const targetDistance = this.aiming ? this.tpsAimDistance : this.tpsDistance;
+        const targetDistance = (this.aiming ? this.tpsAimDistance : this.tpsDistance) + this._curSprint + lookDownExtra;
         const targetShoulder = this.aiming ? this.tpsAimShoulder : this.tpsShoulder;
         const targetFov      = this.aiming ? this.tpsAimFov      : this.baseFov;
         this._curDistance += (targetDistance - this._curDistance) * k;
         this._curShoulder += (targetShoulder - this._curShoulder) * k;
         this._curFov      += (targetFov      - this._curFov)      * k;
-        this.camera.fov = this._curFov;
-        this.camera.updateProjectionMatrix();
+        // FOV is applied AFTER the boom length is resolved (below), so a collision
+        // push-in can widen it.
 
-        // TPS orbit-follow boom: pivot near the head, camera pulled back along the
-        // look direction (pitch tilts it), with an over-the-shoulder offset.
+        // TPS orbit-follow boom. The rig is resolved in TWO DECOUPLED stages so a side wall
+        // can never push the camera through it:
+        //   1) BOOM (behind)  — swept straight back from a CENTRED pivot above the head.
+        //   2) SHOULDER (side) — the over-the-shoulder offset is then swept laterally from
+        //      that centred camera point, and clamped so it only extends as far as it stays
+        //      clear. When a wall is on the shoulder side the camera gently SLIDES back
+        //      along the surface toward directly behind the player rather than crossing it.
         this._fwd.copy(this._fwdBase).applyQuaternion(this.parent.Rotation);
         this._right.copy(this._rightBase).applyQuaternion(this.parent.Rotation);
         this._pivot.copy(capPos);
-        this._pivot.y += this.tpsPivotHeight;
-        // Shift the whole boom rig (look target AND camera) laterally by tpsShoulder.
-        // Because the camera looks at this shifted target, the character ends up that
-        // far to the LEFT of the view axis (frame-left) while the screen-centre reticle
-        // floats in the open space to their right — in front of the gun the mannequin
-        // holds in its right hand. (Applying the offset to the camera alone, as before,
-        // just angled the view and kept the character centred under the reticle.)
-        this._pivot.addScaledVector(this._right, this._curShoulder);
+        this._pivot.y += this.tpsPivotHeight;   // CENTRED pivot — no shoulder baked in here
 
-        // Where the camera WANTS to sit: straight behind the pivot along the view axis.
+        // 1) BOOM: sweep straight back from the centred pivot (always clear, so the sweep
+        // never starts inside geometry). ANY static hit clamps the boom to the swept
+        // clearance (sphere centre held camRadius off the surface) so it can't penetrate.
+        // Pull IN is INSTANT (never beyond the clearance for even one frame); return OUT is
+        // eased and gentle. Only static geometry is tested, so dynamic props/characters
+        // pass freely between the camera and the player.
         this._free.copy(this._pivot).addScaledVector(this._fwd, -this._curDistance);
-
-        // Sweep a sphere along that boom. If a wall blocks it, the unobstructed length
-        // is shorter (fraction < 1) and the camera dollies in by exactly that much —
-        // the sphere centre at the hit is already camRadius off the wall, so the camera
-        // never clips. No hit => full length.
         let rawLen = this._curDistance;
         if(this.physicsWorld && AmmoHelper.SphereSweep(
-            this.physicsWorld, this.camRadius, this._pivot, this._free, this._sweepRes, CollisionFilterGroups.StaticFilter)){
-            rawLen = this._curDistance * this._sweepRes.fraction;
+            this.physicsWorld, this.camRadius, this._pivot, this._free, this._sweepRes, CollisionFilterGroups.StaticFilter)
+            && this._sweepRes.fraction < 1){
+            // A near-zero fraction means the swept sphere STARTED already touching/inside
+            // geometry — a degenerate, frame-to-frame jittery result that, if obeyed, snaps
+            // the boom onto the pivot and makes the camera shake when it's jammed near the
+            // character. Treat that as "go to the floor", not "go to zero".
+            rawLen = this._sweepRes.fraction > 0.02
+                ? this._curDistance * this._sweepRes.fraction
+                : this.tpsMinDistance;
         }
-
-        // Smooth the boom LENGTH only — purely radial, so the camera never moves
-        // sideways against the player's input. Pull IN quickly but bounded (it may trail
-        // the hard limit by at most softLag, which is < camRadius so there's still no
-        // clip); return OUT slowly and gently. Because rawLen changes continuously as
-        // you pan, the dolly glides — it reads as the camera sliding along the wall.
+        // Floor the boom: collision never dollies closer than tpsMinDistance. Below it the
+        // sweep turns unstable (the shake) and the shot gets claustrophobic — so the camera
+        // HOLDS here and the body dithers out (PlayerBody proximity dissolve) instead of the
+        // lens cramming into the character. This is the "stay back rather than jam in"
+        // priority when collision bites, and it removes the near-centre shake entirely.
+        rawLen = Math.max(rawLen, this.tpsMinDistance);
         if(!this._camInit){
             this._curLen = rawLen;
             this._camInit = true;
         }else if(rawLen < this._curLen){
-            this._curLen += (rawLen - this._curLen) * (1 - Math.exp(-this.pullInRate * t));
-            if(this._curLen > rawLen + this.softLag){ this._curLen = rawLen + this.softLag; }
+            this._curLen = rawLen;
         }else{
             this._curLen += (rawLen - this._curLen) * (1 - Math.exp(-this.returnRate * t));
         }
+        // Centred camera point (directly behind the player, no shoulder yet).
+        this._cCam.copy(this._pivot).addScaledVector(this._fwd, -this._curLen);
 
-        this.camera.position.copy(this._pivot).addScaledVector(this._fwd, -this._curLen);
-        this.camera.lookAt(this._pivot);
+        // 2) SHOULDER: sweep the camera sphere sideways from the centred point out to the
+        // full over-the-shoulder offset. A hit clamps how far it can extend (fraction), so
+        // the camera slides along the wall toward centre instead of crossing it. The slide
+        // EASES (gentle, not a pop) and the camRadius probe starts the slide before contact,
+        // leaving margin so it never crosses. The aim/ease of the base offset is preserved
+        // by keeping the clamp a 0..1 FACTOR on top of _curShoulder.
+        let shoulderFactor = 1;
+        if(this.physicsWorld && Math.abs(this._curShoulder) > 1e-4){
+            this._free.copy(this._cCam).addScaledVector(this._right, this._curShoulder);
+            if(AmmoHelper.SphereSweep(this.physicsWorld, this.camRadius, this._cCam, this._free,
+                this._sweepRes, CollisionFilterGroups.StaticFilter) && this._sweepRes.fraction < 1){
+                shoulderFactor = this._sweepRes.fraction;
+            }
+        }
+        // Ease the lateral slide on a LONG, cinematic time constant in BOTH directions so
+        // panning along a wall glides instead of snapping sideways. A fast whip would
+        // normally out-run a slow slide and clip the wall, so a safety backstop clamps the
+        // slide to never trail the swept-safe envelope by more than the camera's own
+        // clearance radius (camRadius): silky under normal motion, yet physically unable to
+        // cross the wall under a hard pan because that radius buffer absorbs the lag.
+        if(!this._shoulderInit){
+            this._curShoulderFactor = shoulderFactor;
+            this._shoulderInit = true;
+        }else{
+            this._curShoulderFactor += (shoulderFactor - this._curShoulderFactor) * (1 - Math.exp(-this.shoulderSlideRate * t));
+            const bufferFactor = this.camRadius / Math.max(0.05, Math.abs(this._curShoulder));
+            if(this._curShoulderFactor > shoulderFactor + bufferFactor){
+                this._curShoulderFactor = shoulderFactor + bufferFactor;
+            }
+        }
+
+        // Final position: centred boom + the clamped over-the-shoulder slide.
+        this.camera.position.copy(this._cCam).addScaledVector(this._right, this._curShoulder * this._curShoulderFactor);
+        // Orientation is ALWAYS exactly the player's look (yaw*pitch) — the camera never
+        // imposes any pitch/yaw/roll of its own. Collision only ever dollies the camera
+        // along this axis (pull away / push in toward the player, down to a POV at the
+        // limit); it never re-aims the view. lookAt is intentionally NOT used: combined
+        // with any positional offset it would tilt the view and "force a look-down".
+        this.camera.quaternion.copy(this.parent.Rotation);
+
+        // Collision push-in widens the FOV a touch (never while aiming): as the boom is
+        // forced shorter than it wants to be, the extra FOV eases in, softening the close
+        // shot and revealing more around the character. Driven by the already-smoothed
+        // lengths, so it glides.
+        let fov = this._curFov;
+        if(!this.aiming){
+            const pushIn = THREE.MathUtils.clamp(1 - this._curLen / Math.max(0.001, this._curDistance), 0, 1);
+            fov += pushIn * this.collisionFovExtra;
+        }
+        this.camera.fov = fov;
+        this.camera.updateProjectionMatrix();
+
         this.ApplyCameraShake(t);
     }
 

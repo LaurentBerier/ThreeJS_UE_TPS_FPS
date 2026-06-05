@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import Component from '../../Component.js'
 import {Ammo, AmmoHelper, CollisionFilterGroups} from '../../AmmoLib.js'
 import CharacterFSM from './CharacterFSM.js'
+import { installProximityDither } from '../Common/CameraDither.js'
 
 import DebugShapes from '../../DebugShapes.js'
 
@@ -85,6 +86,11 @@ export default class CharacterController extends Component{
             this.rootBone = child.skeleton.bones.find(bone => bone.name == 'MutantHips');
             this.rootBone.refPos = this.rootBone.position.clone();
             this.lastPos = this.rootBone.position.clone();
+
+            // The TPS camera passes straight through enemies; dither this mutant's body
+            // out when the lens clips into it instead of showing the inside of the mesh.
+            const mats = Array.isArray(child.material) ? child.material : [child.material];
+            mats.forEach(m => installProximityDither(m, { near: 0.35, far: 1.0 }));
         });
 
         this.SetupAnimations();
