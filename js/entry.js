@@ -12,6 +12,7 @@ import {AmmoHelper, Ammo, createConvexHullShape} from './AmmoLib.js'
 import EntityManager from './EntityManager.js'
 import Entity from './Entity.js'
 import Sky from './entities/Sky/Sky2.js'
+import Clouds from './entities/Sky/Clouds.js'
 import LevelSetup from './entities/Level/LevelSetup.js'
 import PlayerControls from './entities/Player/PlayerControls.js'
 import PlayerPhysics from './entities/Player/PlayerPhysics.js'
@@ -23,6 +24,7 @@ import {  SkeletonUtils } from 'three/examples/jsm/utils/SkeletonUtils.js'
 import NpcCharacterController from './entities/NPC/CharacterController.js'
 import UeSoldierController from './entities/NPC/UeSoldierController.js'
 import UeSoldierCollision from './entities/NPC/UeSoldierCollision.js'
+import { Faction } from './entities/NPC/Factions.js'
 import Input from './Input.js'
 
 // Buildless asset URLs. Webpack used `import x from './assets/..'` (file-loader
@@ -367,6 +369,8 @@ class FPSGameApp{
     const skyEntity = new Entity();
     skyEntity.SetName("Sky");
     skyEntity.AddComponent(new Sky(this.scene, this.assets['skyTex']));
+    // Drifting bright-day cloud deck (ported from SkibidiTower, re-graded for daylight).
+    skyEntity.AddComponent(new Clouds(this.scene));
     this.entityManager.Add(skyEntity);
 
     const playerEntity = new Entity();
@@ -399,19 +403,25 @@ class FPSGameApp{
       this.entityManager.Add(npcEntity);
     });
 
-    // Velocity-driven UE Mannequin soldier(s): same rig/textures/AK as the player,
-    // but AI-driven and moved by an explicit velocity (path-follow at a target
-    // speed) with the animation chosen from the measured speed. Added alongside the
-    // mutant to showcase both locomotion styles (root-motion vs velocity-driven).
-    const soldierLocations = [
-      [13.0, 0.0, 22.0],
+    // Velocity-driven UE Mannequin soldiers: same rig/textures/AK as the player, but
+    // AI-driven and moved by an explicit velocity (path-follow at a target speed) with the
+    // animation chosen from the measured speed. Five human enemies wired into the faction
+    // system (see Factions.js): ENEMIES hunt the player but turn on a nearby CHAOTIC; the
+    // CHAOTICS attack everyone (player, enemies, each other, the beast); the NEUTRAL stays
+    // passive until shot. The mix makes the arena a three-way fight, not a turkey shoot.
+    const soldiers = [
+      { pos: [13.0, 0.0, 22.0], faction: Faction.ENEMY },
+      { pos: [20.0, 0.0, 17.0], faction: Faction.CHAOTIC },
+      { pos: [27.0, 0.0, 29.0], faction: Faction.ENEMY },
+      { pos: [30.0, 0.0, 19.0], faction: Faction.CHAOTIC },
+      { pos: [16.0, 0.0, 31.0], faction: Faction.NEUTRAL },
     ];
 
-    soldierLocations.forEach((v,i)=>{
+    soldiers.forEach((s,i)=>{
       const soldierEntity = new Entity();
-      soldierEntity.SetPosition(new THREE.Vector3(v[0], v[1], v[2]));
+      soldierEntity.SetPosition(new THREE.Vector3(s.pos[0], s.pos[1], s.pos[2]));
       soldierEntity.SetName(`UeSoldier${i}`);
-      soldierEntity.AddComponent(new UeSoldierController(SkeletonUtils.clone(this.ueModel), this.ueAnims, this.scene, this.physicsWorld, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps']), true, this.assets['ak47Shot'], this.listener));
+      soldierEntity.AddComponent(new UeSoldierController(SkeletonUtils.clone(this.ueModel), this.ueAnims, this.scene, this.physicsWorld, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps']), true, this.assets['ak47Shot'], this.listener, s.faction));
       soldierEntity.AddComponent(new AttackTrigger(this.physicsWorld));
       soldierEntity.AddComponent(new UeSoldierCollision(this.physicsWorld));
       this.entityManager.Add(soldierEntity);

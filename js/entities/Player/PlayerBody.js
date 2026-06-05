@@ -103,15 +103,29 @@ export default class PlayerBody extends Component{
         this.headProxNear = { value: 0.45 };             // camera distance (m) at/under which the body is gone
         this.headProxFar  = { value: 0.90 };             // ...and beyond which it's fully solid
 
-        // --- Aiming additive aim-pitch. While aiming, procedurally lean the spine chain
-        // (which carries the arms + gun) toward the look ALTITUDE so the weapon points
-        // where you aim up/down — layered on top of the played animation and eased in/out
-        // with aim. Sign/gain are rig-dependent; tune in-game (set aimPitchGain = 0 to
-        // disable). See UpdateAimPose.
+        // --- Additive look-pitch lean (TPS). Procedurally lean the spine chain (which
+        // carries the arms + gun) toward the look ALTITUDE so the third-person weapon points
+        // where you aim up/down. Active whenever the TPS body is on screen — NOT only while
+        // holding aim — so the gun tracks the camera continuously; layered on top of the
+        // played animation, eased in/out, and clamped so extreme look angles don't fold the
+        // torso. Purely cosmetic (the shot ray stays camera-relative). Sign/gain are
+        // rig-dependent; tune in-game (aimPitchGain = 0 disables; flip its sign if the lean
+        // is inverted). See UpdateAimPose.
         this.aimBones = [];                              // [{bone, weight}] spine chain, filled in Initialize
-        this.aimPitchGain = 0.8;                         // fraction of the look pitch the upper body adopts
-        this.aimPitchLerp = 12;                          // ease rate for blending the aim-pitch in/out (1/s)
-        this._aimPitchWeight = 0;                        // smoothed 0..1 aim blend
+        // TWO lean strengths (look DOWN pitches the torso/gun DOWN, and up -> up):
+        //   * NOT aiming — a barely-there lean so the spine stays calm and the run reads
+        //     natural (the strong always-on lean is what made the running torso buzz).
+        //   * AIMING — the full STRONG lean so the third-person gun tracks the aim altitude.
+        // The active gain eases between the two so entering/leaving aim glides, and the lean
+        // angle itself is low-passed so camera micro-jitter can't buzz the spine while moving.
+        this.aimPitchGainIdle = 0.16;                    // subtle look-lean when NOT aiming
+        this.aimPitchGainAim  = 1.0;                     // full gun-tracking lean while aiming (unchanged)
+        this._aimGain = this.aimPitchGainIdle;           // eased current strength
+        this.aimGainLerp = 7;                            // ease rate between the two strengths (1/s)
+        this.aimPitchMax = THREE.MathUtils.degToRad(75); // clamp on the total lean so a full up/down look doesn't fold the torso
+        this.aimPitchLerp = 12;                          // ease rate for blending the lean in/out (1/s)
+        this._aimPitchWeight = 0;                        // smoothed 0..1 lean blend (ramps with TPS on screen)
+        this._aimPitchValue = 0;                         // low-passed lean angle (rad) — kills running jitter
         this._aimRight = new THREE.Vector3();
         this._aimR = new THREE.Quaternion();
         this._aimPW = new THREE.Quaternion();
@@ -328,7 +342,7 @@ export default class PlayerBody extends Component{
         next.setEffectiveTimeScale(this.stateTimeScale[name] ?? 1.0);
         next.play();
         if(this.lowerState && this.lowerActions[this.lowerState]){
-            next.crossFadeFrom(this.lowerActions[this.lowerState], 0.2, true);
+            next.crossFadeFrom(this.lowerActions[this.lowerState], 0.3, true);
         }
         this.lowerState = name;
     }
@@ -359,24 +373,38 @@ export default class PlayerBody extends Component{
         const next = this.upperActions[name];
         if(!next){ return; }
         next.reset();
-        next.setEffectiveWeight(1.0);
         next.setEffectiveTimeScale(this.stateTimeScale[name] ?? 1.0);
         next.play();
         if(this.lowerActions[name]){ next.time = this.lowerActions[name].time; }
-        if(this.upperState && this.upperActions[this.upperState]){
-            next.crossFadeFrom(this.upperActions[this.upperState], fade, true);
-        }
+        // Make `next` the upper-body primary (full weight now, others fade out) — this is what
+        // guarantees the layer never flashes the bind/T-pose between clips. See SetUpperPrimary.
+        this.SetUpperPrimary(next, fade);
         this.upperState = name;
+    }
+
+    // Make `primary` the sole full-weight action on the UPPER layer: snap it to weight 1
+    // immediately (NOT a fade-IN from 0 — that can momentarily empty the layer and bare the
+    // bind/T-pose, since the spine/arms/head are driven ONLY by this layer) and fade every
+    // other live upper action OUT. The mixer blends by relative weight, so a full-weight
+    // incoming + a fading outgoing still reads as a crossfade, but the layer's total weight
+    // stays ~1 at all times — so the upper body can never snap to its bind pose for a frame.
+    SetUpperPrimary(primary, fade){
+        primary.enabled = true;
+        primary.stopFading();
+        primary.setEffectiveWeight(1.0);
+        for(const key in this.upperActions){
+            const a = this.upperActions[key];
+            if(a !== primary && a.enabled && a.getEffectiveWeight() > 1e-3){
+                a.fadeOut(fade);
+            }
+        }
     }
 
     PlayOneShot(name){
         const action = this.upperActions[name];
         if(!action){ return; }
-        // Already mid one-shot of this clip (continuous fire re-triggers 'shoot'
-        // every shot): just restart its time so it pulses again, WITHOUT another
-        // crossFadeFrom. Re-fading in from the locomotion action — already faded to
-        // weight 0 by the first crossfade — drops the total blend weight to ~0 for a
-        // few frames, which snaps the upper body to its bind (T) pose.
+        // Already mid one-shot of this clip (continuous fire re-triggers 'shoot' every shot):
+        // just restart its time so it pulses again — it is already the upper-body primary.
         if(this.oneShot === name){
             action.time = 0;
             action.setEffectiveWeight(1.0);
@@ -384,12 +412,12 @@ export default class PlayerBody extends Component{
         }
         this.oneShot = name;
         action.reset();
-        action.setEffectiveWeight(1.0);
         action.setEffectiveTimeScale(this.stateTimeScale[name] ?? 1.0);
         action.play();
-        // Layer over the torso's current locomotion (legs keep playing untouched).
-        const from = this.upperState && this.upperActions[this.upperState];
-        if(from){ action.crossFadeFrom(from, 0.1, true); }
+        // Layer over the torso (the legs keep their own locomotion on the lower layer): make
+        // this one-shot the upper-body primary, fading out the locomotion AND any prior
+        // one-shot — so the layer is never left empty for a frame (no bind/T-pose flash).
+        this.SetUpperPrimary(action, 0.1);
     }
 
     OnOneShotFinished = (e) => {
@@ -423,9 +451,13 @@ export default class PlayerBody extends Component{
         if(speed > 0.5 && grounded){
             legs = this.playerControls.isSprinting ? 'run' : 'walk';
         }
+        // Crossfade the upper locomotion a touch slower than the default so the sprint
+        // start/stop on the torso reads smooth rather than snapping between clips.
+        const desiredUpper = this.DesiredUpperState(legs);
+        if(!this.oneShot && this.upperState !== desiredUpper && this.upperActions[desiredUpper]){
+            this.PlayUpperLocomotion(desiredUpper, 0.3);
+        }
         this.SetLowerState(legs);
-        // The torso follows the legs, or holds the aim pose while aiming.
-        this.SetUpperState(this.DesiredUpperState(legs));
     }
 
     Update(t){
@@ -455,19 +487,35 @@ export default class PlayerBody extends Component{
         this.UpdateHeadDither(t);
     }
 
-    // Additive aim-pitch: while aiming, lean the spine chain by the look pitch so the
-    // arms + gun point at the right altitude, layered on top of the played animation.
-    // Each bone is rotated in its PARENT's world space about the character's horizontal
-    // right axis, so the lean is a clean forward/back pitch regardless of the bone's
-    // local-axis convention. Processing root -> tip and re-reading each parent's world
-    // orientation composes the per-bone shares correctly. Eased in/out with aim.
+    // Additive look-pitch lean: lean the spine chain by the look pitch so the arms + gun
+    // point at the right altitude, layered on top of the played animation. Each bone is
+    // rotated in its PARENT's world space about the character's horizontal right axis, so
+    // the lean is a clean forward/back pitch regardless of the bone's local-axis convention.
+    // Processing root -> tip and re-reading each parent's world orientation composes the
+    // per-bone shares correctly. Active whenever the TPS body is on screen (so the gun
+    // tracks the camera all the time, not just while aiming), eased in/out and clamped.
     UpdateAimPose(t){
         if(!this.aimBones.length){ return; }
-        const aimingNow = this.IsAiming() ? 1 : 0;
-        this._aimPitchWeight += (aimingNow - this._aimPitchWeight) * (1 - Math.exp(-this.aimPitchLerp * t));
+        // Lean whenever the third-person body is visible — the gun should always point where
+        // the camera looks up/down, not only during precise-aim. (FPS owns its own aim, so 0.)
+        const active = (this.cameraMode === 'TPS') ? 1 : 0;
+        this._aimPitchWeight += (active - this._aimPitchWeight) * (1 - Math.exp(-this.aimPitchLerp * t));
+
+        // Ease the lean STRENGTH between the subtle idle value and the strong aim value so the
+        // torso glides into/out of the aiming lean instead of popping (and stays calm running).
+        const targetGain = this.IsAiming() ? this.aimPitchGainAim : this.aimPitchGainIdle;
+        this._aimGain += (targetGain - this._aimGain) * (1 - Math.exp(-this.aimGainLerp * t));
         if(this._aimPitchWeight < 0.001){ return; }
 
-        const pitch = this.playerControls.angles.x * this.aimPitchGain * this._aimPitchWeight;
+        // Target lean = look pitch * eased gain, NEGATED so looking down pitches the torso/gun
+        // down (the rig leaned the wrong way before), clamped so a full up/down look leans the
+        // torso strongly but doesn't fold it in half.
+        const targetPitch = THREE.MathUtils.clamp(
+            -this.playerControls.angles.x * this._aimGain, -this.aimPitchMax, this.aimPitchMax);
+        // Low-pass the lean angle: when running, the camera pitch wobbles a little each frame and
+        // feeding it straight to the spine made the upper body judder. Easing it smooths that out.
+        this._aimPitchValue += (targetPitch - this._aimPitchValue) * (1 - Math.exp(-this.aimPitchLerp * t));
+        const pitch = this._aimPitchValue * this._aimPitchWeight;
         // Character right axis in world: local +X carried through the yaw-only facing.
         this._aimRight.set(Math.cos(this._bodyYaw), 0, -Math.sin(this._bodyYaw));
         for(const ab of this.aimBones){

@@ -96,7 +96,9 @@ class PatrolState extends State{
 class ChaseState extends State{
     constructor(parent){
         super(parent);
-        this.updateFrequency = 0.5;
+        // Re-acquire the player's position often so the beast tracks you tightly and stays
+        // dangerous instead of running to where you *were* half a second ago.
+        this.updateFrequency = 0.2;
         this.updateTimer = 0.0;
         this.attackDistance = 2.0;
         this.shouldRotate = false;
@@ -201,20 +203,11 @@ class DeadState extends State{
     }
 
     get Name(){return 'dead'}
-    get Animation(){return this.parent.proxy.animations['die']; }
 
     Enter(prevState){
-        const action = this.Animation.action;
-        action.setLoop(THREE.LoopOnce, 1);
-        action.clampWhenFinished = true;
-
-        if(prevState){
-            action.time = 0.0;
-            action.enabled = true;
-            action.crossFadeFrom(prevState.Animation.action, 0.1, true);
-        }
-
-        action.play();
+        // Death is purely a physics ragdoll — no die clip, no crossfade. The controller
+        // builds the ragdoll and stops the mixer; from here physics owns the body.
+        this.parent.proxy.Die();
     }
 
     Update(t){}

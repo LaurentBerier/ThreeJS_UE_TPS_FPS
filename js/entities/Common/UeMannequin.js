@@ -49,10 +49,10 @@ const WEAPON_GRIP = {
     // Hand-tuned in TPS with the in-game placement tool (WeaponPlacementDebug, the `
     // panel). Position is hand-local centimetres; rotation seats the AK upright in the
     // palm with the barrel running forward. Re-tune with the panel and paste here.
-    position: new THREE.Vector3(-19.6, -2.4, -1.4),
+    position: new THREE.Vector3(-19.6, -2.4, 0.6),
     rotationEuler: new THREE.Euler(
         THREE.MathUtils.degToRad(0),
-        THREE.MathUtils.degToRad(-11),
+        THREE.MathUtils.degToRad(4),
         THREE.MathUtils.degToRad(272),
     ),
 };

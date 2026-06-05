@@ -1,5 +1,6 @@
 import Component from '../../Component.js'
 import {Ammo, AmmoHelper, CollisionFilterGroups} from '../../AmmoLib.js'
+import { installProximityDitherOnObject } from '../Common/CameraDither.js'
 
 
 export default class AmmoBox extends Component{
@@ -22,6 +23,11 @@ export default class AmmoBox extends Component{
         this.trigger = AmmoHelper.CreateTrigger(this.shape);
 
         this.world.addCollisionObject(this.trigger, CollisionFilterGroups.SensorTrigger);
+
+        // Close-mesh rule: the TPS camera can pass over/through this pickup, so dither it out
+        // when the lens gets really close rather than filling the screen with the box.
+        installProximityDitherOnObject(this.model, { near: 0.35, far: 1.0 });
+
         this.scene.add(this.model);
     }
 

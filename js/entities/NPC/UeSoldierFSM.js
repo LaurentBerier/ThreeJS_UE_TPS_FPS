@@ -41,7 +41,7 @@ class IdleState extends State{
     }
 
     Update(t){
-        if(this.parent.proxy.CanSeeThePlayer()){
+        if(this.parent.proxy.AcquireTarget()){
             this.parent.SetState('chase');
             return;
         }
@@ -62,7 +62,7 @@ class PatrolState extends State{
     }
 
     Update(){
-        if(this.parent.proxy.CanSeeThePlayer()){
+        if(this.parent.proxy.AcquireTarget()){
             this.parent.SetState('chase');
         }else if(this.parent.proxy.path && this.parent.proxy.path.length === 0){
             this.parent.SetState('idle');
@@ -70,13 +70,15 @@ class PatrolState extends State{
     }
 }
 
-// Chase to get within firing range with a clear line of sight, then hand off to the
-// ranged AttackState. (Previously this closed all the way to melee distance.)
+// Chase to get within firing range of the current target with a clear line of sight, then
+// hand off to the ranged AttackState. Re-acquires the target each tick so it can switch
+// victims mid-chase (e.g. an ENEMY abandons the player to deal with a nearer CHAOTIC).
 class ChaseState extends State{
     constructor(parent){
         super(parent);
-        this.updateFrequency = 0.5;
+        this.updateFrequency = 0.3;
         this.updateTimer = 0.0;
+        this.lostTimer = 0.0;
     }
 
     get Name(){return 'chase'}
@@ -84,35 +86,49 @@ class ChaseState extends State{
     Enter(){
         this.parent.proxy.SetMoveIntent(this.parent.proxy.runSpeed);
         this.updateTimer = 0.0;
+        this.lostTimer = 0.0;
     }
 
     Update(t){
         const proxy = this.parent.proxy;
 
+        // Re-pick the best target (faction priority) from whoever is currently visible.
+        const visible = proxy.AcquireTarget();
+        if(visible){ this.lostTimer = 0.0; }
+        else{
+            // Lost sight of everything hostile — pursue the last-seen spot briefly, then give up.
+            this.lostTimer += t;
+            if(this.lostTimer >= 2.5 || !proxy.hasLastSeen){
+                this.parent.SetState('patrol');
+                return;
+            }
+        }
+
         // In range with a clear shot? Plant and open fire.
-        if(proxy.InShootRange && proxy.HasLineOfSightToPlayer()){
+        if(proxy.target && proxy.InRangeOf(proxy.target) && proxy.HasLineOfSightTo(proxy.target)){
             proxy.ClearPath();
             this.parent.SetState('attack');
             return;
         }
 
-        // Otherwise keep repathing toward the player to close the gap / get an angle.
+        // Otherwise keep repathing toward the target (or its last-seen spot) to get an angle.
         if(this.updateTimer <= 0.0){
-            proxy.NavigateToPlayer();
+            proxy.NavigateToTarget();
             this.updateTimer = this.updateFrequency;
         }
         this.updateTimer -= t;
     }
 }
 
-// Ranged fire: stand, face the player, and squeeze off rounds on a cadence. If the
-// shot is lost (player breaks range or ducks behind cover) for a moment, fall back
-// to chasing to reacquire.
+// Ranged fire: stand, face the target, and squeeze off rounds on a cadence. Re-acquires each
+// tick so a higher-priority victim can steal focus; if the shot is lost for a moment, fall
+// back to chasing to reacquire.
 class AttackState extends State{
     constructor(parent){
         super(parent);
         this.fireTimer = 0.0;
         this.loseSightTimer = 0.0;
+        this.retargetTimer = 0.0;
     }
 
     get Name(){return 'attack'}
@@ -124,6 +140,7 @@ class AttackState extends State{
         proxy.BeginAttack();
         this.fireTimer = 0.35;      // brief wind-up before the first round
         this.loseSightTimer = 0.0;
+        this.retargetTimer = 0.4;
     }
 
     Exit(){
@@ -132,9 +149,17 @@ class AttackState extends State{
 
     Update(t){
         const proxy = this.parent.proxy;
-        proxy.FacePlayer(t);
 
-        const hasShot = proxy.InShootRange && proxy.HasLineOfSightToPlayer();
+        // Periodically re-evaluate the best target so focus can shift to a nearer threat.
+        this.retargetTimer -= t;
+        if(this.retargetTimer <= 0.0){
+            proxy.AcquireTarget();
+            this.retargetTimer = 0.4;
+        }
+
+        proxy.FaceTarget(t);
+
+        const hasShot = proxy.target && proxy.InRangeOf(proxy.target) && proxy.HasLineOfSightTo(proxy.target);
         if(!hasShot){
             this.loseSightTimer += t;
             if(this.loseSightTimer >= 0.6){
@@ -146,7 +171,7 @@ class AttackState extends State{
 
         this.fireTimer -= t;
         if(this.fireTimer <= 0.0){
-            proxy.FireAtPlayer();
+            proxy.FireAtTarget();
             this.fireTimer = proxy.fireInterval;
         }
     }

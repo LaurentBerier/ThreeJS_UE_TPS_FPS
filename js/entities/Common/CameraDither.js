@@ -40,3 +40,25 @@ export function installProximityDither(material, { near = 0.35, far = 1.0 } = {}
     };
     material.needsUpdate = true;
 }
+
+// GENERAL RULE: apply the proximity dither to EVERY lit-material mesh under an object. This is
+// the one helper to reach for on any DYNAMIC thing the TPS camera can pass straight through —
+// characters, props, pickups — so the lens dissolves it when it gets really close instead of
+// showing the inside of the mesh. (The camera only collides with STATIC level geometry, so it
+// never clips walls; those are handled by the boom collision + the near-plane cull, and
+// discarding their fragments would wrongly reveal the void behind them — so don't dither them.)
+//
+// MeshBasicMaterial is skipped: it doesn't declare the vViewPosition varying the dither reads,
+// so patching it would fail to compile. Calls are idempotent per material (installProximityDither
+// guards against a second install), so shared/cloned materials are safe.
+export function installProximityDitherOnObject(root, opts = {}){
+    if(!root){ return; }
+    root.traverse(o => {
+        if(!o.isMesh && !o.isSkinnedMesh){ return; }
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        for(const m of mats){
+            if(!m || m.isMeshBasicMaterial){ continue; }
+            installProximityDither(m, opts);
+        }
+    });
+}

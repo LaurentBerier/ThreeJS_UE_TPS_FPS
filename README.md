@@ -1,16 +1,43 @@
 # ThreeJS UE TPS/FPS Template
 
-A reusable **third-person _and_ first-person shooter** template for the Sandscape
-app, built on Three.js with an Unreal-Engine-friendly asset/export boundary.
+A console-grade **third-person _and_ first-person shooter** template for the Sandscape
+app — built on Three.js, with an Unreal-Engine-friendly asset/export boundary and the
+production touches that make a demo feel like a *game*: a cinematic spring-arm camera,
+procedural aim leaning, physics ragdoll deaths, a living daytime sky, and enemies that
+hunt you instead of orbiting a wall.
 
-- **TPS + FPS in one** — boots third-person with the **UE Mannequin** visible;
-  press **V** to switch to first-person (arms + weapon). One look-orientation
-  drives both; the TPS camera has spring-arm wall collision.
-- **UE Mannequin player** (`SK_Mannequin`) driven by UE rifle animations
-  (idle / walk / reload / shoot).
-- **Enemy AI** — navmesh pathfinding, line-of-sight, patrol/chase/attack FSM,
-  root-motion locomotion (the reference mutant, kept as-is; turning hardened to
-  stay upright through 180° reversals).
+- **TPS + FPS in one** — boots third-person with the **UE Mannequin** on screen;
+  press **V** to drop into first-person (arms + weapon) seamlessly. One
+  look-orientation drives both views. The third-person camera is a true spring-arm
+  **spline**: collision only dollies it in/out along the boom (never sideways, so your
+  character never swings across frame), pull-in is instant so the lens can't knife
+  through walls, and a near-plane **cull** plus a proximity **dither-dissolve** stipple
+  away anything the lens crowds — head, body, even the enemy you're hugging — so the
+  shot is never blocked.
+- **Procedural aim leaning** — the third-person upper body bends to point the gun
+  exactly where you look up/down. **Two-state** lean: barely-there while you're just
+  moving and looking around (so the run reads natural and calm), ramping smoothly to a
+  strong, gun-tracking lean the moment you aim down sights. The lean angle is
+  low-passed so a jogging torso never judders.
+- **UE Mannequin player** (`SK_Mannequin`) driven by UE rifle animations, layered into
+  independent **upper/lower body** halves — reload or fire from the torso while the legs
+  keep their own walk/run cycle, with crossfades tuned so sprint start/stop stays smooth.
+- **Enemy AI with teeth** — two archetypes: a **2×-scale root-motion beast** (melee
+  bruiser) and a velocity-driven UE **soldier** (ranged gunner). Navmesh pathfinding, a
+  patrol/chase/attack FSM, and awareness via a wide view cone **plus** a close proximity
+  sense (both gated by line of sight) so a player beside or behind is *noticed*, not
+  ignored. In the chase the beast **re-acquires your position several times a second**,
+  so it tracks you tightly. And it can't get stuck: a decisive **failsafe** gives it two
+  unstick tries (drop the blocking waypoint → repath); if it's still pinned mid-hunt, a
+  small, subtle teleport breaks it loose.
+- **Physics ragdoll deaths** — enemies don't play a canned death clip; they **crumple**.
+  On death a self-contained verlet ragdoll is built from the character's own skeleton
+  (inspired by the rapierjs-ragdoll demo) and takes over the skinned mesh, knocking the
+  body away from the shot and letting it fold at the joints and settle on the ground.
+  Works for both the mutant and the UE soldier rigs, with a safe fallback.
+- **Living bright-day sky** — a drifting, FBM-noise **cloud deck** (ported from the
+  SkibidiTower storm sky and re-graded for daylight) paints broken white cumulus across
+  the blue, thinning to real sky gaps at the horizon and brightening on the sun side.
 - **Ammo.js physics** — capsule controller, raycast combat, bullet decals, ammo
   pickups, melee hitboxes.
 - **UE export** — press **P** to download `level_ue.glb` (Z-up, centimetres) +
@@ -53,11 +80,16 @@ js/
   entry.js          app bootstrap, asset loading, entity wiring, game loop
   Entity/EntityManager/Component/Input/FiniteStateMachine/AmmoLib   engine core
   entities/
-    Player/         PlayerControls (dual camera), PlayerBody (UE Mannequin),
-                    Hands (FP arms), Weapon/WeaponManager/WeaponFSM, PlayerPhysics, PlayerHealth
-    NPC/            CharacterController + CharacterFSM (enemy AI), hitboxes
+    Player/         PlayerControls (dual camera: spline collision + near cull),
+                    PlayerBody (UE Mannequin + two-state aim-pitch lean), Hands (FP arms),
+                    Weapon/WeaponManager/WeaponFSM, PlayerPhysics, PlayerHealth
+    NPC/            CharacterController/CharacterFSM (2× beast) + UeSoldierController/
+                    UeSoldierFSM (ranged soldier): awareness + stuck-recovery, hitboxes,
+                    Ragdoll (shared verlet death ragdoll for both rigs)
+    Common/         UeMannequin (shared rig build), CameraDither (close-mesh dither rule)
     Level/          LevelSetup, Navmesh (three-pathfinding), BulletDecals
-    Sky/ UI/ AmmoBox/
+    Sky/            Sky2 (sky dome + light) + Clouds (drifting bright-day deck)
+    UI/ AmmoBox/
   export/UeExporter.js   P-key glTF + mechanics export
 assets/
   characters/ue/    SK_Mannequin_new.glb (Y-up mesh, baked PBR) + SK_Mannequin.glb (clip source) + source FBX
@@ -87,9 +119,19 @@ tools/
   [WeaponManager.js](js/entities/Player/WeaponManager.js).
 - **Level** — replace `assets/level.glb` + `assets/navmesh.obj` (export a matching
   navmesh from your level).
-- **Enemy** — the enemy keeps the mutant rig (root-motion). To use the UE Mannequin
-  for enemies too, switch `CharacterController` from root-motion to velocity-driven
-  movement (the UE clips are in-place).
+- **Enemy** — the melee beast keeps the mutant rig (root-motion), scaled 2× in
+  [CharacterController.js](js/entities/NPC/CharacterController.js) (`modelScale`; the
+  same factor scales the root-motion stride so the feet don't slide). To use the UE
+  Mannequin for enemies too, switch `CharacterController` from root-motion to
+  velocity-driven movement (the UE clips are in-place).
+- **Ragdoll** — death physics is rig-agnostic
+  ([Ragdoll.js](js/entities/NPC/Ragdoll.js)): it walks any SkinnedMesh's skeleton,
+  keeps the major bones, and simulates them. Tune feel via `boneStiffness` /
+  `braceStiffness` / `iterations`; the knock-back impulse is set where each controller
+  calls `Die()`.
+- **Sky / clouds** — re-grade the cloud deck in
+  [Clouds.js](js/entities/Sky/Clouds.js) (coverage threshold, colours, `uTime` drift
+  speed, sun direction) to swap bright day for overcast, dawn, etc.
 
 ## How UE compatibility works
 
@@ -103,5 +145,9 @@ oriented and scaled correctly. Details in
 ## Credits
 
 Seeded from the [three-fps](https://github.com/mohsenheydari/three-fps) entity/
-component demo (MIT). AK-47, ammo box, mutant and sky assets carry their original
-licences (see the reference project). UE Mannequin © Epic Games.
+component demo (MIT). The death ragdoll is inspired by the
+[rapierjs-ragdoll](https://mavon.ie/demos/rapierjs-ragdoll) demo (re-implemented as a
+self-contained verlet sim on Ammo's world), and the drifting cloud deck is ported from
+the in-house SkibidiTower storm sky and re-graded for daylight. AK-47, ammo box, mutant
+and sky assets carry their original licences (see the reference project). UE Mannequin
+© Epic Games.
