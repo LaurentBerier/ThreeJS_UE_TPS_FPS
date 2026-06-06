@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import Component from '../../Component.js'
-import {Ammo, AmmoHelper} from '../../AmmoLib.js'
+import {Ammo, AmmoHelper, CollisionFilterGroups} from '../../AmmoLib.js'
 
 
 // Bullet hit volumes for the UE Mannequin soldier. The mutant's CharacterCollision
@@ -51,9 +51,12 @@ export default class UeSoldierCollision extends Component{
             const shape = new Ammo.btSphereShape(radius);
             const object = AmmoHelper.CreateTrigger(shape);
             object.parentEntity = this.parent;
-            // Default group/mask (like CharacterCollision) => hittable by the bullet
-            // ray, which masks out only SensorTrigger.
-            this.world.addCollisionObject(object);
+            // CharacterFilter group (NOT the default): addCollisionObject(obj) with no group
+            // defaults to the STATIC filter group in this Ammo build, which the TPS camera
+            // spring-arm sweeps against — so the camera would dolly off the soldier's body
+            // capsules. CharacterFilter stays hittable by the weapon ray (mask = All & ~Sensor)
+            // while the camera (mask = StaticFilter) passes through. See CharacterCollision.
+            this.world.addCollisionObject(object, CollisionFilterGroups.CharacterFilter, CollisionFilterGroups.AllFilter);
 
             this.parts.push({bone, object});
         });

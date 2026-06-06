@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import Component from '../../Component.js'
-import {Ammo, AmmoHelper} from '../../AmmoLib.js'
+import {Ammo, AmmoHelper, CollisionFilterGroups} from '../../AmmoLib.js'
 
 export default class CharacterCollision extends Component{
     constructor(physicsWorld){
@@ -95,7 +95,13 @@ export default class CharacterCollision extends Component{
             collision.localTransform.setRotation(localRot);
             collision.localTransform.getOrigin().setValue(collision.position.x, collision.position.y, collision.position.z);
 
-            this.world.addCollisionObject(collision.object);
+            // Register as CharacterFilter, NOT the default group. In this Ammo build
+            // addCollisionObject(obj) with no group defaults to the STATIC filter group (2) —
+            // which is exactly what the TPS camera spring-arm sweeps against, so the camera was
+            // colliding with the beast's arms/fists and dollying in when it punched near the lens.
+            // CharacterFilter keeps these hittable by the weapon raycast (mask = All & ~Sensor,
+            // which includes CharacterFilter) while the camera (mask = StaticFilter) passes through.
+            this.world.addCollisionObject(collision.object, CollisionFilterGroups.CharacterFilter, CollisionFilterGroups.AllFilter);
         });
 
     }
