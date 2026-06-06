@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import Component from '../../Component.js'
 import { buildUeMannequin, UE_BODY_LAYER, collectUpperBoneNames, splitClipByBones } from '../Common/UeMannequin.js'
+import WeaponAimIK from './WeaponAimIK.js'
 
 
 // Full-body player avatar: the Unreal Engine Mannequin (SK_Mannequin) driven by UE rifle
@@ -53,6 +54,30 @@ export default class PlayerBody extends Component{
         // loop). _groundedTimer debounces ground re-detection so the 1-frame contact flicker on
         // take-off can't abort the jump and a brief mid-air graze can't snap the legs to idle.
         this.airState = null;
+        // Forward dodge roll: a FULL-BODY one-shot (both layers) that overrides locomotion AND any
+        // upper one-shot for its duration, then blends straight back to locomotion. Driven by the
+        // 'player.roll' event from PlayerControls (which owns the input, momentum + i-frames). The
+        // root motion is stripped like every clip, so the physical displacement is the capsule's —
+        // the animation just sells the roll in place. Works in TPS and FPS (FP camera rides the head).
+        this.rolling = false;
+        this._rollDuration = 0;        // seconds (read from the clip in SetupAnimations)
+        this.rollTimeScale = 1.25;     // play the ~0.97s roll a touch faster so it reads snappy/responsive
+        // Cut the last few frames of the roll's stand-up and instead ease into idle/locomotion over a
+        // longer crossfade, so the recovery blends smoothly into the resting pose rather than snapping
+        // off the clip's final frame. rollEndLead is in CLIP seconds (the roll bakes at 30 fps).
+        this.rollEndLead = 5 / 30;     // end the clip ~5 frames early...
+        // Blend out with SEPARATE lengths per body half. The legs just settle into the idle/jog stance
+        // (a moderate fade), but the TORSO + arms carry the rifle: the roll tucks them away from the
+        // gun-hold pose, so they get a noticeably LONGER crossfade to ease the weapon back up into the
+        // idle holding pose instead of snapping it into the hands.
+        this.rollBlendOut = 0.35;      // legs -> idle/locomotion
+        this.rollUpperBlendOut = 0.55; // torso + gun arms -> idle gun-hold (longer, smoother weapon settle)
+        // The UPPER body (torso + gun) starts blending into the FOLLOWING animation a LOT earlier than
+        // the legs: the legs need the whole roll to tumble, but the arms can recover the rifle to its
+        // held idle/locomotion pose over most of the roll. rollUpperLead is CLIP seconds before the
+        // clip end at which that upper blend kicks off (vs rollEndLead for the legs). Bigger = earlier.
+        this.rollUpperLead = 0.5;      // ~half the ~0.97s roll: gun recovery begins around the midpoint
+        this._upperBlendStarted = false;
         this._groundedTimer = 0;
         this.airExitDebounce = 0.1;    // ground must be stable this long (s) before we leave the air state
         this._jumpRequested = false;   // set by the 'player.jump' event; re-arms the jumpStart launch
@@ -182,6 +207,15 @@ export default class PlayerBody extends Component{
         this._aimUp = new THREE.Vector3(0, 1, 0);         // world up — the yaw axis
         this._aimYawQ = new THREE.Quaternion();           // scratch: per-bone yaw rotation
 
+        // --- Additive RUN-aim yaw (TPS). While AIMING AND MOVING (jog/run), the locomotion swings
+        // the torso so the right-hand gun drifts off the reticle. A fixed additive yaw on the SAME
+        // spine chain twists the upper body back so the gun bears on the target. Sign convention
+        // matches collisionAimYaw above (+ = CCW about vertical / gun LEFT); the run twist is CW,
+        // hence NEGATIVE. Eased in/out with movement and added on top of the collision convergence.
+        this.runAimYaw = THREE.MathUtils.degToRad(-20);   // ~20° CW spine twist while aiming + running — TUNE/flip sign
+        this._runAimYawValue = 0;                          // eased current run-aim yaw (rad)
+        this.runAimYawLerp = 8;                            // ease in/out rate with movement (1/s)
+
         // --- Hip/body stabilization on camera PROXIMITY. When the camera is close to the character
         // (aiming, or collision pushing the boom in), the locomotion bob/sway reads as an unstable
         // character right in front of the lens. We damp the PELVIS toward a settled (low-passed)
@@ -194,6 +228,10 @@ export default class PlayerBody extends Component{
         this._hipRefSeeded = false;
         this._hipStab = 0;                                // eased current stabilization 0..1
         this.hipStabMax = 0.9;                            // cap (1 = frozen hips); leaves a subtle wobble
+        // While AIMING, damp the hips harder than for a plain collision push-in: a near-frozen pelvis
+        // keeps the strafing legs from swinging the torso/gun off the aim target (the look-facing body
+        // + steady idle aim pose then point the gun right at the reticle while you strafe).
+        this.aimHipStab = 0.96;
         this.hipStabLerp = 8;                             // ease rate (1/s) entering/leaving stabilization
         this.hipRefLerp = 1.5;                            // low-pass rate (1/s) for the settled pelvis reference
 
@@ -203,6 +241,16 @@ export default class PlayerBody extends Component{
         this._shootHold = 0;
         this.shootHoldTime = 0.25;                        // s the aim pose lingers active after a shot
         this.aimProxThreshold = 0.4;                      // camera proximity above which hip-fire engages the aim pose
+
+        // --- Weapon aim-alignment + two-hand IK (WeaponAimIK). The additive spine lean above is the
+        // GROSS aim (it bends the torso toward the look altitude); this is the FINE, exact layer: it
+        // rotates the in-hand gun so the barrel points precisely at the crosshair's world target
+        // (PlayerControls.aimTarget — the same point the shot ray hits, killing the over-shoulder
+        // parallax) and IKs the support hand back onto the foregrip. Built in Initialize once the rig
+        // + weaponPivot exist; driven each frame (UpdateWeaponAim) only while aiming/shooting, eased
+        // out otherwise so plain locomotion is left exactly as authored. Works in TPS and FPS.
+        this.weaponAimIK = null;
+        this._weaponAimActive = false;                    // cached gate (for the debug overlay)
     }
 
     SetupAnimations(){
@@ -236,6 +284,18 @@ export default class PlayerBody extends Component{
             const { upper, lower } = splitClipByBones(jumpFallClip, upperBones);
             this.lowerActions['jumpFall'] = this.mixer.clipAction(lower);
             this.upperActions['jumpFall'] = this.mixer.clipAction(upper);
+        }
+
+        // Forward roll: a FULL-BODY one-shot on BOTH layers (legs + torso roll together), LoopOnce
+        // and clamped on the last frame so it holds the recovered pose until EndRoll blends out.
+        const rollClip = this.clips['roll'];
+        if(rollClip){
+            const { upper, lower } = splitClipByBones(rollClip, upperBones);
+            const lo = this.mixer.clipAction(lower); lo.setLoop(THREE.LoopOnce); lo.clampWhenFinished = true;
+            const up = this.mixer.clipAction(upper); up.setLoop(THREE.LoopOnce); up.clampWhenFinished = true;
+            this.lowerActions['roll'] = lo;
+            this.upperActions['roll'] = up;
+            this._rollDuration = rollClip.duration;
         }
 
         // reload/shoot are UPPER-body-only one-shots that layer over the torso while
@@ -301,6 +361,13 @@ export default class PlayerBody extends Component{
             this._hipRefSeeded = true;
         }
 
+        // Weapon aim-alignment + two-hand IK. Needs the rig (arm bones, by name) and the in-hand
+        // weaponPivot, both built above. Sockets + the barrel axis are auto-resolved lazily on its
+        // first Update (from the gun bbox + the posed hands); WeaponManager can override per weapon.
+        if(this.weaponPivot){
+            this.weaponAimIK = new WeaponAimIK(this.model, this.weaponPivot);
+        }
+
         this.scene.add(this.modelRoot);
 
         // Let the level's shadow-casting light see UE_BODY_LAYER so the avatar still
@@ -321,6 +388,8 @@ export default class PlayerBody extends Component{
         // Take-off: PlayerControls fires this the frame a jump is issued (see its comment for why
         // IsGrounded can't be used). We re-arm the jump sub-graph so the jumpStart pop always plays.
         this.parent.RegisterEventHandler(this.OnJump, 'player.jump');
+        // Forward dodge roll: PlayerControls fires this on a double-tap of Ctrl.
+        this.parent.RegisterEventHandler(this.OnRoll, 'player.roll');
     }
 
     // Back-compat alias: the leg (locomotion) state is the body's overall state for
@@ -331,6 +400,87 @@ export default class PlayerBody extends Component{
     OnReload = () => { this.PlayOneShot('reload'); }
     OnShoot = () => { this.PlayOneShot('shoot'); this._shootHold = this.shootHoldTime; }
     OnJump = () => { this._jumpRequested = true; }
+    OnRoll = () => { this.StartRoll(); }
+
+    // Begin the full-body forward roll: snap both layers onto the roll one-shot, fading out whatever
+    // locomotion / upper one-shot was playing so neither layer is ever left empty (no bind-pose flash).
+    StartRoll(){
+        const lo = this.lowerActions['roll'];
+        const up = this.upperActions['roll'];
+        if(!lo || !up || this.rolling){ return; }
+        this.rolling = true;
+        this.oneShot = null;                                   // the roll owns the upper layer now
+        // The roll branch in Update skips UpdateLocomotion, which is the only place airState/_groundedTimer
+        // are maintained — so clear the jump sub-graph to a known-grounded state now. Otherwise a roll
+        // started just after landing (still inside airExitDebounce) would leave airState='fall' frozen and
+        // flash the jumpFall pose for a frame when EndRoll hands back to locomotion.
+        this.airState = null;
+        this._groundedTimer = this.airExitDebounce;
+
+        // Lower layer: crossfade the legs from their current locomotion into the roll.
+        const prevLo = this.lowerState ? this.lowerActions[this.lowerState] : null;
+        lo.reset();
+        lo.setEffectiveTimeScale(this.rollTimeScale);
+        lo.setEffectiveWeight(1.0);
+        lo.play();
+        if(prevLo && prevLo !== lo){ lo.crossFadeFrom(prevLo, 0.08, false); }
+        this.lowerState = null;                                // normal loco no longer drives the legs
+
+        // Upper layer: make the roll the sole full-weight upper action (fades out loco + any one-shot).
+        up.reset();
+        up.setEffectiveTimeScale(this.rollTimeScale);
+        up.play();
+        this.SetUpperPrimary(up, 0.08);
+        this.upperState = null;
+        this._upperBlendStarted = false;                       // re-arm the early upper-body blend
+    }
+
+    // Advance the roll. The UPPER body (torso + gun) starts blending into the following locomotion/idle
+    // a LOT earlier than the legs (rollUpperLead), so the rifle eases back to its held pose over most
+    // of the roll; the legs keep rolling until rollEndLead, then EndRoll settles the lower half. Both
+    // roll actions keep playing (and clamp) THROUGH their fades, so nothing hard-cuts.
+    UpdateRoll(){
+        const lo = this.lowerActions['roll'];
+        if(!lo){ this.rolling = false; return; }
+        const dur = lo.getClip().duration;
+
+        // Early UPPER-body hand-off: torso + gun arms blend to the following anim well before the end.
+        if(!this._upperBlendStarted && lo.time >= dur - this.rollUpperLead){
+            this.StartUpperRollBlend();
+        }
+
+        const end = Math.max(0.05, dur - this.rollEndLead);
+        if(lo.time >= end){ this.EndRoll(); }
+    }
+
+    // Begin the long upper-body crossfade from the roll into the gun-holding idle (or matching
+    // locomotion). The roll keeps driving the LEGS until EndRoll; this only re-homes the torso+arms.
+    StartUpperRollBlend(){
+        const loco = this.DesiredLocoState();
+        this.upperState = 'roll';
+        this.PlayUpperLocomotion(this.DesiredUpperState(loco), this.rollUpperBlendOut);
+        this._upperBlendStarted = true;
+    }
+
+    // Hand the body back to the locomotion graph after the roll, from whatever the legs are doing now
+    // (idle when settling, a jog if still carrying movement) — over a longer crossfade so the stand-up
+    // eases into the resting/locomotion pose instead of snapping.
+    EndRoll(){
+        this.rolling = false;
+        const loco = this.DesiredLocoState();
+        // Fade the legs from the roll into the resolved locomotion.
+        this.lowerState = 'roll';
+        this.SetLowerState(loco, this.rollBlendOut);
+        // If the torso already homed to this SAME jog during the early upper blend, phase-match the
+        // legs to it so the torso bob and the footfalls don't run out of sync coming out of the roll.
+        if(this._upperBlendStarted && this.upperState === loco && this.IsJogState(loco)){
+            const up = this.upperActions[loco], lo = this.lowerActions[loco];
+            if(up && lo){ lo.time = up.time; }
+        }
+        // The torso + gun arms already began easing back to the held pose at rollUpperLead; only start
+        // it here as a fallback if that early hand-off never fired (e.g. a very short clip).
+        if(!this._upperBlendStarted){ this.StartUpperRollBlend(); }
+    }
 
     // The same full-body avatar is rendered in BOTH camera modes now: in TPS the
     // boom looks at it from behind; in FPS the camera rides its head bone and the
@@ -540,6 +690,11 @@ export default class PlayerBody extends Component{
     }
 
     PlayOneShot(name){
+        // While rolling the roll owns the WHOLE body (both layers). A reload/shoot one-shot would
+        // hijack the torso mid-roll and leave the upper layer in a stale 'oneShot' state when the
+        // roll hands back to locomotion — so ignore one-shots during the roll. The weapon itself
+        // still fires (WeaponManager is independent); only the torso anim is suppressed for ~0.8s.
+        if(this.rolling){ return; }
         const action = this.upperActions[name];
         if(!action){ return; }
         // Already mid one-shot of this clip (continuous fire re-triggers 'shoot' every shot):
@@ -678,17 +833,29 @@ export default class PlayerBody extends Component{
         const p = this.parent.Position;
         this.modelRoot.position.set(p.x, p.y + this.feetOffset, p.z);
         this.UpdateBodyYaw(t);
-        // Damp the hip bob when the camera is close (aim / collision) so the character is stable in
-        // front of the lens. Runs after the mixer/root-lock and BEFORE the spine aim lean, since the
-        // lean reads the (now-stabilized) pelvis as its parent.
-        this.StabilizeHips(t);
-        // Additive lean so the arms + gun aim at the right altitude while aiming (or hip-firing
-        // close). Runs after the body yaw (it reads the facing) and before the head dither (it moves
-        // the head). It edits the animated pose this frame, on top of the mixer.
-        this.UpdateAimPose(t);
+        if(this.rolling){
+            // The roll owns the WHOLE body while it plays: no hip stabilization, no aim lean and no
+            // locomotion graph (any of which would fight the roll). Just advance it and, when the
+            // clamped clip finishes, blend straight back to locomotion (EndRoll) — a clean hand-off
+            // that prevents the animation locking or snapping.
+            this.UpdateRoll();
+        }else{
+            // Damp the hip bob when the camera is close (aim / collision) so the character is stable in
+            // front of the lens. Runs after the mixer/root-lock and BEFORE the spine aim lean, since the
+            // lean reads the (now-stabilized) pelvis as its parent.
+            this.StabilizeHips(t);
+            // Additive lean so the arms + gun aim at the right altitude while aiming (or hip-firing
+            // close). Runs after the body yaw (it reads the facing) and before the head dither (it moves
+            // the head). It edits the animated pose this frame, on top of the mixer.
+            this.UpdateAimPose(t);
+            // Fine layer: rotate the in-hand gun so the barrel points EXACTLY at the crosshair target
+            // and IK the support hand back onto the foregrip. Runs after the gross spine lean so it
+            // corrects the leaned pose; eased in/out so it's inert when not aiming/shooting.
+            this.UpdateWeaponAim(t);
 
-        this.UpdateLocomotion(t);
-        this.UpdateLocoTimeScale();   // foot-sync the live directional-jog playback rate to ground speed
+            this.UpdateLocomotion(t);
+            this.UpdateLocoTimeScale();   // foot-sync the live directional-jog playback rate to ground speed
+        }
         // Dissolve the head when the camera crowds it (TPS aim-from-cover).
         this.UpdateHeadDither(t);
     }
@@ -703,10 +870,13 @@ export default class PlayerBody extends Component{
         if(!this._pelvisBone){ return; }
         const pc = this.playerControls;
         // Close = aiming (boom pulled in) OR raw camera proximity (collision push-in). TPS only.
+        const aiming = this.IsAiming();
         const close = (this.cameraMode === 'TPS')
-            ? Math.max(this.IsAiming() ? 1 : 0, pc ? pc.CameraProximity : 0) : 0;
+            ? Math.max(aiming ? 1 : 0, pc ? pc.CameraProximity : 0) : 0;
         const moving = this.IsJogState(this.lowerState);
-        const target = (moving ? close : 0) * this.hipStabMax;
+        // Aiming damps harder (steady gun while strafing) than a plain collision push-in.
+        const cap = aiming ? this.aimHipStab : this.hipStabMax;
+        const target = (moving ? close : 0) * cap;
         this._hipStab += (target - this._hipStab) * (1 - Math.exp(-this.hipStabLerp * t));
 
         // Low-pass the freshly-animated pelvis (mixer just wrote it) into the bob-free reference.
@@ -770,7 +940,18 @@ export default class PlayerBody extends Component{
         const targetYaw = THREE.MathUtils.clamp(
             this.collisionAimYaw * pushIn, -this.aimYawMax, this.aimYawMax);
         this._aimYawValue += (targetYaw - this._aimYawValue) * (1 - Math.exp(-this.aimPitchLerp * t));
-        const yaw = this._aimYawValue * this._aimPitchWeight;
+
+        // Run-aim yaw: while AIMING AND running FORWARD, twist the spine ~20° CW so the forward jog's
+        // torso swing doesn't carry the gun off the reticle. This twist is calibrated for the FORWARD
+        // swing only — applying it while STRAFING (jogL/jogR) or backpedalling pushed the gun off the
+        // aim target, so it's now restricted to jogF. When strafing, the gun stays on target via the
+        // body facing the look direction + the steady idle aim pose + the additive pitch lean (and the
+        // firmer aim hip-stabilization below keeps the strafing legs from swinging it off).
+        const runYawActive = (this.IsAiming() && this.lowerState === 'jogF') ? 1 : 0;
+        this._runAimYawValue += (this.runAimYaw * runYawActive - this._runAimYawValue)
+            * (1 - Math.exp(-this.runAimYawLerp * t));
+
+        const yaw = (this._aimYawValue + this._runAimYawValue) * this._aimPitchWeight;
 
         // Character right axis in world: local +X carried through the yaw-only facing.
         this._aimRight.set(Math.cos(this._bodyYaw), 0, -Math.sin(this._bodyYaw));
@@ -787,6 +968,33 @@ export default class PlayerBody extends Component{
             this._aimDelta.copy(this._aimPWInv).multiply(this._aimR).multiply(this._aimPW);
             ab.bone.quaternion.premultiply(this._aimDelta);
         }
+    }
+
+    // Aiming (right-click ADS, either camera mode) OR recently fired (full-auto re-arms _shootHold
+    // each shot). This is the gate for the weapon alignment + two-hand IK — "point the gun at the
+    // target while aiming or shooting", and leave plain locomotion alone otherwise.
+    IsAimingOrShooting(){
+        const pc = this.playerControls;
+        return (!!pc && pc.aiming) || this._shootHold > 0;
+    }
+
+    // Drive the weapon barrel alignment + two-hand IK each frame. Runs AFTER the additive spine lean
+    // (it reads the leaned arm pose) and only while aiming/shooting — never during a reload one-shot
+    // (the hands must be free to work the mag) and never during a roll (that branch skips this
+    // entirely). WeaponAimIK eases the whole correction in/out, so when it's inactive the gun + arms
+    // are left exactly as the animation posed them. Feeds it the crosshair's world target + a
+    // camera-forward fallback for too-close / behind-the-muzzle aim.
+    UpdateWeaponAim(t){
+        if(!this.weaponAimIK || !this.playerControls){ return; }
+        const pc = this.playerControls;
+        const active = this.IsAimingOrShooting() && this.oneShot !== 'reload';
+        this._weaponAimActive = active;
+        this.weaponAimIK.Update(t, {
+            active,
+            aimTarget: pc.aimTarget,
+            aimValid: pc.aimTargetValid,
+            cameraForward: pc.aimDir,
+        });
     }
 
     // Ease the avatar's facing toward the camera yaw instead of snapping to it. While

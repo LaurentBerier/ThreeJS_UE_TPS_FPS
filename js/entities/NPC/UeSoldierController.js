@@ -2,10 +2,10 @@ import * as THREE from 'three'
 import Component from '../../Component.js'
 import {Ammo, AmmoHelper, CollisionFilterGroups} from '../../AmmoLib.js'
 import UeSoldierFSM from './UeSoldierFSM.js'
-import { buildUeMannequin } from '../Common/UeMannequin.js'
+import { buildUeMannequin, collectUpperBoneNames, splitClipByBones } from '../Common/UeMannequin.js'
 import { installProximityDitherOnObject } from '../Common/CameraDither.js'
 import Ragdoll from './Ragdoll.js'
-import { Faction, isHostile } from './Factions.js'
+import { Faction, isHostile, isPriorityThreat } from './Factions.js'
 
 
 // A velocity-driven UE Mannequin enemy ("soldier"). It shares the player's rig,
@@ -37,14 +37,11 @@ export default class UeSoldierController extends Component{
         this.currentSpeed = 0.0;   // smoothed actual speed -> drives the anim choice
         this.canMove = true;
 
-        // walk/run blend thresholds (m/s) for the velocity-driven animation.
-        this.runAnimThreshold = 3.2;
-        this.walkAnimThreshold = 0.25;
-        // idle/shoot play at a fixed rate; walk/run reuse the single UE jog clip and are
-        // FOOT-SYNCED to the measured ground speed (see LocoTimeScale) so the feet match the
-        // floor instead of skating (the old fixed walk:0.6 / run:1.15 slid badly). The jog bakes
-        // a foot speed of authoredJogSpeed m/s at timeScale 1.0 (same source clip as the player).
-        this.animTimeScale = { idle: 1.0, walk: 1.0, run: 1.0, shoot: 1.4 };
+        // idle/shoot play at a fixed rate; the directional jogs (jogF/B/L/R) are FOOT-SYNCED to the
+        // measured ground speed (see LocoTimeScale) so the feet match the floor instead of skating.
+        // The jog bakes a foot speed of authoredJogSpeed m/s at timeScale 1.0 (same source clips as
+        // the player). Below moveAnimThreshold (set above) the legs play idle.
+        this.animTimeScale = { idle: 1.0, shoot: 1.4 };
         this.authoredJogSpeed = 5.884628;                     // m/s baked into the jog at timeScale 1.0
         this.invAuthoredJogSpeed = 1 / this.authoredJogSpeed; // per-(m/s) timeScale factor
         // This soldier patrols (2.2 m/s -> 0.37x) and chases (4.6 -> 0.78x) BELOW the authored jog
@@ -54,9 +51,25 @@ export default class UeSoldierController extends Component{
         this.locoTimeScaleMin = 0.35;
         this.locoTimeScaleMax = 2.2;
 
-        this.animations = {};
-        this.locoState = null;     // 'idle' | 'walk' | 'run'
-        this.override = null;      // 'attack' | 'dead' overriding locomotion, or null
+        // ---- Two-layer animation (so the soldier can RUN-AND-GUN: fire while strafing) ----
+        // Like the player body, the rig is split into a LOWER half (pelvis + legs) and an UPPER half
+        // (spine + arms + head) on one mixer. The legs play DIRECTIONAL locomotion (idle + jogF/B/L/R)
+        // so the soldier can strafe sideways/back while FACING the target without moonwalking; the
+        // torso mirrors that locomotion until it's firing, when a shoot OVERLAY takes the upper layer
+        // alone — letting the gun fire on-target while the legs keep strafing.
+        this.lowerActions = {};    // idle/jogF/jogB/jogL/jogR  (legs)
+        this.upperActions = {};    // idle/jogF/jogB/jogL/jogR + shoot  (torso/arms)
+        this.lowerState = null;    // current leg locomotion
+        this.upperState = null;    // current torso locomotion (when not firing)
+        this.firing = false;       // true => the shoot overlay owns the upper layer
+        this.moveAnimThreshold = 0.4;   // below this measured speed the legs play idle (else a jog)
+        this.moveLocalFwd = 0;     // last move direction in the body's local frame (+fwd / +right) ...
+        this.moveLocalRight = 0;   // ... drives the directional jog choice (set in Locomote)
+
+        // Combat movement: while engaging, the soldier FACES the target and STRAFES around it (a
+        // flank/advance/retreat juke per its style) instead of planting — so it's a moving target.
+        this.combatFacing = false;      // when true, Locomote aims facingYaw at the target, not the move dir
+        this.faceVec = new THREE.Vector3();   // scratch: direction to the target for combat facing
 
         // Navigation.
         this.path = [];
@@ -84,16 +97,36 @@ export default class UeSoldierController extends Component{
         //   1) a wide forward view CONE, and
         //   2) a close PROXIMITY sense that fires regardless of facing — so a visible player
         //      who walks up beside/behind the soldier is noticed instead of being ignored.
-        this.viewAngle = Math.cos(Math.PI / 3.0);   // 120° field of view (was 90°)
-        this.proximitySenseRadius = 12.0;           // sense a visible player within this radius, any facing
+        // Sharper perception so the soldier engages almost the instant you're in view: a wide cone,
+        // a generous all-round proximity sense, and a longer sight line. Acquisition is otherwise
+        // immediate (the FSM checks every tick), so "reduce reaction delays" is mostly about the
+        // short attack wind-up (see UeSoldierFSM) and these wider envelopes.
+        this.viewAngle = Math.cos(Math.PI * 0.42);  // ~150° field of view (was 120°)
+        this.proximitySenseRadius = 14.0;           // sense a visible target within this radius, any facing
         this.proximitySenseSq = this.proximitySenseRadius * this.proximitySenseRadius;
-        this.maxViewDistance = 20.0 * 20.0;
-        this.shootRange = 16.0;        // start shooting once this close (with line of sight)
+        this.maxViewDistance = 26.0 * 26.0;         // longer sight line (was 20 m)
+        this.shootRange = 18.0;        // start shooting once this close (with line of sight)
         this.shootRangeSq = this.shootRange * this.shootRange;
-        this.fireInterval = 0.85;      // seconds between shots
-        this.shotDamage = 8;           // damage dealt to the player per landed shot
-        this.hitChance = 0.5;          // chance a shot with clear LOS actually lands
+        // Tuned so a gunner reads as genuinely dangerous (≈9.4 DPS in clear LOS, ~10s solo TTK on a
+        // 100 HP player, far less as a squad) without being a hitscan wall — still survivable with
+        // cover + the dodge roll. The attack<->reposition duty cycle reduces effective DPS further.
+        this.fireInterval = 0.7;       // seconds between shots
+        this.shotDamage = 12;          // damage dealt to the target per landed shot
+        this.hitChance = 0.55;         // chance a shot with clear LOS actually lands (while planted)
+        this.movingHitFactor = 0.6;    // accuracy multiplier when firing on the move (run-and-gun)
         this.attackDuration = 1.0;     // legacy cadence field (unused by ranged FSM)
+
+        // ---- Per-soldier combat STYLE (variety) ----
+        // Randomized once per instance so no two soldiers fight the same way and the squad never
+        // moves in lockstep. aggression biases pushing-in vs holding-back; the rest jitter the
+        // repositioning cadence, preferred engagement range and flank direction. Read by the FSM's
+        // combat states (reposition / attack) and PickCombatPosition.
+        this.aggression = Math.random();                       // 0 = cautious (kites), 1 = aggressive (pushes)
+        this.preferredRange = THREE.MathUtils.lerp(13.0, 6.5, this.aggression);   // closer when aggressive
+        this.repositionInterval = 1.6 + Math.random() * 2.4;   // ~1.6 .. 4.0 s of firing before relocating
+        this.combatMoveSpeed = THREE.MathUtils.lerp(3.4, 4.8, this.aggression);   // strafe/relocate speed
+        this.flankSign = Math.random() < 0.5 ? -1 : 1;         // preferred lateral direction around the target
+        this.holdGroundChance = 0.25;                          // chance a reposition just re-aims instead of moving
         // Lower than before so the player drops him in fewer bullets (player AK does
         // 2 dmg/shot => ~15 hits; previously 100 hp => ~50 hits).
         this.health = 30;
@@ -142,6 +175,7 @@ export default class UeSoldierController extends Component{
         this.fireDir = new THREE.Vector3();
         this.senseVec = new THREE.Vector3();
         this.parentQuat = new THREE.Quaternion();
+        this.combatA = new THREE.Vector3();   // scratch for combat-position LOS scoring
     }
 
     Initialize(){
@@ -224,10 +258,24 @@ export default class UeSoldierController extends Component{
     }
 
     SetupAnimations(){
-        ['idle', 'walk', 'run', 'shoot'].forEach(name => {
+        // Split each clip into a LOWER (legs) and UPPER (torso/arms) half on the one mixer, so the
+        // torso can fire while the legs strafe. Directional jogs (jogF/B/L/R) let the soldier move in
+        // any direction while facing the target; idle covers standing. 'shoot' is an UPPER-only overlay.
+        const upperBones = collectUpperBoneNames(this.model, 'spine_01');
+        ['idle', 'jogF', 'jogB', 'jogL', 'jogR'].forEach(name => {
             const clip = this.clips[name];
-            if(clip){ this.animations[name] = this.mixer.clipAction(clip); }
+            if(!clip){ return; }
+            const { upper, lower } = splitClipByBones(clip, upperBones);
+            this.lowerActions[name] = this.mixer.clipAction(lower);
+            this.upperActions[name] = this.mixer.clipAction(upper);
         });
+        const shootClip = this.clips['shoot'];
+        if(shootClip){
+            const { upper } = splitClipByBones(shootClip, upperBones);
+            const a = this.mixer.clipAction(upper);
+            a.setLoop(THREE.LoopRepeat);
+            this.upperActions['shoot'] = a;
+        }
     }
 
     // ---- Interface consumed by UeSoldierFSM ----
@@ -252,6 +300,80 @@ export default class UeSoldierController extends Component{
         this.path = this.navmesh.FindPath(this.position, this.tempVec) || [];
     }
 
+    // ---- Tactical combat movement (cover / flank / reposition / push / retreat) ----
+    // Choose a tactical destination for a reposition: a reachable navmesh node near the soldier that
+    // (1) ideally has a clear line of sight to the target, (2) sits near this soldier's preferred
+    // engagement range, (3) FLANKS — offsets laterally around the target on the soldier's preferred
+    // side — and (4) advances (push) or retreats (kite) per its aggression. Pure scoring over a
+    // handful of samples; returns a navmesh node (Vector3) or null.
+    PickCombatPosition(target){
+        if(!target || !target.Position){ return null; }
+        const tx = target.Position.x, tz = target.Position.z;
+        const sx = this.position.x, sz = this.position.z;
+        // Soldier -> target axis (forward) and its left-normal (lateral).
+        let fx = tx - sx, fz = tz - sz;
+        const flen = Math.hypot(fx, fz) || 1; fx /= flen; fz /= flen;
+        const lx = -fz, lz = fx;                            // left perpendicular
+        const advanceBias = (this.aggression - 0.5) * 2;    // -1 kite/retreat .. +1 push in
+
+        let best = null, bestScore = -Infinity;
+        for(const range of [3.0, 5.0, 7.0]){
+            for(let i = 0; i < 4; i++){
+                const node = this.navmesh.GetRandomNode(this.position, range);
+                if(!node){ continue; }
+                const ndx = node.x - sx, ndz = node.z - sz;
+                const nlen = Math.hypot(ndx, ndz);
+                if(nlen < 0.8){ continue; }                 // must actually relocate
+                const advance = (ndx * fx + ndz * fz) / nlen;     // +1 toward target, -1 away
+                const lateral = (ndx * lx + ndz * lz) / nlen;     // +1 to the left
+                const distT = Math.hypot(node.x - tx, node.z - tz);
+                const rangeScore = 1.0 - Math.min(1.0, Math.abs(distT - this.preferredRange) / 8.0);
+                const flankScore = lateral * this.flankSign;      // reward stepping to the preferred side
+                const advanceScore = advance * advanceBias;       // push or kite per aggression
+                const losScore = this.HasLineOfSightFrom(this.combatA.set(node.x, node.y, node.z), target) ? 1.0 : 0.0;
+                // LOS dominates: a spot you can actually SHOOT from must always beat a slightly
+                // better-ranged/flanked spot with no shot (else the soldier relocates somewhere it
+                // can't fire and immediately drops back to chase — a visible "run then re-chase" wobble).
+                const score = losScore * 3.0 + rangeScore * 1.2 + flankScore * 0.9 + advanceScore * 0.7;
+                if(score > bestScore){ bestScore = score; best = node; }
+            }
+        }
+        return best;
+    }
+
+    // Path to a freshly-picked tactical position; returns true if a usable path was built.
+    NavigateToCombatPosition(target){
+        const node = this.PickCombatPosition(target);
+        if(!node){ this.path = []; return false; }
+        this.tempVec.copy(node); this.tempVec.y = 0.5;
+        this.path = this.navmesh.FindPath(this.position, this.tempVec) || [];
+        return this.path.length > 0;
+    }
+
+    // Line of sight from an ARBITRARY world position to an entity (used to score candidate combat
+    // positions before committing to move there). Same first-hit-belongs-to-target test as
+    // HasLineOfSightTo, but cast from `fromPos` instead of the soldier's current spot.
+    HasLineOfSightFrom(fromPos, entity){
+        if(!entity){ return false; }
+        const eye = this.tempVec2.copy(fromPos); eye.y += 1.5;
+        const aim = this.tempVec2b.copy(entity.Position);
+        if(entity !== this.player){ aim.y += 1.0; }
+        this.tempVec.copy(aim).sub(eye);
+        const len = this.tempVec.length();
+        if(len > 1e-3){ eye.addScaledVector(this.tempVec, 0.6 / len); }   // clear our own spheres
+        const rayInfo = {};
+        const mask = CollisionFilterGroups.AllFilter & ~CollisionFilterGroups.SensorTrigger;
+        if(AmmoHelper.CastRay(this.physicsWorld, eye, aim, rayInfo, mask)){
+            const co = rayInfo.collisionObject;
+            const ghost = Ammo.castObject(co, Ammo.btPairCachingGhostObject);
+            const rb = Ammo.castObject(co, Ammo.btRigidBody);
+            if(entity === this.player){ return rb == this.player.GetComponent('PlayerPhysics').body; }
+            const ent = (ghost && ghost.parentEntity) || (rb && rb.parentEntity);
+            return ent === entity;
+        }
+        return false;
+    }
+
     // ---- Stuck detection & recovery ----
     // Re-evaluate the path: hunt the current target if we have one, otherwise resume patrol.
     RepathForRecovery(){
@@ -269,7 +391,7 @@ export default class UeSoldierController extends Component{
         const soldier = entity.GetComponent && entity.GetComponent('UeSoldierController');
         if(soldier){ return soldier.faction; }
         const beast = entity.GetComponent && entity.GetComponent('CharacterController');
-        if(beast){ return Faction.ENEMY; }   // the mutant is a player-hunting enemy
+        if(beast){ return Faction.BEAST; }   // the mutant — the apex threat everyone prioritises
         return null;
     }
 
@@ -283,11 +405,13 @@ export default class UeSoldierController extends Component{
         return true;
     }
 
-    // Pick the best target for THIS soldier's faction from everyone currently visible:
-    //   * CHAOTIC — attacks everyone: the nearest visible hostile.
-    //   * ENEMY   — hunts the PLAYER above all else: the instant it can see you it locks on and
-    //               never breaks off for another fight while you're in view. Only when you're out
-    //               of sight does it fall back to the nearest other hostile (e.g. a chaotic).
+    // Pick the best target for THIS soldier's faction from everyone currently visible, by THREAT
+    // PRIORITY (the new squad behaviour):
+    //   * The BEAST is the apex threat — whenever a human (ENEMY or CHAOTIC) can see it, it is the
+    //     target, full stop. The squad ganging up on the creature first is the intended dynamic.
+    //   * With no beast in sight, an ENEMY hunts the PLAYER; a CHAOTIC takes the nearest hostile.
+    //   * Once the beast is dead / out of view, focus naturally falls back to the player (or the
+    //     nearest other hostile for a chaotic).
     //   * NEUTRAL — passive: only whoever provoked it (and only while still visible).
     // Sets this.target (+ remembers its last-seen position) and returns true if one was found.
     AcquireTarget(){
@@ -298,6 +422,7 @@ export default class UeSoldierController extends Component{
         }
 
         let best = null, bestDistSq = Infinity;
+        let beastVisible = null;
         let playerVisible = false;
 
         for(const entity of this.manager.entities){
@@ -308,13 +433,14 @@ export default class UeSoldierController extends Component{
 
             const distSq = this.tempVec.copy(entity.Position).sub(this.position).lengthSq();
             if(distSq < bestDistSq){ bestDistSq = distSq; best = entity; }
+            if(isPriorityThreat(f)){ beastVisible = entity; }
             if(f === Faction.PLAYER){ playerVisible = true; }
         }
 
-        // An ENEMY always prioritises the player the moment he is visible; otherwise (and for a
-        // CHAOTIC) it takes the nearest visible hostile.
+        // Threat priority: the beast above all; else an ENEMY prefers the player; else the nearest.
         let chosen = best;
-        if(this.faction === Faction.ENEMY && playerVisible){ chosen = this.player; }
+        if(beastVisible){ chosen = beastVisible; }
+        else if(this.faction === Faction.ENEMY && playerVisible){ chosen = this.player; }
         this._setTarget(chosen);
         return !!chosen;
     }
@@ -473,8 +599,11 @@ export default class UeSoldierController extends Component{
             this.shotSound.play();
         }
 
-        // The shot lands if there's a clear line and the accuracy roll succeeds.
-        if(this.HasLineOfSightTo(this.target) && Math.random() < this.hitChance){
+        // The shot lands if there's a clear line and the accuracy roll succeeds. Firing ON THE MOVE
+        // (strafing in combat) is less accurate — this keeps run-and-gun fair (and offsets the now
+        // near-continuous fire) while rewarding a player who also keeps moving.
+        const chance = this.currentSpeed > this.moveAnimThreshold ? this.hitChance * this.movingHitFactor : this.hitChance;
+        if(this.HasLineOfSightTo(this.target) && Math.random() < chance){
             this.target.Broadcast({topic: 'hit', amount: this.shotDamage, from: this.parent});
         }
     }
@@ -501,31 +630,35 @@ export default class UeSoldierController extends Component{
         this.facingYaw = this.StepYaw(this.facingYaw, this.targetYaw, rate * t);
     }
 
-    BeginAttack(){
-        this.override = 'attack';
-        const action = this.animations['shoot'];
+    // Start firing: the shoot OVERLAY takes the UPPER layer (torso + gun) while the legs keep their
+    // locomotion — so the soldier fires while strafing. Idempotent (continuous fire re-enters combat).
+    BeginFire(){
+        if(this.firing){ return; }
+        this.firing = true;
+        const action = this.upperActions['shoot'];
         if(!action){ return; }
         action.reset();
         action.setLoop(THREE.LoopRepeat);
-        action.setEffectiveWeight(1.0);
         action.setEffectiveTimeScale(this.animTimeScale.shoot);
-        if(this.locoState && this.animations[this.locoState]){
-            action.crossFadeFrom(this.animations[this.locoState], 0.15, true);
-        }
         action.play();
-        this.locoState = null;
+        // Make the shoot overlay the sole full-weight upper action (fades out the torso locomotion),
+        // so the upper layer is never empty for a frame (no bind/T-pose flash).
+        this.SetUpperPrimary(action, 0.12);
+        this.upperState = 'shoot';
     }
 
-    EndAttack(){
-        const action = this.animations['shoot'];
-        if(action){ action.fadeOut(0.15); }
-        this.override = null;
+    // Stop firing: hand the torso back to whatever locomotion the legs are doing.
+    EndFire(){
+        if(!this.firing){ return; }
+        this.firing = false;
+        this.upperState = 'shoot';                 // so PlayUpperLocomotion fades out of it
+        this.PlayUpperLocomotion(this.DesiredLocoState(), 0.15);
     }
 
     Die(){
         if(this.dead){ return; }
         this.dead = true;
-        this.override = 'dead';
+        this.firing = false;
         this.canMove = false;
         // Death is PURELY a physics ragdoll — no sink, no fade, no death clip. Stop the mixer
         // so the bones are handed entirely to physics, and disable the hit capsules so the
@@ -539,26 +672,30 @@ export default class UeSoldierController extends Component{
 
         try{
             if(!this.skinnedmesh){ throw new Error('no skinned mesh'); }
-            // Knock the corpse away from whoever killed it, with per-death RANDOM variation (shove
-            // DIRECTION ±~26°, STRENGTH, LIFT, plus a random TWIST so the body spins as it falls)
-            // so no two soldier deaths look identical. Gravity + ground friction do the rest.
-            const fromPos = (this.target && this.target.Position) ? this.target.Position : this.player.Position;
+            // Knock the corpse away from whoever KILLED it (provokedBy = last attacker), with
+            // per-death RANDOM variation (shove DIRECTION ±~29°, STRENGTH, LIFT, plus a random TWIST
+            // so the body spins as it falls) so no two soldier deaths look identical. Falls back to
+            // the current target / player. Gravity + ground friction do the rest.
+            const killer = (this.provokedBy && this.provokedBy.Position) ? this.provokedBy
+                         : (this.target && this.target.Position) ? this.target : this.player;
+            const fromPos = killer.Position;
             const dir = this.tempVec.copy(this.position).sub(fromPos);
             dir.y = 0;
             if(dir.lengthSq() < 1e-4){ dir.set(0, 0, 1); }
             dir.normalize();
-            const yaw = (Math.random() - 0.5) * 0.9;            // spread the shove ±~26°
+            const yaw = (Math.random() - 0.5) * 1.0;            // spread the shove ±~29°
             const cy = Math.cos(yaw), sy = Math.sin(yaw);
-            const mag = 1.8 * (0.7 + Math.random() * 0.6);      // ~1.26 .. 2.34 m/s horizontal
+            const mag = 2.3 * (0.7 + Math.random() * 0.7);      // ~1.6 .. 3.1 m/s horizontal (exaggerated)
             const impulse = new THREE.Vector3(
                 (dir.x * cy - dir.z * sy) * mag,
-                1.1 * (0.8 + Math.random() * 0.6),              // lift 0.88 .. 1.54 m/s
+                1.4 * (0.8 + Math.random() * 0.7),              // lift ~1.1 .. 2.1 m/s
                 (dir.x * sy + dir.z * cy) * mag);
-            const twist = (Math.random() - 0.5) * 5.0;          // ±2.5 rad/s spin while falling
+            const twist = (Math.random() - 0.5) * 6.0;          // ±3 rad/s spin while falling
             this.ragdoll = new Ragdoll(this.skinnedmesh, {
                 groundY: this.position.y,
                 impulse,
                 twist,
+                physicsWorld: this.physicsWorld,   // collide the corpse with walls / floor / slopes / props
             });
         }catch(e){
             console.error('Soldier ragdoll failed to build:', e);
@@ -585,10 +722,30 @@ export default class UeSoldierController extends Component{
         return a + Math.sign(diff) * maxStep;
     }
 
-    // Move toward the current waypoint at desiredSpeed, clamped to the navmesh, and
-    // record the actual speed achieved (what the animation reads).
+    // True for the four directional jog states (not idle/shoot).
+    IsJogState(name){
+        return name === 'jogF' || name === 'jogB' || name === 'jogL' || name === 'jogR';
+    }
+
+    // Move toward the current waypoint at desiredSpeed, clamped to the navmesh; set facing (the
+    // target in combat, else the move direction) and record the actual speed + the move direction in
+    // the body's LOCAL frame (so the directional jog can be chosen).
     Locomote(t){
         let moved = 0.0;
+        let dirX = 0, dirZ = 0, haveDir = false;
+        let facedTarget = false;
+
+        // Facing. In combat the soldier keeps facing the TARGET while it strafes (so it shoots you
+        // even while moving sideways); otherwise (or if the target was just lost) it turns toward
+        // where it's walking (handled in the move branch below).
+        if(this.combatFacing && this.target && this.target.Position){
+            this.faceVec.copy(this.target.Position).sub(this.position); this.faceVec.y = 0.0;
+            if(this.faceVec.lengthSq() > 1e-6){
+                this.targetYaw = Math.atan2(this.faceVec.x, this.faceVec.z);
+                this.facingYaw = this.StepYaw(this.facingYaw, this.targetYaw, 9.0 * t);
+                facedTarget = true;
+            }
+        }
 
         if(this.canMove && this.path && this.path.length){
             const wp = this.path[0];
@@ -600,8 +757,12 @@ export default class UeSoldierController extends Component{
                 if(this.path.length === 0){ this.Broadcast({topic: 'nav.end', agent: this}); }
             }else{
                 this.tempVec.divideScalar(dist);                 // normalize move dir
-                this.targetYaw = Math.atan2(this.tempVec.x, this.tempVec.z);
-                this.facingYaw = this.StepYaw(this.facingYaw, this.targetYaw, 8.0 * t);
+                dirX = this.tempVec.x; dirZ = this.tempVec.z; haveDir = true;
+                // Face the movement direction unless we're already facing a combat target this frame.
+                if(!facedTarget){
+                    this.targetYaw = Math.atan2(this.tempVec.x, this.tempVec.z);
+                    this.facingYaw = this.StepYaw(this.facingYaw, this.targetYaw, 8.0 * t);
+                }
 
                 const step = Math.min(this.desiredSpeed * t, dist);
                 this.desiredPos.copy(this.position).addScaledVector(this.tempVec, step);
@@ -630,71 +791,130 @@ export default class UeSoldierController extends Component{
             }
         }
 
-        // Smooth the measured speed so the walk/run choice doesn't flicker.
+        // Project the move direction into the body's local frame (forward F=(sin,0,cos), right
+        // R=(cos,0,-sin)) so the directional jog matches how the body is actually moving vs facing —
+        // i.e. strafing left while facing the target plays jogL, not a moonwalking forward jog.
+        if(haveDir){
+            const sy = Math.sin(this.facingYaw), cy = Math.cos(this.facingYaw);
+            this.moveLocalFwd   = dirX * sy + dirZ * cy;
+            this.moveLocalRight = dirX * cy - dirZ * sy;
+        }
+
+        // Smooth the measured speed so the idle/jog choice doesn't flicker.
         const instSpeed = t > 0 ? moved / t : 0.0;
         this.currentSpeed += (instSpeed - this.currentSpeed) * Math.min(1.0, t * 10.0);
     }
 
-    // Pick idle / walk / run from the actual velocity (skipped while attack/death
-    // own the animation).
-    UpdateLocomotionAnim(){
-        if(this.override){ return; }
-        let desired = 'idle';
-        if(this.currentSpeed > this.runAnimThreshold){ desired = 'run'; }
-        else if(this.currentSpeed > this.walkAnimThreshold){ desired = 'walk'; }
-        this.SetLocoState(desired);
-    }
-
-    // Per-frame foot-sync: keep the active walk/run clip's timeScale matched to the live
-    // measured speed so the feet track the ground through accel/decel and patrol<->chase.
-    // Single-layer, so there is no upper/lower phase concern. (setEffectiveTimeScale() calls
-    // stopWarping() internally — harmless because walk/run are the SAME clip, so the
-    // walk<->run crossfade warp is a no-op.)
-    UpdateLocoTimeScale(){
-        if(this.override){ return; }
-        if(this.locoState !== 'walk' && this.locoState !== 'run'){ return; }
-        const action = this.animations[this.locoState];
-        if(action){ action.setEffectiveTimeScale(this.LocoTimeScale(this.locoState)); }
-    }
-
-    // Foot-synced timeScale for a locomotion action: walk/run scale with the measured ground
-    // speed so the feet match the floor; idle/shoot keep their fixed rate. Pinned to the floor
-    // under the idle threshold so accelerating from a stop never plays a near-frozen slow-mo
-    // cadence. Multiplies by a constant (never divides by speed) so it can't NaN.
-    LocoTimeScale(name){
-        if(name !== 'walk' && name !== 'run'){
-            return this.animTimeScale[name] ?? 1.0;
+    // The leg state from the measured speed + the move direction relative to facing: idle when slow,
+    // else the directional jog (forward / back / strafe) matching the body-local move direction.
+    DesiredLocoState(){
+        if(this.currentSpeed <= this.moveAnimThreshold){ return 'idle'; }
+        if(Math.abs(this.moveLocalFwd) >= Math.abs(this.moveLocalRight)){
+            return this.moveLocalFwd >= 0 ? 'jogF' : 'jogB';
         }
-        if(this.currentSpeed <= this.walkAnimThreshold){ return this.locoTimeScaleMin; }
+        return this.moveLocalRight >= 0 ? 'jogR' : 'jogL';
+    }
+
+    // Drive the legs from the resolved locomotion; the torso mirrors it unless the shoot overlay
+    // owns the upper layer (firing) — that's what lets the soldier fire while strafing.
+    UpdateLocomotionAnim(){
+        const desired = this.DesiredLocoState();
+        this.SetLowerState(desired, 0.2);
+        if(!this.firing){ this.SetUpperState(desired); }
+    }
+
+    // Per-frame foot-sync: match the active jog's timeScale to the measured ground speed on BOTH
+    // layers (so the torso bob stays locked to the footfalls when not firing).
+    UpdateLocoTimeScale(){
+        if(!this.IsJogState(this.lowerState)){ return; }
+        const ts = this.LocoTimeScale(this.lowerState);
+        const lo = this.lowerActions[this.lowerState];
+        if(lo){ lo.setEffectiveTimeScale(ts); }
+        if(!this.firing && this.upperState === this.lowerState){
+            const up = this.upperActions[this.upperState];
+            if(up){ up.setEffectiveTimeScale(ts); }
+        }
+    }
+
+    // Foot-synced timeScale for a locomotion action: jogs scale with the measured ground speed so
+    // the feet match the floor; idle/shoot keep their fixed rate. Floored so a stop/start never
+    // plays a near-frozen slow-mo cadence; multiplies by a constant (never divides) so it can't NaN.
+    LocoTimeScale(name){
+        if(!this.IsJogState(name)){ return this.animTimeScale[name] ?? 1.0; }
+        if(this.currentSpeed <= this.moveAnimThreshold){ return this.locoTimeScaleMin; }
         return THREE.MathUtils.clamp(
             this.currentSpeed * this.invAuthoredJogSpeed, this.locoTimeScaleMin, this.locoTimeScaleMax);
     }
 
-    SetLocoState(name){
-        if(this.locoState === name || !this.animations[name]){ return; }
-        const next = this.animations[name];
+    // Legs: crossfade between locomotion states, carrying the gait phase across a jog<->jog direction
+    // change so the feet don't snap to a new cycle phase and skate during the blend.
+    SetLowerState(name, fade = 0.2){
+        if(this.lowerState === name || !this.lowerActions[name]){ return; }
+        const next = this.lowerActions[name];
+        const prev = this.lowerState ? this.lowerActions[this.lowerState] : null;
         next.reset();
         next.setLoop(THREE.LoopRepeat);
         next.setEffectiveWeight(1.0);
         next.setEffectiveTimeScale(this.LocoTimeScale(name));
-        next.play();
-        if(this.locoState && this.animations[this.locoState]){
-            next.crossFadeFrom(this.animations[this.locoState], 0.2, true);
+        if(prev && this.IsJogState(name) && this.IsJogState(this.lowerState)){
+            const pd = prev.getClip().duration || 1;
+            next.time = (pd > 0 ? (prev.time % pd) / pd : 0) * (next.getClip().duration || 0);
         }
-        this.locoState = name;
+        next.play();
+        if(prev){ next.crossFadeFrom(prev, fade, true); }
+        this.lowerState = name;
+    }
+
+    // Torso: mirror a locomotion state — but never while the shoot overlay owns the upper layer.
+    SetUpperState(name){
+        if(this.firing || this.upperState === name || !this.upperActions[name]){ return; }
+        this.PlayUpperLocomotion(name, 0.2);
+    }
+
+    // Start an upper-body locomotion action, phase-matched to the legs so the torso bob stays in
+    // sync with the footfalls, made the sole full-weight upper action (no bind/T-pose flash).
+    PlayUpperLocomotion(name, fade){
+        const next = this.upperActions[name];
+        if(!next){ return; }
+        next.reset();
+        next.setLoop(THREE.LoopRepeat);
+        next.setEffectiveTimeScale(this.LocoTimeScale(name));
+        next.play();
+        if(this.lowerActions[name]){ next.time = this.lowerActions[name].time; }
+        this.SetUpperPrimary(next, fade);
+        this.upperState = name;
+    }
+
+    // Make `primary` the sole full-weight action on the UPPER layer (snap to weight 1, fade every
+    // other live upper action out) so the spine/arms are never left with no driver for a frame.
+    SetUpperPrimary(primary, fade){
+        primary.enabled = true;
+        primary.stopFading();
+        primary.setEffectiveWeight(1.0);
+        for(const key in this.upperActions){
+            const a = this.upperActions[key];
+            if(a !== primary && a.enabled && a.getEffectiveWeight() > 1e-3){ a.fadeOut(fade); }
+        }
     }
 
     TakeHit = (msg) => {
         if(this.dead){ return; }
         this.health = Math.max(0, this.health - (msg.amount ?? 0));
 
-        // Remember who hit us — a NEUTRAL retaliates against this attacker; everyone else uses
-        // it as a fallback aggressor if they can't otherwise see anything.
+        // Remember who hit us — a NEUTRAL retaliates against this attacker; everyone else uses it as
+        // chase MEMORY so a soldier shot from cover pushes toward the shooter (instead of bailing
+        // straight back to patrol because the attacker isn't currently visible).
         this.provokedBy = msg.from || this.player;
+        if(this.provokedBy && this.provokedBy.Position){
+            this.lastSeenPos.copy(this.provokedBy.Position);   // investigate where the shot came from
+            this.hasLastSeen = true;
+        }
 
         if(this.health === 0){
             this.stateMachine.SetState('dead');
         }else{
+            // React from any non-combat state; if already chasing/attacking the memory refresh above
+            // is enough (it keeps pressing the engagement).
             const state = this.stateMachine.currentState && this.stateMachine.currentState.Name;
             if(state === 'idle' || state === 'patrol'){
                 this.stateMachine.SetState('chase');

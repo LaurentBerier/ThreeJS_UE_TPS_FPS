@@ -62,6 +62,13 @@ const ueChar = 'assets/characters/ue/SK_Mannequin_new.glb'
 // the UE2020 animation FBX, hence the offline glTF bake.)
 const ueClipsSrc = 'assets/characters/ue/SK_Mannequin.glb'
 
+// Forward combat roll clip, baked the SAME way as the other UE clips (FBX -> GLB via
+// tools/roll_to_glb.html, since r127's FBXLoader can't parse these UE2020 anim takes).
+// A small skeleton-only GLB carrying one clip named 'roll'; the game pulls animations[0]
+// and adapts it onto the pre-oriented rig like every other clip. Drives the player's
+// double-tap-Ctrl dodge roll in both TPS and FPS.
+const ueRollSrc = 'assets/characters/ue/RollForward.glb'
+
 // Third-person weapon: a UE SkeletalMesh AK exported as FBX (v7300, which r127's
 // FBXLoader parses fine). Socketed into the mannequin's right hand in TPS; the
 // first-person view keeps its own arms+gun viewmodel (Hands/WeaponManager).
@@ -99,6 +106,7 @@ import WeaponManager from './entities/Player/WeaponManager.js'
 import PlayerBody from './entities/Player/PlayerBody.js'
 import { adaptClipToPreOriented } from './entities/Common/UeMannequin.js'
 import WeaponPlacementDebug from './entities/Player/WeaponPlacementDebug.js'
+import WeaponAimDebug from './entities/Player/WeaponAimDebug.js'
 import UIManager from './entities/UI/UIManager.js'
 import AmmoBox from './entities/AmmoBox/AmmoBox.js'
 import LevelBulletDecals from './entities/Level/BulletDecals.js'
@@ -258,6 +266,7 @@ class FPSGameApp{
     //UE Mannequin player body: Y-up mesh GLB (baked PBR) + legacy GLB for the clips
     promises.push(this.AddAsset(ueChar, gltfLoader, "ueChar"));
     promises.push(this.AddAsset(ueClipsSrc, gltfLoader, "ueClips"));
+    promises.push(this.AddAsset(ueRollSrc, gltfLoader, "ueRoll"));
     //Third-person AK
     promises.push(this.AddAsset(ak47Tps, akFbxLoader, "ak47Tps"));
     //AK47
@@ -301,6 +310,11 @@ class FPSGameApp{
     // Adapt each legacy clip onto the pre-oriented rig (drop 'root', rotate pelvis;
     // see adaptClipToPreOriented). Adapt once and share across player + soldier.
     const byName = (n) => { const c = ueClips.find(c => c.name === n); return c ? adaptClipToPreOriented(c) : undefined; };
+    // The forward-roll ships in its own GLB (ueRoll); adapt it the same way. Match by name, else
+    // take the only clip in that file.
+    const rollSrcClips = this.assets['ueRoll'] ? this.assets['ueRoll'].animations : [];
+    const rollRaw = rollSrcClips.find(c => c.name === 'roll') || rollSrcClips[0];
+    const rollClip = rollRaw ? adaptClipToPreOriented(rollRaw) : undefined;
     const walkClip = byName('walk');
     // The AI soldier still uses a 'run' (chase) state which reuses the jog clip — but it must
     // be a SEPARATE clip instance, not the same object as 'walk'. Within one AnimationMixer two
@@ -322,6 +336,8 @@ class FPSGameApp{
       jogR: byName('jog_right'),
       jumpStart: byName('jump_start'),
       jumpFall: byName('jump_fall'),
+      // Forward dodge roll (double-tap Ctrl). Player-only; the soldier ignores unknown clips.
+      roll: rollClip,
     };
     this.ueTextures = null;   // baked into the mesh GLB
 
@@ -392,6 +408,9 @@ class FPSGameApp{
     // Dev aid: press ` in TPS to nudge the in-hand AK and copy a WEAPON_GRIP snippet.
     // Added after PlayerBody so its weaponPivot exists when this initializes.
     playerEntity.AddComponent(new WeaponPlacementDebug());
+    // Dev aid: press K to visualize the weapon aim-alignment + two-hand IK (aim target, crosshair
+    // ray, barrel vs corrected direction, IK grip sockets, live blend value). Toggles, off by default.
+    playerEntity.AddComponent(new WeaponAimDebug());
     playerEntity.SetPosition(new THREE.Vector3(2.14, 1.48, -1.36));
     playerEntity.SetRotation(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), -Math.PI * 0.5));
     this.entityManager.Add(playerEntity);

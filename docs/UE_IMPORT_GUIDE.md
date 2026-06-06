@@ -90,6 +90,14 @@ the `hand_r` bone and auto-scaled to a rifle length, so it tracks the rifle clip
 hand pose. The first-person view keeps its own arms+gun viewmodel; the TPS AK hides
 on the body's render layer in first-person (shadow only), like the body mesh.
 
+While **aiming or shooting**, the player body also runs a cosmetic aim-alignment +
+two-hand IK layer ([`WeaponAimIK.js`](../js/entities/Player/WeaponAimIK.js), driven by
+`PlayerBody.UpdateWeaponAim`): it rotates the in-hand gun about the wrist so the barrel
+points at the crosshair target (the same camera-centre ray the bullet uses) and two-bone
+IKs the support arm (`upperarm_l` → `lowerarm_l` → `hand_l`) back onto the foregrip,
+eased in only while aiming and out otherwise. In UE this maps to an **Aim Offset** plus a
+hand **FABRIK / Control Rig** pass. It is player-only — the UE soldier (§7) does not use it.
+
 **Locomotion clips.** The rifle set has only `idle` + a single jog. The player and
 the soldier both surface a distinct **walk** and **run** from that one jog clip by
 playing it slower for a walk and slightly faster for a sprint (`stateTimeScale` /

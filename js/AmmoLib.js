@@ -148,8 +148,10 @@ class AmmoHelper{
   // Sweep a sphere of `radius` from `origin` to `dest` and report the first contact.
   // This is a "thick raycast": unlike CastRay (a zero-width line that can slip past
   // edges / let the camera's near plane poke through a wall), the sphere keeps a
-  // clearance of `radius` from all geometry. On a hit, fills result.point (the sphere
-  // centre at contact), result.normal (surface normal) and result.fraction (0..1
+  // clearance of `radius` from all geometry. On a hit, fills result.point (Bullet's
+  // m_hitPointWorld — the contact point ON the hit surface, NOT the swept sphere's
+  // centre; to get the centre at contact add radius*normal), result.normal (surface
+  // normal, pointing out of the hit surface) and result.fraction (0..1
   // along the sweep) and returns true; otherwise sets result.fraction = 1 and returns
   // false. Objects are reused; the sphere radius is fixed on the first call and any
   // later change rebuilds the shape.

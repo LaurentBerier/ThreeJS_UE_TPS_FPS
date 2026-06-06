@@ -24,6 +24,12 @@ export default class Weapon{
         // used), so the flash sits at the barrel.
         this.barrelOffset = config.barrelOffset ?? new THREE.Vector3(-0.3, -0.5, 8.3);
 
+        // Optional per-weapon aim-IK overrides (sockets/offsets/forward-axis, all in the in-hand
+        // weaponPivot's local space) consumed by WeaponAimIK on equip. null => auto-resolve from the
+        // gun's bbox + the posed hands. This is where a real rigged weapon declares its right/left grip
+        // sockets, muzzle/aim socket, muzzleForwardAxis and hand offsets. See WeaponAimIK.SetWeaponConfig.
+        this.ikConfig = config.ikConfig ?? null;
+
         this.shoot = false;
         this.shootTimer = 0.0;
         this.reloading = false;

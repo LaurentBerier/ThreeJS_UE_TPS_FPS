@@ -19,6 +19,19 @@ hunt you instead of orbiting a wall.
   moving and looking around (so the run reads natural and calm), ramping smoothly to a
   strong, gun-tracking lean the moment you aim down sights. The lean angle is
   low-passed so a jogging torso never judders.
+- **Exact weapon aim + two-hand IK** — on top of that lean, an alignment layer rotates the
+  in-hand gun so the **barrel points precisely at the crosshair's world target** — the *same*
+  camera-centre ray the bullet uses, so there's no over-the-shoulder parallax between where you
+  aim and where the gun visibly points. The aim **direction** tracks the crosshair live while the
+  **depth** is eased, so the barrel and support arm don't snap as the crosshair crosses a near/far
+  edge — and the bullet still uses the exact instantaneous hit, so accuracy is unchanged. A
+  two-bone IK keeps the **support hand planted on the foregrip** (the dominant hand holds the grip
+  for free — the gun pivots at its wrist). It engages only while **aiming or shooting** and blends
+  out otherwise, so idle/jog locomotion is left exactly as authored; clamped + low-passed so it's
+  responsive, not floaty. Works in TPS **and** FPS, is per-weapon tunable (grip/muzzle sockets,
+  hand offsets, blend speeds), and ships with a live debug overlay (press **K**) drawing the aim
+  target, the barrel vs. the corrected direction, and the IK grip sockets. See
+  [WeaponAimIK.js](js/entities/Player/WeaponAimIK.js).
 - **UE Mannequin player** (`SK_Mannequin`) driven by UE rifle animations, layered into
   independent **upper/lower body** halves — reload or fire from the torso while the legs
   keep their own walk/run cycle, with crossfades tuned so sprint start/stop stays smooth.
@@ -64,12 +77,18 @@ loaders, ammo.js and three-pathfinding load via importmap / a vendored WASM buil
 | **Mouse** | Look (click to lock the pointer) |
 | **Shift** | Sprint |
 | **Space** | Jump |
+| **Double-tap Ctrl** | Forward dodge roll (momentum + i-frames, TPS & FPS) |
 | **Left click** | Fire |
 | **Right click** | Aim down sights (FP) |
 | **R** | Reload |
 | **1 / 2 / wheel** | Switch weapon |
 | **V** | Toggle TPS ⇄ FPS |
 | **P** | Export `level_ue.glb` + `mechanics.json` |
+
+Dev toggles (off by default, no cost until pressed): **`** opens the in-hand weapon
+**placement** tool (TPS) for nudging the grip transform; **K** toggles the weapon
+**aim-IK debug** overlay (aim target, crosshair ray, barrel vs. corrected direction, IK
+grip sockets, live blend value).
 
 ## Layout
 
@@ -80,9 +99,10 @@ js/
   entry.js          app bootstrap, asset loading, entity wiring, game loop
   Entity/EntityManager/Component/Input/FiniteStateMachine/AmmoLib   engine core
   entities/
-    Player/         PlayerControls (dual camera: spline collision + near cull),
-                    PlayerBody (UE Mannequin + two-state aim-pitch lean), Hands (FP arms),
-                    Weapon/WeaponManager/WeaponFSM, PlayerPhysics, PlayerHealth
+    Player/         PlayerControls (dual camera: spline collision + near cull; aim-target raycast),
+                    PlayerBody (UE Mannequin + two-state aim-pitch lean + weapon aim-IK driver), Hands (FP arms),
+                    Weapon/WeaponManager/WeaponFSM, PlayerPhysics, PlayerHealth,
+                    WeaponAimIK (exact barrel aim + two-hand IK) + WeaponAimDebug (K overlay) + WeaponPlacementDebug (` grip tool)
     NPC/            CharacterController/CharacterFSM (2× beast) + UeSoldierController/
                     UeSoldierFSM (ranged soldier): awareness + stuck-recovery, hitboxes,
                     Ragdoll (shared verlet death ragdoll for both rigs)
@@ -99,6 +119,9 @@ data/mechanics.schema.json   schema for the export "blueprint data"
 docs/UE_IMPORT_GUIDE.md      UE round-trip guide (axis/scale, character retarget)
 tools/
   ue_fbx_to_glb.html + convert_ue.mjs   bake the UE FBX -> SK_Mannequin.glb (headless)
+  aim_test.mjs      headless aim-IK check (Chrome for Testing): barrel-on-target + two-hand
+                    attachment, TPS & FPS  ->  node tools/aim_test.mjs
+  smoke_test.mjs    headless regression check: boot, AI run-and-gun, ragdoll, dodge roll
   *.py              reference Blender scripts (optional offline pipeline)
 ```
 
@@ -116,7 +139,16 @@ tools/
   Mannequin. New FBX assets reorient + convert to Y-up GLB via the Sandscape
   FBX→GLB converter.
 - **Weapons** — add a `Weapon` registry entry in
-  [WeaponManager.js](js/entities/Player/WeaponManager.js).
+  [WeaponManager.js](js/entities/Player/WeaponManager.js). A weapon can declare its own aim-IK
+  sockets/offsets via an `ikConfig` (right/left grip, muzzle + `muzzleForwardAxis`, hand offsets,
+  per-weapon correction strength/clamp — all in the in-hand weapon's local space), consumed by
+  [WeaponAimIK.js](js/entities/Player/WeaponAimIK.js) on equip; omit it to auto-resolve the muzzle
+  + barrel axis from the gun's bounding box and the grip sockets from where the clips pose the hands.
+  The **global** aim/IK feel (blend speed, IK weight, correction strength + max-angle clamp,
+  direction smoothing — `AimAlignmentBlendSpeed` / `WeaponIKBlendAlpha` / `AimCorrectionStrength` /
+  `MaxAimCorrectionAngle` / `AimSmoothingSpeed`) is the default `opts` in
+  [WeaponAimIK.js](js/entities/Player/WeaponAimIK.js) (overridable per weapon via `ikConfig`); the
+  aim-**depth** smoothing rate is `aimDistLerp` in [PlayerControls.js](js/entities/Player/PlayerControls.js).
 - **Level** — replace `assets/level.glb` + `assets/navmesh.obj` (export a matching
   navmesh from your level).
 - **Enemy** — the melee beast keeps the mutant rig (root-motion), scaled 2× in

@@ -109,7 +109,12 @@ export default class CharacterController extends Component{
         this.attackDistance = 2.2;
 
         this.canMove = true;
-        this.health = 100;
+        // Beast balancing: health dropped HARD (was 100) so it dies fast for quick death-feel
+        // iteration, while its melee damage is cranked up (see HitPlayer / meleeDamage) so it stays a
+        // genuine high-threat target that forces an immediate reaction despite the low health pool.
+        this.health = 30;
+        this.meleeDamage = 35;   // per landed punch (was the PlayerHealth default of 10) — very dangerous
+        this.lastAttacker = null;   // entity that last damaged us — the corpse is flung away from it
     }
 
     SetAnim(name, clip){
@@ -272,11 +277,18 @@ export default class CharacterController extends Component{
     }
 
     HitPlayer(){
-        this.player.Broadcast({topic: 'hit'});
+        // Explicit, heavy damage so the beast is a serious threat (the no-amount fallback in
+        // PlayerHealth was only 10). A couple of connected hits should put the player in danger.
+        this.player.Broadcast({topic: 'hit', amount: this.meleeDamage, from: this.parent});
     }
 
     TakeHit = msg => {
-        this.health = Math.max(0, this.health - msg.amount);
+        // `?? 0` guard: a hit that ever omits amount would otherwise NaN the health and the
+        // `== 0` death check would never fire (NaN == 0 is false), making the beast unkillable.
+        this.health = Math.max(0, this.health - (msg.amount ?? 0));
+        // Remember the killer so the death ragdoll is flung away from whoever actually dropped it
+        // (the player's gun, or a soldier ganging up on it), not always the player.
+        this.lastAttacker = msg.from || this.lastAttacker;
 
         if(this.health == 0){
             this.stateMachine.SetState('dead');
@@ -538,26 +550,29 @@ export default class CharacterController extends Component{
         this.ClearPath();
 
         try{
-            // Knock the corpse away from the player, with per-death RANDOM variation so no two
-            // crumples look alike: jitter the shove DIRECTION (±~26°), STRENGTH and LIFT, plus a
-            // random TWIST so the body spins a little as it falls. Gravity + friction do the rest.
-            const dir = this.tempVec.copy(this.model.position).sub(this.player.Position);
+            // Knock the corpse away from whoever KILLED it (the player's gun, or soldiers ganging up
+            // on it), with per-death RANDOM variation so no two crumples look alike: jitter the shove
+            // DIRECTION (±~29°), STRENGTH and LIFT, plus a random TWIST so the body spins a little as
+            // it falls. Falls back to the player. Gravity + friction do the rest.
+            const killerPos = (this.lastAttacker && this.lastAttacker.Position) ? this.lastAttacker.Position : this.player.Position;
+            const dir = this.tempVec.copy(this.model.position).sub(killerPos);
             dir.y = 0;
             if(dir.lengthSq() < 1e-4){ dir.set(0, 0, 1); }
             dir.normalize();
-            const yaw = (Math.random() - 0.5) * 0.9;            // spread the shove ±~26°
+            const yaw = (Math.random() - 0.5) * 1.0;            // spread the shove ±~29°
             const cy = Math.cos(yaw), sy = Math.sin(yaw);
-            const mag = 2.0 * (0.7 + Math.random() * 0.6);      // 1.4 .. 2.6 m/s horizontal
+            const mag = 2.6 * (0.7 + Math.random() * 0.7);      // ~1.8 .. 3.6 m/s horizontal (exaggerated)
             const impulse = new THREE.Vector3(
                 (dir.x * cy - dir.z * sy) * mag,
-                1.2 * (0.8 + Math.random() * 0.6),              // lift 0.96 .. 1.68 m/s
+                1.5 * (0.8 + Math.random() * 0.7),              // lift ~1.2 .. 2.25 m/s
                 (dir.x * sy + dir.z * cy) * mag);
-            const twist = (Math.random() - 0.5) * 5.0;          // ±2.5 rad/s spin while falling
+            const twist = (Math.random() - 0.5) * 6.0;          // ±3 rad/s spin while falling
 
             this.ragdoll = new Ragdoll(this.skinnedmesh, {
                 groundY: this.model.position.y,
                 impulse,
                 twist,
+                physicsWorld: this.physicsWorld,   // collide the corpse with walls / floor / slopes / props
             });
         }catch(e){
             console.error('Mutant ragdoll failed to build:', e);

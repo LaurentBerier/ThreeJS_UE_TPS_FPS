@@ -1,7 +1,7 @@
 {
   "name": "threejs-ue-tps-fps",
   "version": "0.1.0",
-  "description": "Buildless Three.js TPS/FPS template with UE Mannequin player, Ammo.js physics, navmesh AI, and UE-compatible glTF export. Run: python serve.py",
+  "description": "Buildless Three.js TPS/FPS template with UE Mannequin player, exact weapon aim + two-hand IK, Ammo.js physics, navmesh AI, and UE-compatible glTF export. Run: python serve.py",
   "scripts": {
     "start": "python serve.py"
   },

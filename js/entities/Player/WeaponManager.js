@@ -205,6 +205,17 @@ export default class WeaponManager extends Component{
         smgMesh.bind(akMesh.skeleton, akMesh.bindMatrix);
         smgMesh.frustumCulled = false;
         akMesh.parent.add(smgMesh);
+        // Both weapons here share the SAME in-hand AK pivot (the FP meshes aren't rendered), so they
+        // auto-resolve identical aim-IK sockets — no ikConfig needed. A REAL rigged weapon would
+        // declare its own, e.g.:
+        //   ikConfig: {
+        //     rightGrip: new THREE.Vector3(...),  leftGrip: new THREE.Vector3(...),   // pivot-local
+        //     muzzle: new THREE.Vector3(...),     aimSocket: new THREE.Vector3(...),  // pivot-local
+        //     muzzleForwardAxis: new THREE.Vector3(0,0,1),                            // local barrel axis
+        //     LeftHandOffset: new THREE.Vector3(...), RightHandOffset: new THREE.Vector3(...),
+        //     twoHanded: true, AimCorrectionStrength: 1.0,
+        //     MaxAimCorrectionAngle: THREE.MathUtils.degToRad(55),
+        //   }
         const smg = new Weapon('SMG (placeholder)', smgMesh, {
             fireRate: 0.06, damage: 1, magSize: 25, infiniteAmmo: true,
         });
@@ -239,6 +250,17 @@ export default class WeaponManager extends Component{
         this.activeIndex = index;
         const weapon = this.active;
         weapon.Attach();
+
+        // Re-point the aim-IK at the new weapon: reseed the aim low-pass (OnWeaponChanged) so a swap
+        // WHILE aiming glides instead of snapping, then apply any per-weapon overrides. Grip sockets are
+        // NOT re-captured on a swap — re-reading the foregrip from the IK-rotated hand mid-aim would
+        // record a wrong socket (see WeaponAimIK.OnWeaponChanged). Both registry weapons share the
+        // in-hand pivot, so the init-captured sockets already fit; a genuinely different rigged mesh
+        // supplies its own sockets via ikConfig (SetWeaponConfig).
+        if(this.body && this.body.weaponAimIK){
+            this.body.weaponAimIK.OnWeaponChanged();
+            if(weapon.ikConfig){ this.body.weaponAimIK.SetWeaponConfig(weapon.ikConfig); }
+        }
 
         this.hands.SetActiveWeapon(weapon);
         this.hands.stateMachine.SetState('idle');

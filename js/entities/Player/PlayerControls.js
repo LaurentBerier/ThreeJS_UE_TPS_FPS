@@ -60,6 +60,7 @@ export default class PlayerControls extends Component{
         this.tpsAimFov = 35;          // zoom (base FOV is captured in Initialize)
         this.aimLerpSpeed = 12;
         this.aimSensitivity = 0.55;   // mouse multiplier while aiming
+        this.aimMoveMultiplier = 0.4; // top-speed scale while aiming — a slow, deliberate ADS walk
         this.baseFov = 50;            // overwritten from the camera in Initialize
         // Smoothed current values driven each frame in UpdateCamera.
         this._curDistance = this.tpsDistance;
@@ -72,6 +73,33 @@ export default class PlayerControls extends Component{
         this._right = new THREE.Vector3();
         this._fwdBase = new THREE.Vector3(0, 0, -1);
         this._rightBase = new THREE.Vector3(1, 0, 0);
+
+        // --- Aim target (the single source of truth for "where the player is aiming"). Each frame
+        // we cast the SAME camera-centre ray the weapon fires (screen-centre unproject; see
+        // Weapon.Raycast) into the physics world and store the world point it hits. The weapon
+        // alignment + two-hand IK (PlayerBody / WeaponAimIK) point the visible barrel AT this point,
+        // so the gun lines up with the actual projectile trace — same ray, same target, no parallax
+        // between the crosshair and the muzzle. Valid=true when the ray hit geometry; otherwise the
+        // target is a far point straight down the crosshair (still a correct aim direction).
+        this.aimTarget = new THREE.Vector3();      // world point under the crosshair
+        this.aimOrigin = new THREE.Vector3();      // camera world position the ray starts from
+        this.aimDir = new THREE.Vector3(0, 0, -1); // unit camera-forward (crosshair direction)
+        this.aimTargetValid = false;               // true => the ray hit something (else far fallback)
+        this.aimDistance = 0;                      // metres from the camera to the (smoothed) aim target
+        this.aimMaxDistance = 150;                 // far fallback distance when nothing is hit (m)
+        // The aim DISTANCE is low-passed while the DIRECTION stays instant. Sweeping the crosshair
+        // across an edge (near pillar -> far background) makes the raw hit point jump in DEPTH; because
+        // the visible barrel points AT that point, a raw depth jump would swing the gun + support arm
+        // hard for a few frames (parallax is depth-sensitive). Easing only the distance kills that jerk
+        // while keeping lateral aim fully responsive (the direction is the live crosshair). The actual
+        // shot still uses the exact instantaneous hit (Weapon.Raycast), so accuracy is unaffected and a
+        // steady aim still converges the barrel exactly on the target.
+        this.aimDistLerp = 9;                      // depth ease rate (1/s) — smooth but responsive
+        this._aimDistSmooth = 0;                   // low-passed aim distance
+        this._aimDistSeeded = false;               // seed on first use so it doesn't ease in from 0
+        this._aimNear = new THREE.Vector3();       // scratch: near-plane crosshair point
+        this._aimFar = new THREE.Vector3();        // scratch: far-plane crosshair point
+        this._aimHit = { intersectionPoint: new THREE.Vector3(), intersectionNormal: new THREE.Vector3() };
 
         // --- First-person camera: rides the body's head bone (same character), with
         // the head mesh hidden by the camera's near plane ("cull distance"). ---
@@ -154,6 +182,48 @@ export default class PlayerControls extends Component{
         this.recoilRecover = 9.0;      // 1/s settle rate
         this._shakeEuler = new THREE.Euler();
         this._shakeQuat = new THREE.Quaternion();
+
+        // --- Aim-move wobble (TPS). While AIMING AND MOVING the body's hips are stabilized
+        // (PlayerBody.StabilizeHips) for a steady aim, which reads unnaturally still in motion.
+        // Add a gentle, footfall-paced sway to the VIEW so movement still registers. Rotation-only
+        // (like the shake) so the reticle stays anchored. Scales mostly off an eased on/off weight
+        // (so the deliberately-slow aim walk still conveys) plus a little speed.
+        this._aimWobbleW = 0;                                  // eased 0..1 weight (aiming & moving)
+        this.aimWobbleLerp = 6;                                // ease in/out rate (1/s)
+        this.aimWobbleAmount = THREE.MathUtils.degToRad(1.1);  // peak roll sway (rad); pitch/yaw scale off this
+        this.aimWobbleFreq = 5.0;                              // base stride frequency for the sway
+        this._wobbleEuler = new THREE.Euler();
+        this._wobbleQuat = new THREE.Quaternion();
+
+        // --- Forward dodge roll (double-tap Left Ctrl). A short, committed forward burst with an
+        // invulnerability window, driven by the roll animation on PlayerBody. Maintains momentum
+        // (drives the capsule forward at rollSpeed, eased out near the end) and ALWAYS releases
+        // control when the timer elapses, so it can never lock the player. Works in TPS and FPS
+        // (same body anim; the FP camera rides the head bone through the roll). See UpdateRoll.
+        this.rolling = false;
+        this.rollTimer = 0.0;
+        this.rollDuration = 0.78;        // s of locked roll movement (~ the 0.97s clip at 1.25x)
+        this.rollSpeed = 10.0;           // forward m/s at the start of the roll (boosted momentum)
+        this.rollEndSpeedFactor = 0.55;  // speed multiplier by the end of the roll (eases out)
+        this.rollCooldown = 0.18;        // s after a roll before another can start (prevents chaining)
+        this._rollCooldownTimer = 0.0;
+        this.rollDir = new THREE.Vector3();   // world-horizontal roll direction (camera forward)
+        this._rollResidual = new THREE.Vector3();   // scratch: world roll velocity
+        this._yawInv = new THREE.Quaternion();      // scratch: inverse look-yaw (world->local)
+        // Invulnerability window. Because the whole roll is a COMMITTED, control-locked dodge (you
+        // can't act until it releases), i-frames cover essentially the entire window: they start on
+        // the very first frame (0.0) so a reactive roll into an incoming hit is trustworthy, and run
+        // to rollIFrameEnd — just shy of the release — leaving only a tiny actionable recovery sliver
+        // vulnerable. PlayerHealth checks this.invulnerable. Not exploitable: the double-tap + cooldown
+        // + grounded checks gate it. 0..rollDuration.
+        this.invulnerable = false;
+        this.rollIFrameStart = 0.0;
+        this.rollIFrameEnd = 0.70;
+        // Double-tap detection for ControlLeft (Input only reports held state, so we edge-detect).
+        this._ctrlPrev = 0;
+        this._lastCtrlTapTime = -10.0;   // _tapClock time of the previous Ctrl press edge
+        this.doubleTapWindow = 0.30;     // s between the two taps to count as a double-tap
+        this._tapClock = 0.0;            // monotonic clock for tap timing (advanced each Update)
     }
 
     Initialize(){
@@ -293,6 +363,31 @@ export default class PlayerControls extends Component{
         }
     }
 
+    // While AIMING AND MOVING in TPS, add a gentle footfall-paced sway to the view. The aim pose
+    // stabilizes the hips, so without this the moving aim reads too still; this puts a little
+    // movement back into the camera. Rotation-only (composed on top of the look) so the crosshair
+    // stays anchored. Eased in/out so entering/leaving aim or stopping glides rather than pops.
+    ApplyAimMoveWobble(t){
+        const moving = this.HorizontalSpeed > 0.5 && this.IsGrounded;
+        const active = (this.cameraMode === 'TPS' && this.aiming && moving) ? 1 : 0;
+        this._aimWobbleW += (active - this._aimWobbleW) * (1 - Math.exp(-this.aimWobbleLerp * t));
+        if(this._aimWobbleW < 0.001){ return; }
+
+        // Mostly the eased weight (the aim walk is intentionally slow) plus a touch more the faster
+        // you go, so a sprint-aim conveys a bit harder than a creep.
+        const speedRatio = THREE.MathUtils.clamp(this.HorizontalSpeed / this.walkSpeed, 0, 1.6);
+        const amp = this.aimWobbleAmount * (0.6 + 0.4 * speedRatio) * this._aimWobbleW;
+        const f = this._fxTime * this.aimWobbleFreq * (0.7 + 0.3 * speedRatio);
+
+        // Footfall feel: vertical bob at 2x the stride; lateral roll + a little yaw at the stride.
+        const rp = Math.sin(f * 2.0) * amp * 0.6;   // pitch bob (up/down per footfall)
+        const rz = Math.sin(f) * amp;               // roll sway (side to side per stride)
+        const ry = Math.cos(f) * amp * 0.4;         // slight yaw drift
+        this._wobbleEuler.set(rp, ry, rz);
+        this._wobbleQuat.setFromEuler(this._wobbleEuler);
+        this.camera.quaternion.multiply(this._wobbleQuat);
+    }
+
     // Place the camera for the current mode. capPos is the capsule-tracked
     // position (eye height); it is also Player.Position so NPC targeting/raycasts
     // are camera-mode-independent.
@@ -312,6 +407,14 @@ export default class PlayerControls extends Component{
                 this._camTarget.y += this.fpsEyeUp;
             }else{
                 this._camTarget.copy(capPos);
+            }
+            // During a dodge roll the head bone tucks toward the ground (forward somersault); the FP
+            // ORIENTATION already stays as the look direction (set below, not the head bone), so the
+            // view doesn't tumble, but the POSITION would dip through the floor at the roll's lowest
+            // point. Floor the eye height so the first-person roll reads as a strong dip, never a
+            // through-the-floor clip.
+            if(this.rolling){
+                this._camTarget.y = Math.max(this._camTarget.y, capPos.y - 0.45);
             }
             // Lock the eye RIGIDLY to the head bone (no follow lag here): if the camera
             // lagged, the head mesh — rigged to the same bone — would swing ahead of
@@ -427,7 +530,44 @@ export default class PlayerControls extends Component{
             this.tpsNear, this.tpsNearMax);
         this.camera.updateProjectionMatrix();
 
+        this.ApplyAimMoveWobble(t);
         this.ApplyCameraShake(t);
+    }
+
+    // Resolve the world point under the crosshair by casting the SAME camera-centre ray the weapon
+    // fires (Weapon.Raycast: screen-centre near->far unproject). Stored on this.aimTarget for the
+    // weapon-alignment + hand IK (PlayerBody/WeaponAimIK) so the visible barrel points exactly where
+    // the bullet goes. Runs AFTER the camera is placed each frame, with the camera matrix refreshed
+    // so the unproject is current (no one-frame lag). No self-filter: the ray is identical to the
+    // shot, so the aim target is exactly the shot's hit point. Cheap: one physics raycast per frame
+    // (the boom already sweeps a sphere every frame).
+    UpdateAimTarget(t = 0.016){
+        if(!this.physicsWorld || !this.camera){ return; }
+        this.camera.updateMatrixWorld();
+        this.camera.getWorldPosition(this.aimOrigin);
+        // Crosshair ray: NDC centre at the near and far planes, unprojected to world space.
+        this._aimNear.set(0, 0, -1).unproject(this.camera);
+        this._aimFar.set(0, 0, 1).unproject(this.camera);
+        this.aimDir.copy(this._aimFar).sub(this._aimNear);
+        if(this.aimDir.lengthSq() < 1e-12){ this.aimDir.set(0, 0, -1).applyQuaternion(this.camera.quaternion); }
+        this.aimDir.normalize();
+
+        const mask = CollisionFilterGroups.AllFilter & ~CollisionFilterGroups.SensorTrigger;
+        let rawDist;
+        if(AmmoHelper.CastRay(this.physicsWorld, this._aimNear, this._aimFar, this._aimHit, mask)){
+            rawDist = this.aimOrigin.distanceTo(this._aimHit.intersectionPoint);
+            this.aimTargetValid = true;
+        }else{
+            // Nothing hit: aim a far point straight down the crosshair (still a correct DIRECTION).
+            rawDist = this.aimMaxDistance;
+            this.aimTargetValid = false;
+        }
+        // Low-pass the DEPTH only; the direction (aimDir) stays the live crosshair. aimTarget rides the
+        // crosshair laterally with no lag, but glides along the ray when the hit depth jumps at an edge.
+        if(!this._aimDistSeeded){ this._aimDistSmooth = rawDist; this._aimDistSeeded = true; }
+        else{ this._aimDistSmooth += (rawDist - this._aimDistSmooth) * (1 - Math.exp(-this.aimDistLerp * t)); }
+        this.aimDistance = this._aimDistSmooth;
+        this.aimTarget.copy(this.aimOrigin).addScaledVector(this.aimDir, this._aimDistSmooth);
     }
 
     Accelarate = (direction, t) => {
@@ -445,6 +585,81 @@ export default class PlayerControls extends Component{
     // player is frozen in place and the camera is left for the tool to drive.
     SetCameraOverride(on){
         this.cameraOverride = on;
+    }
+
+    // Edge-detect ControlLeft and start a roll on a double-tap inside doubleTapWindow. Input only
+    // reports HELD state, so we track the previous frame to find press edges and time the gap.
+    UpdateRollInput(){
+        const ctrl = Input.GetKeyDown('ControlLeft');
+        if(ctrl && !this._ctrlPrev){
+            if(this._tapClock - this._lastCtrlTapTime <= this.doubleTapWindow){
+                this._lastCtrlTapTime = -10.0;   // consume the pair so a held/third tap can't instantly re-fire
+                this.TryStartRoll();
+            }else{
+                this._lastCtrlTapTime = this._tapClock;
+            }
+        }
+        this._ctrlPrev = ctrl;
+    }
+
+    // Start a roll only from the ground and outside the cooldown (no air-dodge / no chaining).
+    TryStartRoll(){
+        if(this.rolling || this._rollCooldownTimer > 0 || !this.IsGrounded){ return; }
+        // Couple the control-lock length to the ACTUAL roll clip length at its played-back rate, so
+        // retuning the body's rollTimeScale or swapping RollForward.glb keeps movement, i-frames and
+        // animation in lockstep (instead of a hand-tuned constant silently drifting from the clip).
+        if(this.body && this.body._rollDuration > 0 && this.body.rollTimeScale > 0){
+            this.rollDuration = this.body._rollDuration / this.body.rollTimeScale;
+        }
+        this.rolling = true;
+        this.rollTimer = 0.0;
+        this.aiming = false;                                 // a roll drops precise-aim
+        // Roll forward = the camera's horizontal look direction.
+        this.rollDir.set(0, 0, -1).applyQuaternion(this.yaw);
+        this.rollDir.y = 0;
+        if(this.rollDir.lengthSq() < 1e-6){ this.rollDir.set(0, 0, -1); }
+        this.rollDir.normalize();
+        this.Broadcast({topic: 'player.roll'});              // PlayerBody plays the roll animation
+    }
+
+    // Drive the roll each frame: a forward velocity burst (eased out toward the end) with an
+    // i-frame window, then release control back to the normal movement path. ALWAYS ends on the
+    // timer so the player can never get locked. Mirrors the normal capsule/camera placement.
+    UpdateRoll(t){
+        this.rollTimer += t;
+        const u = Math.min(1.0, this.rollTimer / this.rollDuration);
+        this.invulnerable = (this.rollTimer >= this.rollIFrameStart && this.rollTimer <= this.rollIFrameEnd);
+
+        // Forward momentum from rollSpeed easing down to rollSpeed*endFactor across the roll.
+        const speed = this.rollSpeed * (1 - (1 - this.rollEndSpeedFactor) * u);
+        const velocity = this.physicsBody.getLinearVelocity();
+        velocity.setX(this.rollDir.x * speed);
+        velocity.setZ(this.rollDir.z * speed);
+        this.physicsBody.setLinearVelocity(velocity);
+        this.physicsBody.setAngularVelocity(this.zeroVec);
+        // Mirror the roll velocity into the LOCAL (pre-yaw) speed so HorizontalSpeed reports the
+        // motion AND the residual handed to the normal decel path continues along the ACTUAL world
+        // travel direction (rollDir) — not a stale local vector reinterpreted against a camera the
+        // player may have spun mid-roll. speed_local = yaw⁻¹ · (rollDir * speed).
+        this._rollResidual.copy(this.rollDir).multiplyScalar(speed);
+        this._yawInv.copy(this.yaw).invert();
+        this.speed.copy(this._rollResidual).applyQuaternion(this._yawInv);
+
+        const ms = this.physicsBody.getMotionState();
+        if(ms){
+            ms.getWorldTransform(this.transform);
+            const p = this.transform.getOrigin();
+            this._cap.set(p.x(), p.y() + this.yOffset, p.z());
+            this.parent.SetPosition(this._cap);
+            this.UpdateCamera(this._cap, t);
+            this.UpdateAimTarget(t);
+        }
+
+        if(this.rollTimer >= this.rollDuration){
+            this.rolling = false;
+            this.invulnerable = false;
+            this._rollCooldownTimer = this.rollCooldown;
+        }
     }
 
     Update(t){
@@ -471,6 +686,16 @@ export default class PlayerControls extends Component{
             this._vLatch = false;
         }
 
+        // Dodge roll: watch for the double-tap, and while a roll is in progress let it OWN movement
+        // (forward burst + i-frames + camera) and skip the normal input path entirely this frame.
+        this._tapClock += t;
+        if(this._rollCooldownTimer > 0){ this._rollCooldownTimer = Math.max(0, this._rollCooldownTimer - t); }
+        this.UpdateRollInput();
+        if(this.rolling){
+            this.UpdateRoll(t);
+            return;
+        }
+
         const forwardFactor = Input.GetKeyDown("KeyS") - Input.GetKeyDown("KeyW");
         const rightFactor = Input.GetKeyDown("KeyD") - Input.GetKeyDown("KeyA");
         const direction = this.moveDir.set(rightFactor, 0.0, forwardFactor).normalize();
@@ -479,6 +704,10 @@ export default class PlayerControls extends Component{
         const sprintKey = Input.GetKeyDown("ShiftLeft") || Input.GetKeyDown("ShiftRight");
         this.isSprinting = !!(sprintKey && Input.GetKeyDown("KeyW") && this.physicsComponent.canJump);
         this.maxSpeed = this.isSprinting ? this.walkSpeed * this.sprintMultiplier : this.walkSpeed;
+        // Aiming = slow, deliberate movement: scale the top speed WAY down while holding aim. This
+        // also suspends the sprint bonus (no sprint-aim) so the slow aim walk is consistent whether
+        // or not Shift is held. The legs still read as a jog, just a slow one.
+        if(this.aiming){ this.maxSpeed = this.walkSpeed * this.aimMoveMultiplier; }
 
         const velocity = this.physicsBody.getLinearVelocity();
 
@@ -514,6 +743,7 @@ export default class PlayerControls extends Component{
             this._cap.set(p.x(), p.y() + this.yOffset, p.z());
             this.parent.SetPosition(this._cap);
             this.UpdateCamera(this._cap, t);
+            this.UpdateAimTarget(t);
         }
 
     }
