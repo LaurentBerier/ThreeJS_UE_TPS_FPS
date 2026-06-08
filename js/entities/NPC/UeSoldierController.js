@@ -131,7 +131,7 @@ export default class UeSoldierController extends Component{
         this.repositionInterval = 1.6 + Math.random() * 2.4;   // ~1.6 .. 4.0 s of firing before relocating
         this.combatMoveSpeed = THREE.MathUtils.lerp(3.4, 4.8, this.aggression);   // strafe/relocate speed
         this.flankSign = Math.random() < 0.5 ? -1 : 1;         // preferred lateral direction around the target
-        this.holdGroundChance = 0.25;                          // chance a reposition just re-aims instead of moving
+        this.holdGroundChance = 0.12;                          // chance a reposition just re-aims instead of moving (low: keep moving)
         // Lower than before so the player drops him in fewer bullets (player AK does
         // 2 dmg/shot => ~15 hits; previously 100 hp => ~50 hits).
         this.health = 30;
@@ -216,6 +216,7 @@ export default class UeSoldierController extends Component{
         this.target = this.player;            // default target until AcquireTarget runs
 
         this.parent.RegisterEventHandler(this.TakeHit, 'hit');
+        this.blood = this.FindEntity('Level').GetComponent('BloodFx');   // shared blood-splatter burst
 
         // Build the shared UE avatar: import fix, textured material, AK in hand.
         const built = buildUeMannequin(this.model, { textures: this.textures, weapon: this.weapon, preOriented: this.preOriented });
@@ -230,8 +231,13 @@ export default class UeSoldierController extends Component{
             scale: this.rootBone.scale.clone(),
         } : null;
 
-        // Feet sit on the navmesh at the spawn position.
+        // Feet sit on the navmesh at the spawn position. Snap onto the walkable navmesh AND relocate off
+        // any spot buried in static collision (the level colliders are convex hulls, so a container is a
+        // solid box the navmesh can still cover) so a soldier never starts inside a wall/prop/container.
+        // A spawn that's already valid is left untouched.
         this.position = this.parent.Position.clone();
+        this.navmesh.FindClearSpawn(this.position, this.physicsWorld, this.position);
+        this.parent.SetPosition(this.position);   // keep entity targeting consistent with the snap
         this.modelRoot.position.copy(this.position);
         this.stuckSamplePos.copy(this.position);
         this.lastGoodPos.copy(this.position);
@@ -262,7 +268,7 @@ export default class UeSoldierController extends Component{
         this.SetupMuzzleFlash();
 
         this.stateMachine = new UeSoldierFSM(this);
-        this.stateMachine.SetState('idle');
+        this.stateMachine.SetState('patrol');   // enemies roam by default; only stop to scan briefly
     }
 
     SetupMuzzleFlash(){
@@ -1043,6 +1049,22 @@ export default class UeSoldierController extends Component{
 
     TakeHit = (msg) => {
         if(this.dead){ return; }
+
+        // Blood splatter at the bullet's impact point (ranged hits carry a hitResult). Spray OUT of the
+        // entry wound — back toward the shooter (the side facing the camera for the player's own shots)
+        // — and lift the spawn a touch off the collision surface so the burst reads as coming off the
+        // body, not erupting from inside the mesh (the hit capsule sits inside the visible silhouette,
+        // so emitting AT the raw hit point + spraying the old way along the bullet buried the droplets).
+        if(msg.hitResult && this.blood){
+            const hp = msg.hitResult.intersectionPoint;
+            let origin = hp, out = null;
+            if(msg.from && msg.from.Position){
+                out = msg.from.Position.clone().sub(hp);
+                if(out.lengthSq() > 1e-6){ out.normalize(); origin = hp.clone().addScaledVector(out, 0.12); }
+            }
+            this.blood.Emit(origin, out, { scale: 0.6, count: 12, spread: 0.7 });
+        }
+
         this.health = Math.max(0, this.health - (msg.amount ?? 0));
 
         // Additive hit-react flinch (scaled by the damage, so a beast swipe rocks harder than an AK
@@ -1051,7 +1073,11 @@ export default class UeSoldierController extends Component{
         // old amount/8 mapping floored to a ~3° twitch that vanished under the firing overlay — so the
         // bullet impact "didn't read". This jolts the torso ~10° per round and stacks under sustained
         // fire (the spring compounds; see HurtFlinch.Trigger), clamped by HurtFlinch's max angles.
-        if(this.health > 0 && this.hurtFlinch){ this.hurtFlinch.Trigger(0.7 + (msg.amount ?? 0) / 5); }
+        if(this.health > 0 && this.hurtFlinch){
+            // Recoil AWAY from the shooter: push direction = shooter -> this soldier.
+            const push = (msg.from && msg.from.Position) ? this.position.clone().sub(msg.from.Position) : null;
+            this.hurtFlinch.Trigger(0.7 + (msg.amount ?? 0) / 5, push, this.facingYaw);
+        }
 
         // Remember who hit us — a NEUTRAL retaliates against this attacker; everyone else uses it as
         // chase MEMORY so a soldier shot from cover pushes toward the shooter (instead of bailing

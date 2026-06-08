@@ -55,6 +55,10 @@ export default class PlayerControls extends Component{
         // shoulder, the FOV zooms, and the mouse slows for finer aim. Targets are
         // eased toward each frame so entering/leaving aim glides rather than snaps.
         this.aiming = false;
+        // Physical right-button state, tracked so a dodge roll (which force-drops aim, see TryStartRoll)
+        // can RESTORE aim when it ends if the button is still held — otherwise aiming stays stuck off
+        // until you release and re-press, which read as "I'm holding aim but nothing's aiming".
+        this._aimHeld = false;
         this.tpsAimDistance = 1.5;    // tighter boom while aiming
         this.tpsAimShoulder = 0.55;   // pull the shoulder offset in a little
         this.tpsAimFov = 35;          // zoom (base FOV is captured in Initialize)
@@ -210,11 +214,13 @@ export default class PlayerControls extends Component{
         this._wobbleEuler = new THREE.Euler();
         this._wobbleQuat = new THREE.Quaternion();
 
-        // --- Forward dodge roll (double-tap Left Ctrl). A short, committed forward burst with an
-        // invulnerability window, driven by the roll animation on PlayerBody. Maintains momentum
-        // (drives the capsule forward at rollSpeed, eased out near the end) and ALWAYS releases
-        // control when the timer elapses, so it can never lock the player. Works in TPS and FPS
-        // (same body anim; the FP camera rides the head bone through the roll). See UpdateRoll.
+        // --- Directional dodge roll (double-tap a movement key: W/A/S/D). A short, committed burst in
+        // the tapped key's direction with an invulnerability window, driven by the roll animation on
+        // PlayerBody. Maintains momentum (drives the capsule at rollSpeed, eased out near the end) and
+        // ALWAYS releases control when the timer elapses, so it can never lock the player. Works in TPS
+        // and FPS (same body anim; the FP camera rides the head bone through the roll). See UpdateRoll.
+        // (Moved OFF double-tap Ctrl: that collides with OS-level shortcuts — PowerToys "Find My
+        // Mouse", IME/accessibility toggles — which a web page can't suppress.)
         this.rolling = false;
         this.rollTimer = 0.0;
         this.rollDuration = 0.78;        // s of locked roll movement (~ the 0.97s clip at 1.25x)
@@ -240,10 +246,15 @@ export default class PlayerControls extends Component{
         this.invulnerable = false;
         this.rollIFrameStart = 0.0;
         this.rollIFrameEnd = 0.70;
-        // Double-tap detection for ControlLeft (Input only reports held state, so we edge-detect).
-        this._ctrlPrev = 0;
-        this._lastCtrlTapTime = -10.0;   // _tapClock time of the previous Ctrl press edge
-        this.doubleTapWindow = 0.30;     // s between the two taps to count as a double-tap
+        // Double-tap detection for a MOVEMENT key (W/A/S/D). Input only reports held state, so we
+        // edge-detect each key; a second tap of the SAME key inside doubleTapWindow fires a roll in
+        // that key's (camera-relative) direction. Kept fairly tight so an ordinary quick re-tap while
+        // moving rarely triggers an accidental dodge (the cooldown backs this up).
+        this._moveKeys = ['KeyW', 'KeyS', 'KeyA', 'KeyD'];
+        this._moveKeyPrev = { KeyW: 0, KeyS: 0, KeyA: 0, KeyD: 0 };
+        this._lastTapKey = null;         // movement key whose first tap is awaiting a second
+        this._lastTapTime = -10.0;       // _tapClock time of that first tap
+        this.doubleTapWindow = 0.28;     // s between the two taps to count as a double-tap
         this._tapClock = 0.0;            // monotonic clock for tap timing (advanced each Update)
     }
 
@@ -274,8 +285,8 @@ export default class PlayerControls extends Component{
 
         // Right click holds precise-aim. (In FPS the arms viewmodel runs its own ADS
         // via Hands; this TPS aim only applies in the TPS camera branch below.)
-        Input.AddMouseDownListner(e => { if(e.button === 2){ this.aiming = true; } });
-        Input.AddMouseUpListner(e => { if(e.button === 2){ this.aiming = false; } });
+        Input.AddMouseDownListner(e => { if(e.button === 2){ this.aiming = true; this._aimHeld = true; } });
+        Input.AddMouseUpListner(e => { if(e.button === 2){ this.aiming = false; this._aimHeld = false; } });
 
         document.addEventListener('pointerlockchange', this.OnPointerlockChange)
 
@@ -625,23 +636,29 @@ export default class PlayerControls extends Component{
         this.cameraOverride = on;
     }
 
-    // Edge-detect ControlLeft and start a roll on a double-tap inside doubleTapWindow. Input only
-    // reports HELD state, so we track the previous frame to find press edges and time the gap.
+    // Edge-detect the movement keys and start a directional roll on a double-tap of the SAME key
+    // inside doubleTapWindow. Input only reports HELD state, so we track each key's previous frame to
+    // find press edges and time the gap.
     UpdateRollInput(){
-        const ctrl = Input.GetKeyDown('ControlLeft');
-        if(ctrl && !this._ctrlPrev){
-            if(this._tapClock - this._lastCtrlTapTime <= this.doubleTapWindow){
-                this._lastCtrlTapTime = -10.0;   // consume the pair so a held/third tap can't instantly re-fire
-                this.TryStartRoll();
-            }else{
-                this._lastCtrlTapTime = this._tapClock;
+        for(const code of this._moveKeys){
+            const down = Input.GetKeyDown(code);
+            if(down && !this._moveKeyPrev[code]){
+                if(this._lastTapKey === code && (this._tapClock - this._lastTapTime) <= this.doubleTapWindow){
+                    this._lastTapKey = null;                 // consume the pair so a third tap can't re-fire
+                    this.TryStartRoll(code);
+                }else{
+                    this._lastTapKey = code;                 // first tap (or a different key): arm it
+                    this._lastTapTime = this._tapClock;
+                }
             }
+            this._moveKeyPrev[code] = down;
         }
-        this._ctrlPrev = ctrl;
     }
 
-    // Start a roll only from the ground and outside the cooldown (no air-dodge / no chaining).
-    TryStartRoll(){
+    // Start a roll only from the ground and outside the cooldown (no air-dodge / no chaining). The
+    // roll travels in the double-tapped key's direction, in the camera's horizontal frame: W forward,
+    // S back, D/A strafe; falls back to camera-forward.
+    TryStartRoll(dirCode){
         if(this.rolling || this._rollCooldownTimer > 0 || !this.IsGrounded){ return; }
         // Couple the control-lock length to the ACTUAL roll clip length at its played-back rate, so
         // retuning the body's rollTimeScale or swapping RollForward.glb keeps movement, i-frames and
@@ -652,10 +669,16 @@ export default class PlayerControls extends Component{
         this.rolling = true;
         this.rollTimer = 0.0;
         this.aiming = false;                                 // a roll drops precise-aim
-        // Roll forward = the camera's horizontal look direction.
-        this.rollDir.set(0, 0, -1).applyQuaternion(this.yaw);
+        // Roll direction from the tapped key, in the camera's horizontal frame (tempVec/moveDir are
+        // free scratch here: a rolling frame returns before the normal movement path uses them).
+        const fwd = this.tempVec.set(0, 0, -1).applyQuaternion(this.yaw);
+        const right = this.moveDir.set(1, 0, 0).applyQuaternion(this.yaw);
+        if(dirCode === 'KeyS'){ this.rollDir.copy(fwd).negate(); }
+        else if(dirCode === 'KeyD'){ this.rollDir.copy(right); }
+        else if(dirCode === 'KeyA'){ this.rollDir.copy(right).negate(); }
+        else{ this.rollDir.copy(fwd); }                      // KeyW / fallback
         this.rollDir.y = 0;
-        if(this.rollDir.lengthSq() < 1e-6){ this.rollDir.set(0, 0, -1); }
+        if(this.rollDir.lengthSq() < 1e-6){ this.rollDir.copy(fwd); this.rollDir.y = 0; }
         this.rollDir.normalize();
         this.Broadcast({topic: 'player.roll'});              // PlayerBody plays the roll animation
     }
@@ -699,6 +722,9 @@ export default class PlayerControls extends Component{
             this.rolling = false;
             this.invulnerable = false;
             this._rollCooldownTimer = this.rollCooldown;
+            // Roll over: if right-click is still held, resume precise-aim (the roll dropped it in
+            // TryStartRoll). Without this the camera stays un-aimed even though the button is down.
+            this.aiming = this._aimHeld;
         }
     }
 

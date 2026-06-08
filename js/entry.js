@@ -110,6 +110,7 @@ import WeaponAimDebug from './entities/Player/WeaponAimDebug.js'
 import UIManager from './entities/UI/UIManager.js'
 import AmmoBox from './entities/AmmoBox/AmmoBox.js'
 import LevelBulletDecals from './entities/Level/BulletDecals.js'
+import BloodFx from './entities/Common/BloodFx.js'
 import PlayerHealth from './entities/Player/PlayerHealth.js'
 import UeExporter from './export/UeExporter.js'
 
@@ -336,7 +337,7 @@ class FPSGameApp{
       jogR: byName('jog_right'),
       jumpStart: byName('jump_start'),
       jumpFall: byName('jump_fall'),
-      // Forward dodge roll (double-tap Ctrl). Player-only; the soldier ignores unknown clips.
+      // Directional dodge roll (double-tap a movement key). Player-only; the soldier ignores unknown clips.
       roll: rollClip,
     };
     this.ueTextures = null;   // baked into the mesh GLB
@@ -388,6 +389,8 @@ class FPSGameApp{
     levelEntity.AddComponent(new LevelSetup(this.assets['level'], this.scene, this.physicsWorld));
     levelEntity.AddComponent(new Navmesh(this.scene, this.assets['navmesh']));
     levelEntity.AddComponent(new LevelBulletDecals(this.scene, this.assets['decalColor'], this.assets['decalNormal'], this.assets['decalAlpha']));
+    // Shared blood-splatter burst (pooled sprites). One instance; combatants fetch it on hit.
+    levelEntity.AddComponent(new BloodFx(this.scene));
     this.entityManager.Add(levelEntity);
 
     const skyEntity = new Entity();

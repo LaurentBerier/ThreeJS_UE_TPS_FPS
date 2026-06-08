@@ -30,7 +30,8 @@ class IdleState extends State{
             action.time = 0.0;
             action.enabled = true;
             action.setEffectiveTimeScale(1.0);
-            action.crossFadeFrom(prevState.Animation.action, 0.1, true);
+            // Slightly longer blend back to idle so the gun settles out of the fire pose smoothly.
+            action.crossFadeFrom(prevState.Animation.action, 0.16, true);
         }
 
         action.play();
@@ -58,10 +59,11 @@ class ShootState extends State{
             action.time = 0.0;
             action.enabled = true;
             action.setEffectiveTimeScale(1.0);
-            action.crossFadeFrom(prevState.Animation.action, 0.1, true);
+            action.crossFadeFrom(prevState.Animation.action, 0.14, true);
         }
 
-        action.timeScale = 3.0;
+        // Was 3.0 — that snapped the fire pose in/out. 2.0 keeps the gun reactive but reads less frantic.
+        action.timeScale = 2.0;
         action.play();
     }
 

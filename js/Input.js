@@ -1,5 +1,16 @@
 
 
+// Game keys we consume — preventDefault stops the browser's own handling (Space scrolling the page,
+// Ctrl/Alt combos opening menus or save dialogs, '/' quick-find, etc.) so they don't fire under the
+// game. Function keys (F5/F12) and anything not listed pass through untouched. NOTE: this is a page
+// handler and CANNOT suppress OS-level global hotkeys (e.g. PowerToys double-Ctrl) — that's why the
+// dodge was rebound off Ctrl rather than relying on preventDefault.
+const GAME_KEYS = new Set([
+    'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space',
+    'ShiftLeft', 'ShiftRight', 'ControlLeft', 'AltLeft',
+    'KeyR', 'KeyV', 'KeyP', 'KeyK', 'Digit1', 'Digit2', 'Backquote',
+]);
+
 class Input{
     constructor(){
         this._keyMap = {};
@@ -44,6 +55,8 @@ class Input{
 
     _onKeyDown = (event) => {
         this._keyMap[event.code] = 1;
+        // Swallow the browser's default for keys the game owns (page scroll, Ctrl/Alt menu/save, etc.).
+        if(GAME_KEYS.has(event.code)){ event.preventDefault(); }
     }
 
     _onKeyUp = (event) => {

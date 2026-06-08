@@ -203,6 +203,29 @@ class AmmoHelper{
     return false;
   }
 
+  // Heuristic "is this point buried in / walled-in by STATIC collision" test, for spawn validation.
+  // Sweeps a small sphere from `far` metres out, in `dirs` horizontal directions, back toward the
+  // point at torso height: if EVERY approach is blocked before arriving, the point is enclosed (inside
+  // a solid convex-hull box like a shipping container, or boxed in by walls). Sweeping from OUTSIDE in
+  // sidesteps the unreliable penetrating-origin case (a sweep that STARTS inside a convex shape doesn't
+  // report cleanly). Returns true if enclosed (no clear straight approach from any sampled direction).
+  static IsEnclosedByStatic(world, point, { dirs = 8, far = 3.0, radius = 0.35, height = 1.0 } = {}){
+    if(!world){ return false; }
+    const mask = CollisionFilterGroups.StaticFilter;
+    const cx = point.x, cy = point.y + height, cz = point.z;
+    const center = new THREE.Vector3(cx, cy, cz);
+    const from = new THREE.Vector3();
+    const res = { fraction: 1 };
+    for(let i = 0; i < dirs; i++){
+      const a = (i / dirs) * Math.PI * 2;
+      from.set(cx + Math.cos(a) * far, cy, cz + Math.sin(a) * far);
+      // SphereSweep returns true on a hit (blocked). A clear approach (no hit) from ANY side => the
+      // point is reachable / not buried, so it's not enclosed.
+      if(!AmmoHelper.SphereSweep(world, radius, from, center, res, mask)){ return false; }
+    }
+    return true;
+  }
+
 }
 
 export {AmmoHelper, Ammo, createConvexHullShape, CollisionFlags, CollisionFilterGroups}

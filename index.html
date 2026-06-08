@@ -40,13 +40,24 @@
       <button id="start_game">NEW GAME</button>
       <p class="hint">
         WASD move &middot; Mouse look &middot; Shift sprint &middot; Space jump
-        &middot; <b>double-tap Ctrl</b> dodge roll &middot; R reload &middot;
+        &middot; <b>double-tap a move key</b> dodge roll &middot; R reload &middot;
         <b>V</b> toggle TPS/FPS &middot; <b>P</b> export
       </p>
     </div>
 
+    <!-- Red damage vignette, flashed by UIManager.FlashDamage when the player is hit. -->
+    <div id="blood_overlay"></div>
+
     <div id="game_hud">
-      <img id="crosshair" src="assets/ui/crosshair.png" />
+      <!-- CSS-drawn reticle: four ticks whose SPREAD is driven by WeaponManager (wide hipfire, tight
+           ADS) while the line thickness stays constant — a raster image can't grow without thickening
+           its outline, which is exactly what we want to avoid. -->
+      <div id="crosshair">
+        <span class="ch-tick ch-top"></span>
+        <span class="ch-tick ch-bottom"></span>
+        <span class="ch-tick ch-left"></span>
+        <span class="ch-tick ch-right"></span>
+      </div>
       <div id="weapon_name"></div>
       <div id="ammo_container">
         <span id="current_ammo">0</span>

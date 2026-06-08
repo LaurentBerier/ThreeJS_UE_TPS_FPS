@@ -24,6 +24,16 @@ export default class Weapon{
         // used), so the flash sits at the barrel.
         this.barrelOffset = config.barrelOffset ?? new THREE.Vector3(-0.3, -0.5, 8.3);
 
+        // --- Accuracy. The shot is a camera-centre ray; here we jitter it within a cone so hipfire
+        // scatters and aiming (ADS) is near-pinpoint. WeaponManager sets `aiming` each frame from the
+        // right-click ADS state. The crosshair/barrel still point dead-centre — only the bullet
+        // deviates, so the spread reads off the reticle (which also opens up for hipfire).
+        this.hipSpread = config.hipSpread ?? THREE.MathUtils.degToRad(3.0);   // hipfire cone half-angle (rad)
+        this.aimSpread = config.aimSpread ?? THREE.MathUtils.degToRad(0.35);  // ADS cone half-angle (rad)
+        this.aiming = false;
+        this._worldUp = new THREE.Vector3(0, 1, 0);
+        this._worldX = new THREE.Vector3(1, 0, 0);
+
         // Optional per-weapon aim-IK overrides (sockets/offsets/forward-axis, all in the in-hand
         // weaponPivot's local space) consumed by WeaponAimIK on equip. null => auto-resolve from the
         // gun's bbox + the posed hands. This is where a real rigged weapon declares its right/left grip
@@ -106,6 +116,23 @@ export default class Weapon{
         start.unproject(this.camera);
         const end = new THREE.Vector3(0.0, 0.0, 1.0);
         end.unproject(this.camera);
+
+        // Spread: nudge the far end off-axis within a cone (wide hipfire, tight ADS) so the bullet
+        // deviates from dead-centre. Area-uniform disk sample (sqrt(rand)) at radius len*tan(spread).
+        const spread = this.aiming ? this.aimSpread : this.hipSpread;
+        if(spread > 1e-5){
+            const dir = end.clone().sub(start);
+            const len = dir.length();
+            if(len > 1e-4){
+                dir.multiplyScalar(1 / len);
+                const ref = Math.abs(dir.y) < 0.95 ? this._worldUp : this._worldX;   // avoid a degenerate cross
+                const u = new THREE.Vector3().crossVectors(dir, ref).normalize();
+                const v = new THREE.Vector3().crossVectors(dir, u);                   // unit, completes the basis
+                const radius = len * Math.tan(spread) * Math.sqrt(Math.random());
+                const ang = Math.random() * Math.PI * 2;
+                end.addScaledVector(u, radius * Math.cos(ang)).addScaledVector(v, radius * Math.sin(ang));
+            }
+        }
 
         const collisionMask = CollisionFilterGroups.AllFilter & ~CollisionFilterGroups.SensorTrigger;
 

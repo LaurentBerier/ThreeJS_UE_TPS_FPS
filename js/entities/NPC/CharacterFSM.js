@@ -92,7 +92,13 @@ class PatrolState extends State{
         if(this.parent.proxy.CanSeeThePlayer()){
             this.parent.SetState('chase');
         }else if(this.parent.proxy.path && this.parent.proxy.path.length == 0){
-            this.parent.SetState('idle');
+            // Reached the roam point: mostly pick another and keep patrolling; only occasionally pause
+            // to idle/scan, so the beast prowls continuously when not engaged.
+            if(Math.random() < 0.2){
+                this.parent.SetState('idle');
+            }else{
+                this.parent.proxy.NavigateToRandomPoint();
+            }
         }
     }
 }

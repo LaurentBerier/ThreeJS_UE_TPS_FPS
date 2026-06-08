@@ -23,6 +23,15 @@ export default class WeaponManager extends Component{
         this.activeIndex = -1;
         this.hands = null;
         this.uimanager = null;
+
+        // Reticle SPREAD (centre-to-tick gap, in vw — see UIManager.SetReticleSize / the CSS reticle).
+        // Hipfire opens WIDE to convey the loose accuracy; ADS pulls in tight for precision. The tick
+        // thickness is fixed in CSS, so only the gap changes — the precise (ADS) reticle and the wide
+        // (hipfire) one share the exact same outline weight. A small bloom while the muzzle flash is lit
+        // still reads firing as recoil (re-armed every shot, so it holds open under auto-fire).
+        this.hipReticle = 1.5;
+        this.aimReticle = 0.55;
+        this.fireBloom = 0.4;
     }
 
     get active(){
@@ -298,9 +307,15 @@ export default class WeaponManager extends Component{
     }
 
     SetupInput(){
-        // Left click to fire.
+        // Left click to fire. Capture the trigger intent even WHILE reloading: Weapon.Shoot still
+        // refuses to fire mid-reload (its own `!this.reloading` guard), so latching shoot here just
+        // means a press/hold during a reload resumes firing the instant the reload finishes. Swallowing
+        // the click instead (the old `|| reloading` early-out) left the trigger "dead" — most visible
+        // after a dodge roll, which cancels the fast third-person reload and leaves the long
+        // first-person one running, so every fire press during that window was silently dropped and the
+        // player had to click again. (Auto-reload is unchanged: it keys off magAmmo===0 && !reloading.)
         Input.AddMouseDownListner( e => {
-            if(e.button != 0 || !this.active || this.active.reloading){
+            if(e.button != 0 || !this.active){
                 return;
             }
             this.active.shoot = true;
@@ -343,11 +358,26 @@ export default class WeaponManager extends Component{
         });
     }
 
+    // Size the on-screen crosshair from the aim state: wider for hipfire, tighter for ADS, plus a
+    // brief bloom while the muzzle flash is lit (re-armed every shot, so it holds open under auto-fire).
+    UpdateReticle(aiming, weapon){
+        if(!this.uimanager || !this.uimanager.SetReticleSize){ return; }
+        const firing = !!(weapon && weapon.flash && weapon.flash.life > 0);
+        let size = aiming ? this.aimReticle : this.hipReticle;
+        if(firing){ size += this.fireBloom; }
+        this.uimanager.SetReticleSize(size);
+    }
+
     Update(t){
         const weapon = this.active;
         if(!weapon){
             return;
         }
+
+        // ADS state (right-click in either camera mode): tightens the shot cone AND the reticle.
+        const aiming = !!((this.controls && this.controls.aiming) || (this.hands && this.hands.aiming));
+        weapon.aiming = aiming;
+        this.UpdateReticle(aiming, weapon);
 
         // Auto-reload when trying to fire an empty mag (matches the old behaviour).
         if(weapon.shoot && weapon.magAmmo === 0 && !weapon.reloading){

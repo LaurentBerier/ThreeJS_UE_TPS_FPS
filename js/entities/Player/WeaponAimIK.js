@@ -128,6 +128,15 @@ export default class WeaponAimIK{
         this._idQ = new THREE.Quaternion();          // permanent identity (slerp base) — never mutated
         this._scaleQ = new THREE.Quaternion();       // scratch for _scaleQuatAngle
         this._perp = new THREE.Vector3();            // scratch for the straight-arm bend-plane fallback
+        // Elbow-pole stabilization (kills the support-arm flip on extreme cross-body aim): a stable
+        // anatomical reference the support elbow should bend toward (down + a touch forward), and the
+        // scratch it's resolved into.
+        this._poleRef  = new THREE.Vector3();        // reference pole (world-down) projected into the bend plane
+        this._poleDown = new THREE.Vector3(0, -1, 0);// the support elbow hangs DOWN — a fixed, gimbal-free ref
+        // How strongly the support elbow is locked to the down reference (0 = pure animation/gimbal,
+        // 1 = always straight down). High enough to kill the swivel/gimbal as the aim sweeps while still
+        // reading natural for a rifle grip.
+        this.supportElbowStabilize = 0.7;
 
         // Debug snapshot for WeaponAimDebug (filled each frame; read-only for consumers).
         this._debug = {
@@ -388,7 +397,13 @@ export default class WeaponAimIK{
             // Blend the effector target from the animated hand to the foregrip by the IK weight, so the
             // support hand eases on/off with the aim and never snaps.
             this._tmpV2.copy(this._ikE).lerp(this._leftTarget, ikW);
-            this._solveTwoBone(this.bones.upperarm_l, this.bones.lowerarm_l, this.bones.hand_l, this._tmpV2);
+            // Support-arm elbow: lock the bend plane to a FIXED world-down reference (not the animated
+            // pole, and NOT an aim-relative hint — an aim-direction component made the elbow swivel/gimbal
+            // as the crosshair swept). supportElbowStabilize biases the elbow to hang consistently below
+            // the shoulder->hand line, killing the gimbal while the flip-guard in the solver still stops
+            // an outright reverse bend on extreme cross-body aim.
+            this._solveTwoBone(this.bones.upperarm_l, this.bones.lowerarm_l, this.bones.hand_l, this._tmpV2,
+                this._poleDown, this.supportElbowStabilize);
 
             // Wrist LOCK: orient hand_l to the gun so the palm stays glued to the foregrip as the gun
             // aims (translation is already planted by the IK above). The desired world orientation is
@@ -425,7 +440,7 @@ export default class WeaponAimIK{
     // there is no angle-sign ambiguity and the end lands exactly on the target. Reads live world
     // positions and applies world-space delta rotations (converted to each bone's local frame), so it
     // composes on top of the animated pose with no drift.
-    _solveTwoBone(root, mid, end, targetWorld){
+    _solveTwoBone(root, mid, end, targetWorld, poleHint = null, poleStabilize = 0){
         root.getWorldPosition(this._R);
         mid.getWorldPosition(this._M);
         end.getWorldPosition(this._E);
@@ -440,15 +455,42 @@ export default class WeaponAimIK{
         this._n.copy(this._rt).multiplyScalar(1 / rawLen);
         const d = THREE.MathUtils.clamp(rawLen, Math.abs(a - b) + 1e-3, a + b - 1e-3);
 
-        // u = unit perpendicular to n in the CURRENT bend plane, pointing to the current elbow side
-        // (so the elbow stays where the animation has it — no flip).
-        this._v1.copy(this._M).sub(this._R);
-        this._u.copy(this._v1).addScaledVector(this._n, -this._v1.dot(this._n));
-        if(this._u.lengthSq() < 1e-8){
-            this._u.copy(this._n).cross(this._perp.set(0, 1, 0));
-            if(this._u.lengthSq() < 1e-8){ this._u.copy(this._n).cross(this._perp.set(1, 0, 0)); }
+        // u = unit perpendicular to n, pointing to the elbow side. Start from the CURRENT animated bend
+        // so a good pose is preserved as-is. But on extreme cross-body aim the animated elbow can line
+        // up with n (degenerate) or sit on the WRONG side, flipping the forearm into an impossible
+        // reverse/twisted bend. So we also build a stable anatomical reference from poleHint (the elbow
+        // should bend roughly that way — e.g. DOWN for the support arm), projected into the bend plane,
+        // and (a) use it when the animated pole is degenerate, (b) blend toward it ONLY when the
+        // animated pole points the wrong way (negative alignment). Aligned poses are left untouched.
+        this._u.copy(this._M).sub(this._R);
+        this._u.addScaledVector(this._n, -this._u.dot(this._n));   // animated pole, perpendicular to n
+        const uLenSq = this._u.lengthSq();
+
+        this._poleRef.copy((poleHint && poleHint.lengthSq() > 1e-8) ? poleHint : this._poleDown);
+        this._poleRef.addScaledVector(this._n, -this._poleRef.dot(this._n));   // reference, into bend plane
+        const refValid = this._poleRef.lengthSq() > 1e-6;
+        if(refValid){ this._poleRef.normalize(); }
+
+        if(uLenSq < 1e-6){
+            // Degenerate animated pole (elbow colinear with root->target): use the reference, else any
+            // perpendicular as a last resort.
+            if(refValid){ this._u.copy(this._poleRef); }
+            else{
+                this._u.copy(this._n).cross(this._perp.set(0, 1, 0));
+                if(this._u.lengthSq() < 1e-8){ this._u.copy(this._n).cross(this._perp.set(1, 0, 0)); }
+                this._u.normalize();
+            }
+        }else{
+            this._u.multiplyScalar(1 / Math.sqrt(uLenSq));
+            if(refValid){
+                // Stabilize: bias the animated pole toward the fixed reference so the elbow doesn't
+                // swivel/gimbal as the animated arm (and the aim) move — it stays in a consistent plane.
+                if(poleStabilize > 0){ this._u.lerp(this._poleRef, poleStabilize).normalize(); }
+                // Flip-guard: if it still points to the wrong side, correct fully.
+                const align = this._u.dot(this._poleRef);             // <0 => elbow on the wrong side
+                if(align < 0){ this._u.lerp(this._poleRef, Math.min(1, -align)).normalize(); }
+            }
         }
-        this._u.normalize();
 
         // Desired elbow M' (a from R, at the law-of-cosines angle off n) and end E' (on n at distance d).
         const cosA = THREE.MathUtils.clamp((a * a + d * d - b * b) / (2 * a * d), -1, 1);

@@ -66,15 +66,31 @@ export default class HurtFlinch{
         this._delta = new THREE.Quaternion();
     }
 
-    // Trigger a flinch. strength scales the impulse (e.g. damage / referenceDamage, clamped); rnd is
-    // an optional [-1,1] side bias for the twist (default random) so successive hits jerk different ways.
-    Trigger(strength = 1, rnd = null){
+    // Trigger a flinch. strength scales the impulse (e.g. damage / referenceDamage, clamped). When a
+    // `pushDir` (world-space horizontal direction the hit shoves the body — i.e. shooter -> victim) and
+    // the victim's `facingYaw` are given, the flinch recoils AWAY from the shooter: the torso pitches in
+    // the push direction (shot from the front => leans back; from behind => pitches forward) and twists
+    // to the struck side, instead of the old always-back + random-twist. Omitting pushDir keeps the
+    // legacy behaviour (used by the player). The kicks ADD to the current velocity so a fresh hit during
+    // an in-progress flinch compounds into a harder stagger rather than resetting.
+    Trigger(strength = 1, pushDir = null, facingYaw = 0){
         const s = THREE.MathUtils.clamp(strength, 0.35, 2.2);
-        // Recoil the torso BACK and twist to a (random) side. The kicks ADD to the current velocity so
-        // a fresh hit during an in-progress flinch compounds into a harder stagger rather than resetting.
-        this._pitchVel += this.kickPitch * s;
-        const side = (rnd !== null) ? rnd : (Math.random() * 2 - 1);
-        this._yawVel += this.kickYaw * s * (side >= 0 ? 1 : -1) * (0.6 + 0.4 * Math.abs(side || 1));
+        if(pushDir && (pushDir.x * pushDir.x + pushDir.z * pushDir.z) > 1e-6){
+            // Decompose the push into the body's forward/right (same axis convention as Update). fwdComp
+            // > 0 => pushed forward (shot from behind); rightComp > 0 => pushed to the body's right.
+            const inv = 1 / Math.hypot(pushDir.x, pushDir.z);
+            const dx = pushDir.x * inv, dz = pushDir.z * inv;
+            const fwdComp = dx * Math.sin(facingYaw) + dz * Math.cos(facingYaw);
+            const rightComp = dx * Math.cos(facingYaw) - dz * Math.sin(facingYaw);
+            // Sign so the torso recoils ALONG the push (away from the shooter). If this ever reads
+            // reversed on a given rig, flip the sign on this one line.
+            this._pitchVel += this.kickPitch * s * Math.sign(fwdComp || -1);
+            this._yawVel += this.kickYaw * s * Math.sign(rightComp || (Math.random() - 0.5));
+        }else{
+            // Legacy: recoil back + twist to a random side.
+            this._pitchVel += this.kickPitch * s;
+            this._yawVel += this.kickYaw * s * ((Math.random() * 2 - 1) >= 0 ? 1 : -1);
+        }
     }
 
     get active(){

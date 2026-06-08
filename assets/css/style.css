@@ -11,12 +11,63 @@ canvas {
   display: block;
 }
 
+/* Vector reticle: a zero-size point at screen centre with four ticks placed around it. The GAP from
+   centre to each tick is driven by WeaponManager via --reticle-gap (wider hipfire = less precision,
+   tighter ADS, a small fire bloom); the tick thickness/length are FIXED, so the outline weight is the
+   same whatever the spread — a bigger reticle never means thicker lines. */
 #crosshair {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 2%;
-  transform: translate(-50%, -50%);
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  --reticle-gap: 1vw;            /* centre -> inner end of each tick (set per-frame by WeaponManager) */
+  --reticle-thickness: 2px;     /* CONSTANT outline weight — identical hipfire & ADS */
+  --reticle-length: 7px;        /* CONSTANT tick length */
+  --reticle-color: rgba(255, 255, 255, 0.9);
+}
+
+.ch-tick {
+  position: absolute;
+  background: var(--reticle-color);
+  /* Thin dark halo so the white ticks read on bright backgrounds, like the old sprite did. */
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
+  /* Ease the gap open/closed so swapping hipfire<->ADS (and the fire bloom) blooms rather than snaps.
+     The gap feeds top/bottom/left/right below, so transitioning those animates the spread. */
+  transition: top 0.1s ease-out, bottom 0.1s ease-out, left 0.1s ease-out, right 0.1s ease-out;
+}
+
+/* Vertical ticks (above/below centre): narrow = thickness, tall = length, centred on X. */
+.ch-top, .ch-bottom {
+  width: var(--reticle-thickness);
+  height: var(--reticle-length);
+  left: calc(var(--reticle-thickness) / -2);
+}
+.ch-top    { bottom: var(--reticle-gap); }
+.ch-bottom { top: var(--reticle-gap); }
+
+/* Horizontal ticks (left/right of centre): wide = length, short = thickness, centred on Y. */
+.ch-left, .ch-right {
+  height: var(--reticle-thickness);
+  width: var(--reticle-length);
+  top: calc(var(--reticle-thickness) / -2);
+}
+.ch-left  { right: var(--reticle-gap); }
+.ch-right { left: var(--reticle-gap); }
+
+/* Damage vignette: a red glow that pools at the screen edges. Flashed (opacity 0 -> ~0.8 -> 0)
+   by UIManager.FlashDamage on a hit. Above the world, below the HUD readouts; never eats input. */
+#blood_overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 30;
+  background: radial-gradient(ellipse at center,
+    rgba(120, 0, 0, 0) 45%,
+    rgba(120, 0, 0, 0.25) 75%,
+    rgba(110, 0, 0, 0.7) 100%);
 }
 
 #ammo_container {

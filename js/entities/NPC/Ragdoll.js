@@ -76,13 +76,15 @@ export default class Ragdoll{
         // gravityStep/(1-damping): a low value throttles terminal velocity and the death looks
         // weightless/slow. At 0.985 the body accelerates to a heavy ~9 m/s and slams down.
         this.damping = 0.985;          // air drag per step (high value == little drag)
-        this.iterations = 9;           // relaxation passes so limbs hold length under the high gravity
+        this.iterations = 12;          // relaxation passes so limbs hold length + limits under high gravity
         this.substeps = 2;             // verlet sub-steps per frame (stability at the faster fall)
         this.boneStiffness = 1.0;      // limb (parent) sticks hold their length hard
-        // Brace stiffness stays LOW: grandparent braces keep the body from collapsing into a noodle,
-        // but if too strong they keep the corpse standing (a stiff stick-figure with feet planted is
-        // a stable column that never falls). Constant (no time-varying scripted stiffening anymore).
-        this.braceStiffness = 0.16;    // grandparent braces resist bending only gently
+        // Brace stiffness: grandparent braces keep the body from collapsing into a noodle. Kept
+        // MODERATE — too strong and the corpse stands (a stiff stick-figure with feet planted is a
+        // stable column that never falls). Bumped from 0.16 for more "muscle tone" / bend resistance
+        // (the user wanted limbs stiffer so they don't whip into impossible poses) without locking it
+        // upright. Constant (no time-varying scripted stiffening).
+        this.braceStiffness = 0.20;    // grandparent braces resist bending
 
         // ---- Joint angle limits (AAA "no impossible poses") ----
         // The distance + brace sticks alone let a verlet skeleton fold into anatomically impossible
@@ -96,9 +98,17 @@ export default class Ragdoll{
         // tumbles freely and then SETTLES to a clean rest (an earlier angular-cone version pumped energy
         // and made a limb flail forever). The existing soft braces still pull gently toward the
         // death-pose span, which reads as a bit of joint RESISTANCE / muscle tone (the GTA feel).
-        this.jointFoldFrac = 0.42;       // |A-C| min as a fraction of straight length (tightest fold)
-        this.jointStraightFrac = 0.985;  // |A-C| max as a fraction of straight length (no hyperextension)
-        this.limitStiffness = 0.9;       // how hard the joint-span limits pull (stiff — they're hard limits)
+        // Tighter than before so joints can neither over-fold nor lock out straight: an elbow/knee
+        // keeps a slight natural bend at the extreme instead of snapping to a rigid, hyperextended or
+        // fully-folded stick. (The user wanted tighter joint limits so limbs don't end up impossible.)
+        this.jointFoldFrac = 0.50;       // |A-C| min as a fraction of straight length (tightest fold)
+        this.jointStraightFrac = 0.965;  // |A-C| max as a fraction of straight length (no hyperextension)
+        this.limitStiffness = 0.97;      // how hard the joint-span limits pull (stiff — they're hard limits)
+        // GENTLE pull of each joint toward its T-POSE (bind-pose) angle — a "muscle tone" resistance
+        // that biases the body to settle near anatomically natural angles (and helps unfold a joint
+        // that got driven the wrong way) WITHOUT being strong enough to hold a standing stance. The
+        // rest span comes from the skeleton's bind pose (see _build), so it's the real neutral pose.
+        this.jointRestStiffness = 0.05;  // soft spring toward the T-pose joint angle (0 = off)
 
         // ---- World collision (the AAA "reacts to the environment" bit) ----
         // The corpse particles collide with the REAL static level via Ammo sweeps/rays, so it
@@ -110,15 +120,18 @@ export default class Ragdoll{
         // freeze"). Pure physics: no post-landing animation assist of any kind. Pushed up for a
         // juicier, more visible rebound off the floor on the kill slam (the resting-contact gate
         // below still drops it to 0 at low speed so the body always settles to a clean rest).
-        this.restitution = 0.68;         // bounce: fraction of into-surface speed returned on impact (juicy)
-        this.tangentKeep = 0.88;         // fraction of along-surface speed kept on contact (slide/roll)
+        // Lower bounce + a touch more ground friction than the old juicy values: the big, heavy beast
+        // was rebounding/rolling so much it visibly "shook" after slamming down. It still rebounds off
+        // the first hit, but settles to rest faster instead of jittering. (The user's beast-shake fix.)
+        this.restitution = 0.42;         // bounce: fraction of into-surface speed returned on impact
+        this.tangentKeep = 0.82;         // fraction of along-surface speed kept on contact (slide/roll)
         // Resting-contact threshold (per-substep displacement; ≈1.2 m/s). Below this into-surface
         // speed, restitution is dropped to 0 so the body comes to REST instead of micro-bouncing on
         // gravity's per-frame nudge forever (a bouncy sphere never settles in a discrete sim). The
         // big, satisfying first impacts (corpse slams in at several m/s) are well above it and still
         // rebound fully; only the dying-out settle bounces are damped to rest — which also lets the
         // sleep gate actually engage.
-        this.restThreshold = 0.01;
+        this.restThreshold = 0.02;
         this._mask = CollisionFilterGroups.StaticFilter;   // collide vs the static level only
         this._rayPt = new THREE.Vector3();
         this._sweepRes = { point: new THREE.Vector3(), normal: new THREE.Vector3(), fraction: 1 };
@@ -144,7 +157,7 @@ export default class Ragdoll{
         // stops. After sleepDwell + postSettleLinger of continuous stillness it sleeps (bounding the
         // per-corpse cost). Any real motion in between (a late roll, a secondary collision) resets the
         // stillness timer, so a body that's still tumbling never sleeps early.
-        this.postSettleLinger = 2.5;        // seconds to keep simulating AFTER settling, before sleeping
+        this.postSettleLinger = 1.2;        // seconds to keep simulating AFTER settling, before sleeping
         // Sleep on CENTROID translation, not per-node motion: a verlet constraint network always has
         // sub-mm internal jitter even at rest (the soft braces never perfectly freeze), so summing
         // per-node motion never crosses a tight threshold. The centroid averages that jitter out and
@@ -153,6 +166,24 @@ export default class Ragdoll{
         // even leaning on geometry) yet far BELOW a real tumble (flung at 2-9 m/s), so a genuinely
         // moving body never false-sleeps.
         this.sleepCentroidSq = 1e-4;
+
+        // ---- Ground-impact freeze (the AAA "no endless jitter on landing" fix) ----
+        // A verlet corpse on the floor never perfectly stops — the soft braces + limits leave a low-
+        // amplitude residual that reads as the body "shaking" after it lands. Rather than rely on the
+        // slow centroid-sleep above, we count distinct GROUND impacts and HARD-FREEZE the sim shortly
+        // after: on the 1st floor hit we absorb some energy (a subtle thud, less splay/bounce) and arm a
+        // fallback freeze; on the 2nd hit (it bounced and came back down) we freeze 0.5 s later. Freezing
+        // leaves the bones exactly where they settled — no jitter. Applies to EVERY ragdoll (beast + human).
+        this._frozen = false;               // true => sim stopped, bones held at their last pose
+        this._groundHits = 0;               // distinct ground impacts counted
+        this._lastGroundHitAge = -1;        // _age of the last counted impact (debounce)
+        this.groundHitDebounce = 0.12;      // s between impacts to count them as distinct (rejects micro-bounce)
+        this.impactDisp = 0.012;            // min per-substep into-floor displacement to count as an impact (~1.4 m/s)
+        this._hitGroundThisFrame = false;   // set by the floor collision, consumed in update()
+        this._freezeTimer = -1;             // s until the sim freezes (-1 = unarmed)
+        this.firstHitFreeze = 1.3;          // fallback: freeze this long after the 1st hit if no clean 2nd hit
+        this.secondHitFreeze = 0.5;         // freeze this long after the 2nd hit (the requested quick kill)
+        this.landingAbsorb = 0.6;           // 1st-hit energy keep (0.6 => absorb 40%): a thud, less bounce/splay
 
         skinnedMesh.skeleton.bones.forEach(b => b.updateWorldMatrix(true, false));
 
@@ -234,6 +265,20 @@ export default class Ragdoll{
         // is clamped to [foldFrac, straightFrac] * (|A-B| + |B-C|): it can never exceed the straight
         // length (no hyperextension) nor fold tighter than the minimum (no folding through itself).
         // The bounds come from the two bone lengths, so they hold whatever pose the body died in.
+        // T-pose (bind-pose) joint reference for the gentle "muscle tone" pull. The bind-pose world
+        // positions come from the skeleton's inverse-bind matrices; we only use the |A-C| SPAN, which
+        // is frame-invariant, so mesh-local vs world doesn't matter. Guarded: if the data is missing
+        // the rest pull is simply skipped per joint (rest stays null).
+        const bindPos = new Map();
+        const sk = this.mesh.skeleton;
+        if(sk && sk.boneInverses){
+            const m = new THREE.Matrix4();
+            sk.bones.forEach((b, i) => {
+                const inv = sk.boneInverses[i];
+                if(inv){ bindPos.set(b, new THREE.Vector3().setFromMatrixPosition(m.copy(inv).invert())); }
+            });
+        }
+
         this.limitSticks = [];
         for(const node of this.nodes){
             const B = node.parent;
@@ -244,12 +289,19 @@ export default class Ragdoll{
             const bc = B.p.distanceTo(A.p);
             const straight = ab + bc;
             if(straight < 1e-5){ continue; }
-            this.limitSticks.push({
+            const stick = {
                 a: node, b: A,
                 min: straight * this.jointFoldFrac,
                 max: straight * this.jointStraightFrac,
                 k: this.limitStiffness,
-            });
+                rest: null,                                  // T-pose target span (set below if available)
+                restK: this.jointRestStiffness,
+            };
+            // T-pose span for this chain, clamped into the joint's own [min,max] so the soft rest pull
+            // can never fight the hard limits.
+            const pa = bindPos.get(node.bone), pc = bindPos.get(A.bone);
+            if(pa && pc){ stick.rest = THREE.MathUtils.clamp(pa.distanceTo(pc), stick.min, stick.max); }
+            this.limitSticks.push(stick);
         }
 
         // Precompute the root -> leaf (BFS) order so _applyToBones reuses it each frame and
@@ -339,7 +391,7 @@ export default class Ragdoll{
     }
 
     update(dt){
-        if(!this.nodes || this._asleep){ return; }   // rested corpse: nothing left to simulate
+        if(!this.nodes || this._asleep || this._frozen){ return; }   // rested/frozen corpse: nothing to simulate
         this._age += dt;
         // Remember where each particle began this frame so the wall sweep can test the FULL frame
         // motion (catching fast-moving limbs that would otherwise tunnel through a thin wall), and so
@@ -349,9 +401,19 @@ export default class Ragdoll{
         const sub = Math.max(1e-3, Math.min(1 / 30, dt)) / this.substeps;
         for(let s = 0; s < this.substeps; s++){ this._step(sub); }
 
-        // Resolve collisions against the real level once per frame (walls + floor, with bounce).
+        // Resolve collisions against the real level once per frame (walls + floor, with bounce). The
+        // floor collision flags a forceful impact; we count it into the ground-hit / freeze logic.
+        this._hitGroundThisFrame = false;
         if(this.physicsWorld){ this._collideWorld(); }
         else { this._collideFlat(); }   // no world handle: fall back to the flat groundY plane
+        if(this._hitGroundThisFrame){ this._registerGroundHit(); }
+
+        // Count down the impact-freeze timer (armed by ground hits); freeze when it elapses so the body
+        // stops jittering. Runs WHILE the sim continues, so the last ~0.5 s still settles before the freeze.
+        if(this._freezeTimer >= 0){
+            this._freezeTimer -= dt;
+            if(this._freezeTimer <= 0){ this._frozen = true; this._freezeTimer = -1; }
+        }
 
         this._applyToBones();
 
@@ -411,6 +473,25 @@ export default class Ragdoll{
                 else if(d < ls.min){ target = ls.min; }
                 else{ continue; }
                 const diff = ((d - target) / d) * 0.5 * ls.k;
+                _v.multiplyScalar(diff);
+                ls.a.p.add(_v);
+                ls.b.p.sub(_v);
+            }
+        }
+
+        // Gentle T-pose "muscle tone": ONCE per step (not per relaxation iteration, so it stays soft
+        // regardless of the iteration count), nudge each joint span toward its bind-pose angle. This is
+        // the "resistance" that biases the body toward natural angles and helps unfold a joint driven
+        // the wrong way — but it's weak (jointRestStiffness) so gravity + the death impulse still topple
+        // the corpse and it settles freely; it just prefers possible poses over impossible ones.
+        // Symmetric projection, so (like every other constraint here) it injects no energy.
+        if(this.jointRestStiffness > 0){
+            for(const ls of this.limitSticks){
+                if(ls.rest === null){ continue; }
+                _v.copy(ls.b.p).sub(ls.a.p);
+                const d = _v.length();
+                if(d < 1e-5){ continue; }
+                const diff = ((d - ls.rest) / d) * 0.5 * ls.restK;
                 _v.multiplyScalar(diff);
                 ls.a.p.add(_v);
                 ls.b.p.sub(_v);
@@ -479,6 +560,7 @@ export default class Ragdoll{
             const minY = floorY + r;
             if(node.p.y < minY){
                 this._vel.copy(node.p).sub(node.prev);    // capture the downward velocity FIRST
+                if(-this._vel.y > this.impactDisp){ this._hitGroundThisFrame = true; }   // a real floor impact
                 node.p.y = minY;                          // then rest the particle on the floor
                 this._reflect(node, this._n.set(0, 1, 0), this._vel);
             }
@@ -491,9 +573,29 @@ export default class Ragdoll{
         for(const node of this.nodes){
             if(node.p.y < floor){
                 this._vel.copy(node.p).sub(node.prev);
+                if(-this._vel.y > this.impactDisp){ this._hitGroundThisFrame = true; }
                 node.p.y = floor;
                 this._reflect(node, this._n.set(0, 1, 0), this._vel);
             }
+        }
+    }
+
+    // Count a distinct ground impact (debounced) and arm the freeze. 1st hit: absorb a chunk of every
+    // particle's velocity (a subtle thud, much less bounce/splay — the main source of the landing
+    // "shake") and arm a fallback freeze in case the body never bounces for a clean 2nd hit. 2nd hit:
+    // freeze the sim 0.5 s later, killing any residual jitter. Applies to every ragdoll.
+    _registerGroundHit(){
+        if(this._lastGroundHitAge >= 0 && (this._age - this._lastGroundHitAge) < this.groundHitDebounce){ return; }
+        this._lastGroundHitAge = this._age;
+        this._groundHits++;
+        if(this._groundHits === 1){
+            for(const node of this.nodes){
+                _v.copy(node.p).sub(node.prev).multiplyScalar(this.landingAbsorb);
+                node.prev.copy(node.p).sub(_v);
+            }
+            this._freezeTimer = this.firstHitFreeze;
+        }else if(this._groundHits === 2){
+            this._freezeTimer = this.secondHitFreeze;
         }
     }
 

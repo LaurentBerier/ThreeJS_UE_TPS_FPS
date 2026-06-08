@@ -77,7 +77,7 @@ loaders, ammo.js and three-pathfinding load via importmap / a vendored WASM buil
 | **Mouse** | Look (click to lock the pointer) |
 | **Shift** | Sprint |
 | **Space** | Jump |
-| **Double-tap Ctrl** | Forward dodge roll (momentum + i-frames, TPS & FPS) |
+| **Double-tap W/A/S/D** | Directional dodge roll (momentum + i-frames, TPS & FPS) |
 | **Left click** | Fire |
 | **Right click** | Aim down sights (FP) |
 | **R** | Reload |

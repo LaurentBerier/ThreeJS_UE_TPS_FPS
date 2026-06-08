@@ -150,12 +150,17 @@ export default class CharacterController extends Component{
         this.player = this.FindEntity("Player");
 
         this.parent.RegisterEventHandler(this.TakeHit, 'hit');
+        this.blood = this.FindEntity('Level').GetComponent('BloodFx');   // shared blood-splatter burst
 
         const scene = this.model;
 
         // 2x scale for a hulking beast. The FBX origin is at the feet, so scaling about it
         // keeps the feet on the ground at the spawn Y (no manual feet offset needed).
         scene.scale.setScalar(this.modelScale);
+        // Don't spawn inside collision: snap onto the walkable navmesh AND, since the level colliders are
+        // convex hulls (a container becomes a solid box the navmesh may still cover), relocate off any
+        // spot that's buried in static collision before placing the model. Valid spawns are left put.
+        this.navmesh.FindClearSpawn(this.parent.position, this.physicsWorld, this.parent.position);
         scene.position.copy(this.parent.position);
         
         this.mixer = new THREE.AnimationMixer( scene );
@@ -197,7 +202,7 @@ export default class CharacterController extends Component{
         this.lastGoodPos.copy(this.model.position);
 
         this.scene.add(scene);
-        this.stateMachine.SetState('idle');
+        this.stateMachine.SetState('patrol');   // roam by default when not engaged
     }
 
     UpdateDirection(){
@@ -320,6 +325,20 @@ export default class CharacterController extends Component{
     }
 
     TakeHit = msg => {
+        // Blood splatter at the bullet's impact point (ranged hits carry a hitResult; the beast's own
+        // melee does not). Spray OUT of the wound — back toward the shooter — lifted off the collision
+        // surface so it reads as coming off the body rather than from inside the mesh. Scaled up, and a
+        // bigger lift: the beast is a large 2x body, so its hit capsule sits further inside the silhouette.
+        if(msg.hitResult && this.blood){
+            const hp = msg.hitResult.intersectionPoint;
+            let origin = hp, out = null;
+            if(msg.from && msg.from.Position){
+                out = msg.from.Position.clone().sub(hp);
+                if(out.lengthSq() > 1e-6){ out.normalize(); origin = hp.clone().addScaledVector(out, 0.22); }
+            }
+            this.blood.Emit(origin, out, { scale: 1.1, count: 16, speed: 3.8, spread: 0.7 });
+        }
+
         // `?? 0` guard: a hit that ever omits amount would otherwise NaN the health and the
         // `== 0` death check would never fire (NaN == 0 is false), making the beast unkillable.
         this.health = Math.max(0, this.health - (msg.amount ?? 0));
@@ -328,8 +347,12 @@ export default class CharacterController extends Component{
         this.lastAttacker = msg.from || this.lastAttacker;
 
         // Additive hit-react flinch for any non-fatal blow (scaled by damage); a fatal hit hands the
-        // body straight to the ragdoll instead.
-        if(this.health > 0 && this.hurtFlinch){ this.hurtFlinch.Trigger((msg.amount ?? 0) / 10); }
+        // body straight to the ragdoll instead. Recoil AWAY from the shooter (push = shooter -> beast),
+        // about the beast's current facing yaw.
+        if(this.health > 0 && this.hurtFlinch){
+            const push = (msg.from && msg.from.Position) ? this.model.position.clone().sub(msg.from.Position) : null;
+            this.hurtFlinch.Trigger((msg.amount ?? 0) / 10, push, Math.atan2(this.dir.x, this.dir.z));
+        }
 
         if(this.health == 0){
             this.stateMachine.SetState('dead');

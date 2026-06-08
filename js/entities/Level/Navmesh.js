@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import Component from '../../Component.js'
+import { AmmoHelper } from '../../AmmoLib.js'
 
 import {Pathfinding} from 'three-pathfinding'
 
@@ -57,6 +58,46 @@ export default class Navmesh extends Component{
     // clamped position into outTarget and returns the node it ended up on.
     ClampStep(start, end, node, groupID, outTarget){
         return this.pathfinding.clampStep(start, end, node, this.zone, groupID, outTarget);
+    }
+
+    // Snap a desired SPAWN point onto the walkable surface so an entity never starts inside collision
+    // (a prop/wall the hard-coded spawn coords happened to land in). If the point is already strictly
+    // inside a navmesh polygon it's left exactly where it is (valid spawn, no drift); otherwise it's
+    // pulled to the nearest node centroid — which, because the navmesh is the collision-free floor, is
+    // guaranteed clear of geometry. The original Y is preserved (feet stay at the intended ground line).
+    // Returns outTarget (or a fresh Vector3), set to the safe position.
+    NearestWalkablePoint(p, outTarget){
+        const out = outTarget || new THREE.Vector3();
+        out.copy(p);
+        const groupID = this.GetGroup(p);
+        if(groupID === null){ return out; }              // can't resolve a group: leave the point as-is
+        // Already strictly on a polygon? Keep it (checkPolygon=true returns null when p is off-mesh).
+        if(this.pathfinding.getClosestNode(p, this.zone, groupID, true)){ return out; }
+        const node = this.pathfinding.getClosestNode(p, this.zone, groupID, false);
+        if(node && node.centroid){ out.set(node.centroid.x, p.y, node.centroid.z); }
+        return out;
+    }
+
+    // Pick a SAFE spawn near `p`: snap onto the navmesh first (NearestWalkablePoint), then — because the
+    // level's per-mesh colliders are CONVEX HULLS, so a container becomes a SOLID box and the navmesh
+    // can still cover the floor under it — verify the spot isn't buried in static collision. If it is,
+    // sample walkable nodes outward and take the first with a clear approach. Falls back to the snapped
+    // point. Needs the physics world for the enclosure test (the navmesh alone can't see the boxes).
+    FindClearSpawn(p, physicsWorld, outTarget){
+        const out = outTarget || new THREE.Vector3();
+        this.NearestWalkablePoint(p, out);
+        if(!physicsWorld || !AmmoHelper.IsEnclosedByStatic(physicsWorld, out)){ return out; }
+        // Buried: search outward on the navmesh for an open spot.
+        const cand = new THREE.Vector3();
+        for(const range of [2.5, 4.0, 6.0, 8.0, 11.0]){
+            for(let i = 0; i < 6; i++){
+                const node = this.GetRandomNode(out, range);   // returns a walkable position (Vector3) or null
+                if(!node){ continue; }
+                cand.set(node.x, node.y, node.z);
+                if(!AmmoHelper.IsEnclosedByStatic(physicsWorld, cand)){ out.copy(cand); return out; }
+            }
+        }
+        return out;   // nothing better found; keep the snapped point
     }
 
     // Add agent-radius clearance to a funnel path so a WIDE agent rounds corners instead of

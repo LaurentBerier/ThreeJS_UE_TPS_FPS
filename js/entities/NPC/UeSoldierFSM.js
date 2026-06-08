@@ -81,9 +81,9 @@ class PatrolState extends State{
             return;
         }
         if(proxy.path && proxy.path.length === 0){
-            // Stop to scan the area fairly often (a roaming sentry that keeps pausing to look around),
-            // otherwise pick the next roam point and keep moving.
-            if(Math.random() < 0.4){
+            // Mostly keep roaming (enemies stay in patrol when not engaged); only occasionally drop to a
+            // short scan pause.
+            if(Math.random() < 0.15){
                 this.parent.SetState('idle');
             }else{
                 proxy.NavigateToRandomPoint();
@@ -178,8 +178,10 @@ class CombatState extends State{
         this.fireTimer = 0.15;                      // short wind-up: engage almost immediately
         this.loseSightTimer = 0.0;
         this.retargetTimer = 0.4;
-        // Open by planting and firing so the engagement reads as "stop & shoot", then alternate.
-        this.EnterHold(proxy);
+        // Open by STRAFING so the soldier is moving the moment the firefight starts (it falls back to a
+        // brief hold if it can't find a strafe path); the duty cycle then favours movement with short
+        // organic pauses rather than planting and standing.
+        this.EnterStrafe(proxy);
     }
 
     Exit(){
@@ -188,14 +190,15 @@ class CombatState extends State{
         proxy.combatFacing = false;
     }
 
-    // Plant and fire. Hold ~0.6..2.9s — longer when cautious (low aggression), shorter when
-    // aggressive — jittered per soldier so a squad doesn't plant/strafe in unison.
+    // Plant and fire — a BRIEF organic pause (more accurate while still), not a long stand. Cautious
+    // soldiers pause a touch longer than aggressive ones; jittered per soldier so a squad isn't in sync.
+    // Kept short (~0.25..1.0s) so the soldier is moving most of the firefight (see EnterStrafe).
     EnterHold(proxy){
         this.phase = 'hold';
         proxy.SetMoveIntent(0.0);                    // stop: the legs settle to idle, the torso keeps firing
         proxy.ClearPath();
-        const base = 2.2 - 1.4 * proxy.aggression;   // cautious ~2.2s, aggressive ~0.8s
-        this.phaseTimer = base * (0.7 + Math.random() * 0.6);
+        const base = 0.7 - 0.3 * proxy.aggression;   // cautious ~0.7s, aggressive ~0.4s
+        this.phaseTimer = base * (0.6 + Math.random() * 0.8);
     }
 
     // Reposition: pick a fresh flanking spot and strafe to it while facing + firing. Some soldiers

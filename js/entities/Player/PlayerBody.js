@@ -134,6 +134,11 @@ export default class PlayerBody extends Component{
         // camera-relative (PlayerControls / FP-authoritative), so this is purely cosmetic
         // and never changes where you walk or shoot.
         this._bodyYaw = null;                              // persisted, eased body yaw (rad); seeded on first update
+        // While a dodge roll is playing the body faces the ROLL direction (not the camera look), so the
+        // forward-somersault clip travels the way the player dodged — needed now the dodge is directional
+        // (double-tap W/A/S/D). Snapped on roll start, held through the roll, then released back to look.
+        this._rollYaw = 0;
+        this.rollYawLerp = 18;                             // ease rate (1/s) holding the body on the roll dir
         this.bodyTurnDeadzone = THREE.MathUtils.degToRad(45); // idle look-around arc before the body follows
         this.bodyTurnIdleLerp = 5.0;                       // soft idle catch-up (1/s) — the turn "delay"
         this.bodyTurnMoveLerp = 14.0;                      // prompt alignment while moving / aiming (1/s)
@@ -512,7 +517,7 @@ export default class PlayerBody extends Component{
         // Take-off: PlayerControls fires this the frame a jump is issued (see its comment for why
         // IsGrounded can't be used). We re-arm the jump sub-graph so the jumpStart pop always plays.
         this.parent.RegisterEventHandler(this.OnJump, 'player.jump');
-        // Forward dodge roll: PlayerControls fires this on a double-tap of Ctrl.
+        // Dodge roll: PlayerControls fires this on a double-tap of a movement key.
         this.parent.RegisterEventHandler(this.OnRoll, 'player.roll');
         // Taking damage: trigger the additive hurt flinch (PlayerHealth handles the health bookkeeping).
         this.parent.RegisterEventHandler(this.OnHurt, 'hit');
@@ -547,6 +552,14 @@ export default class PlayerBody extends Component{
         if(!lo || !up || this.rolling){ return; }
         this.rolling = true;
         this.oneShot = null;                                   // the roll owns the upper layer now
+        // Face the body along the roll direction so the forward-somersault clip travels the dodged way
+        // (directional double-tap dodge). Snap to it now (the somersault sells the turn) and hold it in
+        // UpdateBodyYaw for the roll's duration; it eases back to the look direction once the roll ends.
+        const rd = this.playerControls ? this.playerControls.rollDir : null;
+        this._rollYaw = (rd && (rd.x * rd.x + rd.z * rd.z) > 1e-6)
+            ? Math.atan2(rd.x, rd.z)
+            : (this._bodyYaw !== null ? this._bodyYaw : 0);
+        this._bodyYaw = this._rollYaw;
         // The roll branch in Update skips UpdateLocomotion, which is the only place airState/_groundedTimer
         // are maintained — so clear the jump sub-graph to a known-grounded state now. Otherwise a roll
         // started just after landing (still inside airExitDebounce) would leave airState='fall' frozen and
@@ -881,6 +894,39 @@ export default class PlayerBody extends Component{
         }
     }
 
+    // Smooth crossfade of the UPPER layer into `name` — used for the shoot/reload EXIT. SetUpperPrimary
+    // snaps the incoming action to full weight (great for ENTERING a one-shot with no bind-pose flash,
+    // but it makes the incoming pose pop in at ~50% on the first frame — the "rough" fire-to-idle cut).
+    // This does a TRUE crossFadeFrom instead: the incoming action eases 0->1 while the outgoing one-shot
+    // eases 1->0, so the recoil pose melts into idle/aim. Safe because the outgoing one-shot is still at
+    // full weight here, so the layer is never emptied (no bind/T-pose flash); any OTHER residual upper
+    // action is also faded out so the layer keeps summing to ~1.
+    CrossfadeUpper(name, fade){
+        const next = this.upperActions[name];
+        if(!next){ return; }
+        const prev = (this.upperState && this.upperActions[this.upperState] !== next)
+            ? this.upperActions[this.upperState] : null;
+        next.reset();
+        next.setEffectiveTimeScale(this.LocoTimeScale(name));
+        if(this.lowerActions[name]){ next.time = this.lowerActions[name].time; }   // phase-match the legs
+        next.enabled = true;
+        next.play();
+        if(prev){
+            prev.enabled = true;
+            // warp=false: a plain weight crossfade. Warping timescales between the fast fire LOOP and the
+            // idle/jog clip (very different cadences) was causing a brief speed hitch at the end of a
+            // burst when not aiming — a straight weight blend is glitch-free here.
+            next.crossFadeFrom(prev, fade, false);    // incoming 0->1, outgoing 1->0 — a real crossfade
+            for(const key in this.upperActions){      // fade any OTHER lingering action so the layer stays ~1
+                const a = this.upperActions[key];
+                if(a !== next && a !== prev && a.enabled && a.getEffectiveWeight() > 1e-3){ a.fadeOut(fade); }
+            }
+        }else{
+            this.SetUpperPrimary(next, fade);         // nothing to crossfade from: snap in (no bare layer)
+        }
+        this.upperState = name;
+    }
+
     PlayOneShot(name){
         // While rolling the roll owns the WHOLE body (both layers). A reload/shoot one-shot would
         // hijack the torso mid-roll and leave the upper layer in a stale 'oneShot' state when the
@@ -913,8 +959,10 @@ export default class PlayerBody extends Component{
     EndShoot(){
         if(this.oneShot !== 'shoot'){ return; }
         this.oneShot = null;
-        this.upperState = 'shoot';                   // so PlayUpperLocomotion fades out of it
-        this.PlayUpperLocomotion(this.DesiredUpperState(this.lowerState || 'idle'), 0.18);
+        this.upperState = 'shoot';                   // so the crossfade eases out of it
+        // Long, TRUE crossfade out of the fire pose (incoming idle/aim rises 0->1 as the recoil pose
+        // falls) so the hand-off is a smooth melt, not the old snap-to-half-weight pop.
+        this.CrossfadeUpper(this.DesiredUpperState(this.lowerState || 'idle'), 0.38);
     }
 
     OnOneShotFinished = (e) => {
@@ -937,8 +985,9 @@ export default class PlayerBody extends Component{
         // Blend the torso back from the clamped one-shot pose to whatever it should
         // hold now (aim pose if still aiming, else the legs' locomotion), so the
         // upper and lower layers realign.
-        this.upperState = finished;                  // so PlayUpperLocomotion fades out of it
-        this.PlayUpperLocomotion(this.DesiredUpperState(this.lowerState || 'idle'), 0.15);
+        this.upperState = finished;                  // so the crossfade eases out of it
+        // Smooth, true crossfade so a finished shoot/reload melts into idle/aim rather than popping.
+        this.CrossfadeUpper(this.DesiredUpperState(this.lowerState || 'idle'), 0.3);
     }
 
     // Ground locomotion state from the move direction RELATIVE to facing. PlayerControls.speed is
@@ -1323,6 +1372,16 @@ export default class PlayerBody extends Component{
     UpdateBodyYaw(t){
         const target = this.playerControls.angles.y + this.yawOffset;
         if(this._bodyYaw === null){ this._bodyYaw = target; }
+
+        // Dodge roll: hold the body on the roll direction (snapped in StartRoll) so the forward
+        // somersault travels the way the player dodged, regardless of where the camera looks.
+        if(this.rolling){
+            const dR = Math.atan2(Math.sin(this._rollYaw - this._bodyYaw), Math.cos(this._rollYaw - this._bodyYaw));
+            this._bodyYaw += dR * (1 - Math.exp(-this.rollYawLerp * t));
+            this._bodyYaw = Math.atan2(Math.sin(this._bodyYaw), Math.cos(this._bodyYaw));
+            this.modelRoot.rotation.set(0, this._bodyYaw, 0);
+            return;
+        }
 
         // First-person: track the look yaw tightly (small lag) so the arms/gun stay in frame, with an
         // eased aim-centring bias while ADS. No deadzone/idle-trail here — that's a TPS-only behaviour.
