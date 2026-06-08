@@ -30,6 +30,7 @@ class IdleState extends State{
 
     Enter(prevState){
         this.parent.proxy.canMove = false;
+        this.parent.proxy.scanTargetYaw = null;   // start the lookout sweep from the current facing
         const action = this.Animation.action;
 
         if(prevState){
@@ -44,6 +45,9 @@ class IdleState extends State{
     }
 
     Update(t){
+        // Stay on the lookout while paused: slowly sweep the facing so the view cone scans for the player.
+        this.parent.proxy.UpdateScan(t);
+
         if(this.waitTime <= 0.0){
             this.parent.SetState('patrol');
             return;

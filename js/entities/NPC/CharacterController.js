@@ -3,6 +3,7 @@ import Component from '../../Component.js'
 import {Ammo, AmmoHelper, CollisionFilterGroups} from '../../AmmoLib.js'
 import CharacterFSM from './CharacterFSM.js'
 import Ragdoll from './Ragdoll.js'
+import HurtFlinch from '../Common/HurtFlinch.js'
 
 import DebugShapes from '../../DebugShapes.js'
 
@@ -92,6 +93,15 @@ export default class CharacterController extends Component{
         // Death ragdoll (built on death; drives the skinned mesh in place of the mixer).
         this.dead = false;
         this.ragdoll = null;
+        // Corpse despawn: the ragdoll settles and lies for corpseLingerTime, then SINKS out of view over
+        // corpseSinkTime and the whole entity is removed (mesh + hit capsules + attack sensor). Total
+        // death->gone ≈ 4.9 s (within the requested 4-5 s). Sinking is material-agnostic and unobtrusive
+        // on a body that's been still for seconds.
+        this.corpseLingerTime = 4.2;
+        this.corpseSinkTime = 0.7;
+        this.corpseSinkDepth = 1.8;     // metres sunk before removal (the beast is large)
+        this._deathElapsed = 0.0;
+        this._despawned = false;
 
         // Awareness: a wide forward view CONE plus a close PROXIMITY sense that fires
         // regardless of facing (both still need line of sight), so a visible player who walks
@@ -100,6 +110,12 @@ export default class CharacterController extends Component{
         this.proximitySenseRadius = 12.0;           // sense a visible player within this radius, any facing
         this.proximitySenseSq = this.proximitySenseRadius * this.proximitySenseRadius;
         this.maxViewDistance = 20.0 * 20.0;
+        // Idle lookout: while paused the beast slowly sweeps its facing to hunt for the player, so its
+        // view cone scans the area instead of staring one way (a prowling, ever-watchful predator).
+        this.scanTargetYaw = null;       // current sweep look goal (rad), or null = pick one
+        this.scanHoldTimer = 0.0;        // time left holding the current look direction
+        this.scanArc = Math.PI * 0.5;    // sweep up to ±90° off the current facing
+        this.scanTurnRate = 1.6;         // rad/s sweep — slow + heavy for the hulking beast
         this.tempVec = new THREE.Vector3();
         this.senseVec = new THREE.Vector3();
         this.desiredPos = new THREE.Vector3();
@@ -130,6 +146,7 @@ export default class CharacterController extends Component{
         this.stateMachine = new CharacterFSM(this);
         this.navmesh = this.FindEntity('Level').GetComponent('Navmesh');
         this.hitbox = this.GetComponent('AttackTrigger');
+        this.collision = this.GetComponent('CharacterCollision');   // hit capsules; disabled on death
         this.player = this.FindEntity("Player");
 
         this.parent.RegisterEventHandler(this.TakeHit, 'hit');
@@ -164,6 +181,11 @@ export default class CharacterController extends Component{
         // if camera pass-through ever shows the inside of the mesh again.
 
         this.SetupAnimations();
+
+        // Hurt feedback: additive flinch on the beast's torso/head (found by name — MutantSpine/Neck/
+        // Head) layered on top of the root-motion clip when it's shot, so hits register on the creature
+        // without interrupting its stride. Triggered (scaled by damage) in TakeHit.
+        this.hurtFlinch = new HurtFlinch(scene);
 
         // Cache the navmesh group/node the agent starts on so we can clamp its
         // movement to the mesh every frame (see ApplyRootMotion).
@@ -262,6 +284,21 @@ export default class CharacterController extends Component{
         this.model.quaternion.rotateTowards(this.tempRot, rate * t);
     }
 
+    // Idle lookout sweep: pick a new look direction within scanArc of the current facing, turn to it
+    // slowly, hold a beat, then choose another — so a paused beast scans the area for the player (the
+    // view cone sweeps with the body). Called by the FSM's idle state; chase/attack own the facing.
+    UpdateScan(t){
+        this.scanHoldTimer -= t;
+        if(this.scanTargetYaw === null || this.scanHoldTimer <= 0.0){
+            const base = Math.atan2(this.dir.x, this.dir.z);
+            this.scanTargetYaw = base + (Math.random() * 2 - 1) * this.scanArc;
+            this.scanHoldTimer = 0.9 + Math.random() * 1.6;
+        }
+        this.tempVec.set(Math.sin(this.scanTargetYaw), 0, Math.cos(this.scanTargetYaw));
+        this.YawToward(this.tempVec, this.tempRot);
+        this.model.quaternion.rotateTowards(this.tempRot, this.scanTurnRate * t);
+    }
+
     get IsCloseToPlayer(){
         this.tempVec.copy(this.player.Position).sub(this.model.position);
 
@@ -289,6 +326,10 @@ export default class CharacterController extends Component{
         // Remember the killer so the death ragdoll is flung away from whoever actually dropped it
         // (the player's gun, or a soldier ganging up on it), not always the player.
         this.lastAttacker = msg.from || this.lastAttacker;
+
+        // Additive hit-react flinch for any non-fatal blow (scaled by damage); a fatal hit hands the
+        // body straight to the ragdoll instead.
+        if(this.health > 0 && this.hurtFlinch){ this.hurtFlinch.Trigger((msg.amount ?? 0) / 10); }
 
         if(this.health == 0){
             this.stateMachine.SetState('dead');
@@ -548,6 +589,9 @@ export default class CharacterController extends Component{
         this.dead = true;
         this.canMove = false;
         this.ClearPath();
+        // Drop the hit capsules from the world so the corpse stops absorbing the player's bullets and
+        // occluding line-of-sight while it lingers (mirrors the soldier; Dispose is then a no-op).
+        this.collision && this.collision.Disable();
 
         try{
             // Knock the corpse away from whoever KILLED it (the player's gun, or soldiers ganging up
@@ -561,12 +605,12 @@ export default class CharacterController extends Component{
             dir.normalize();
             const yaw = (Math.random() - 0.5) * 1.0;            // spread the shove ±~29°
             const cy = Math.cos(yaw), sy = Math.sin(yaw);
-            const mag = 2.6 * (0.7 + Math.random() * 0.7);      // ~1.8 .. 3.6 m/s horizontal (exaggerated)
+            const mag = 3.4 * (0.7 + Math.random() * 0.7);      // ~2.4 .. 4.6 m/s horizontal (heavy beast slam)
             const impulse = new THREE.Vector3(
                 (dir.x * cy - dir.z * sy) * mag,
-                1.5 * (0.8 + Math.random() * 0.7),              // lift ~1.2 .. 2.25 m/s
+                2.0 * (0.8 + Math.random() * 0.7),              // lift ~1.6 .. 3.0 m/s (a hulking body kicks up hard)
                 (dir.x * sy + dir.z * cy) * mag);
-            const twist = (Math.random() - 0.5) * 6.0;          // ±3 rad/s spin while falling
+            const twist = (Math.random() - 0.5) * 7.0;          // ±3.5 rad/s spin while falling
 
             this.ragdoll = new Ragdoll(this.skinnedmesh, {
                 groundY: this.model.position.y,
@@ -647,16 +691,45 @@ export default class CharacterController extends Component{
         this.rootBone.position.x = this.rootBone.refPos.x;
     }
 
-    Update(t){
-        // Dead with a ragdoll: physics drives the skinned mesh; skip the mixer/AI entirely.
-        if(this.ragdoll){
-            try{ this.ragdoll.update(t); }
-            catch(e){ console.error('Mutant ragdoll update failed:', e); this.ragdoll = null; }
+    // Dead: run the corpse lifecycle (ragdoll settle -> sink -> entity removal). LINGER drives the
+    // verlet ragdoll; SINK freezes it (the sim re-pins bones to world particles each frame, which would
+    // fight a downward translation) and lowers the model out of view; REMOVE hands the entity to the
+    // manager for disposal (mesh + hit capsules + attack sensor). Guarded so a ragdoll error can never
+    // kill the render loop; a corpse whose ragdoll failed to build still despawns on the timer.
+    UpdateDeath(t){
+        this._deathElapsed += t;
+        if(this._deathElapsed < this.corpseLingerTime){
+            if(this.ragdoll){
+                try{ this.ragdoll.update(t); }
+                catch(e){ console.error('Mutant ragdoll update failed:', e); this.ragdoll = null; }
+            }
             return;
         }
+        this.ragdoll = null;
+        const over = this._deathElapsed - this.corpseLingerTime;
+        if(over < this.corpseSinkTime){
+            this.model.position.y -= this.corpseSinkDepth * (t / this.corpseSinkTime);
+            return;
+        }
+        if(!this._despawned){
+            this._despawned = true;
+            this.parent.parent.Remove(this.parent);
+        }
+    }
 
-        // Dead but the ragdoll couldn't be built (shouldn't happen): freeze, no clip.
-        if(this.dead){ return; }
+    // Despawn cleanup (called by Entity.Dispose on removal): pull the corpse mesh from the scene and
+    // stop the sim. The hit capsules / attack sensor are freed by their own components' Dispose.
+    Dispose(){
+        if(this.model && this.model.parent){ this.model.parent.remove(this.model); }
+        this.ragdoll = null;
+    }
+
+    Update(t){
+        // Dead: physics drives the skinned mesh as it settles, then the corpse sinks and is removed.
+        if(this.dead){
+            this.UpdateDeath(t);
+            return;
+        }
 
         this.mixer && this.mixer.update(t);
         this.ApplyRootMotion();
@@ -665,6 +738,10 @@ export default class CharacterController extends Component{
         this.MoveAlongPath(t);
         this.CheckStuck(t);
         this.stateMachine.Update(t);
+
+        // Additive hurt flinch on top of the mixer pose (no-op when not recently hit), about the
+        // beast's current facing yaw (derived from its forward dir).
+        this.hurtFlinch && this.hurtFlinch.Update(t, Math.atan2(this.dir.x, this.dir.z));
 
         this.parent.SetRotation(this.model.quaternion);
         this.parent.SetPosition(this.model.position);

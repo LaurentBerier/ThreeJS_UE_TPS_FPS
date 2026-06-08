@@ -27,13 +27,15 @@ export default class UeSoldierFSM extends FiniteStateMachine{
     }
 }
 
-// Brief, rare pause. Soldiers should almost never just stand around (see PatrolState, which mostly
-// loops straight back into roaming), so idle is short and bails to a target instantly.
+// Lookout pause. The soldier stops and actively SWEEPS its view around (UpdateScan), hunting for the
+// player or the beast, before resuming its roam — so it reads as an alert sentry scanning the area
+// rather than a guard staring at a wall. Acquires every tick, so it bails to a target the instant one
+// comes into the (sweeping) view. A touch longer than before so a scan sweep or two actually plays.
 class IdleState extends State{
     constructor(parent){
         super(parent);
-        this.maxWaitTime = 1.2;
-        this.minWaitTime = 0.3;
+        this.maxWaitTime = 3.5;
+        this.minWaitTime = 1.5;
         this.waitTime = 0.0;
     }
 
@@ -42,6 +44,7 @@ class IdleState extends State{
     Enter(){
         this.parent.proxy.SetMoveIntent(0.0);
         this.parent.proxy.ClearPath();
+        this.parent.proxy.scanTargetYaw = null;   // start a fresh sweep from the current facing/last-seen
         this.waitTime = Math.random() * (this.maxWaitTime - this.minWaitTime) + this.minWaitTime;
     }
 
@@ -50,6 +53,9 @@ class IdleState extends State{
             this.parent.SetState('chase');
             return;
         }
+
+        // Sweep the view to look for threats while paused (genuinely widens the forward cone's coverage).
+        this.parent.proxy.UpdateScan(t);
 
         this.waitTime -= t;
         if(this.waitTime <= 0.0){
@@ -75,7 +81,9 @@ class PatrolState extends State{
             return;
         }
         if(proxy.path && proxy.path.length === 0){
-            if(Math.random() < 0.2){
+            // Stop to scan the area fairly often (a roaming sentry that keeps pausing to look around),
+            // otherwise pick the next roam point and keep moving.
+            if(Math.random() < 0.4){
                 this.parent.SetState('idle');
             }else{
                 proxy.NavigateToRandomPoint();
@@ -102,10 +110,21 @@ class ChaseState extends State{
         this.lostTimer = 0.0;
     }
 
+    Exit(){
+        // Leave target-facing off for whatever comes next (patrol/idle face the move/scan dir). Combat
+        // re-asserts it in its own Enter, so a chase->combat handoff stays target-faced throughout.
+        this.parent.proxy.combatFacing = false;
+    }
+
     Update(t){
         const proxy = this.parent.proxy;
 
         const visible = proxy.AcquireTarget();
+        // ALWAYS FACE THE TARGET while it's in sight, even mid-approach: the soldier keeps its body (and
+        // gun) trained on the player and STRAFES/advances laterally toward it, instead of turning its
+        // back to run along the path. While the target is out of sight (closing on its last-seen spot)
+        // it faces the move direction so the run reads naturally toward where it last saw you.
+        proxy.combatFacing = !!(visible && proxy.target);
         if(visible){ this.lostTimer = 0.0; }
         else{
             this.lostTimer += t;
@@ -129,15 +148,22 @@ class ChaseState extends State{
     }
 }
 
-// The firefight: the soldier STRAFES around the target (a flank/advance/retreat juke per its style)
-// while FACING it and FIRING on cadence — a moving, hard-to-hit target rather than a planted one. It
-// keeps picking fresh strafe positions (LOS-scored, near its preferred range) so it never roots, and
-// drops back to chase if it loses the shot for a moment. Re-acquires each tick (beast > player).
+// The firefight, run as a PLANT <-> STRAFE duty cycle so the soldier both "stops and shoots" and
+// "strafes and shoots", instead of skating around non-stop:
+//   * HOLD  — plant, stop moving, and fire on cadence (more accurate while still; see FireAtTarget).
+//             Cautious soldiers hold longer, aggressive ones reposition sooner.
+//   * STRAFE— pick a fresh flanking position (LOS-scored, near its preferred range) and move to it
+//             while STILL facing the target and firing — a moving, hard-to-hit shooter.
+// It ALWAYS faces the target (combatFacing) the entire time — planted or strafing — so the gun is
+// trained on you whenever it can shoot. If a strafe can't find a path it just holds and fires (so
+// "strafe and shoot" degrades to "stop and shoot" rather than the soldier freezing dumbly). Re-
+// acquires each tick (beast > player) and drops back to chase if the shot stays lost.
 class CombatState extends State{
     constructor(parent){
         super(parent);
         this.fireTimer = 0.0;
-        this.strafeTimer = 0.0;
+        this.phase = 'hold';          // 'hold' (plant & fire) | 'strafe' (reposition & fire)
+        this.phaseTimer = 0.0;
         this.loseSightTimer = 0.0;
         this.retargetTimer = 0.0;
     }
@@ -147,14 +173,13 @@ class CombatState extends State{
     Enter(){
         const proxy = this.parent.proxy;
         proxy.AcquireTarget();
-        proxy.combatFacing = true;                 // face the target while strafing (so it shoots you)
-        proxy.SetMoveIntent(proxy.combatMoveSpeed); // strafe at the soldier's combat speed
-        proxy.BeginFire();                          // torso fires while the legs move
-        proxy.NavigateToCombatPosition(proxy.target);
+        proxy.combatFacing = true;                 // always face the target (planted AND strafing)
+        proxy.BeginFire();                          // the torso fires throughout combat
         this.fireTimer = 0.15;                      // short wind-up: engage almost immediately
-        this.strafeTimer = this.PickStrafeTime(proxy);
         this.loseSightTimer = 0.0;
         this.retargetTimer = 0.4;
+        // Open by planting and firing so the engagement reads as "stop & shoot", then alternate.
+        this.EnterHold(proxy);
     }
 
     Exit(){
@@ -163,10 +188,26 @@ class CombatState extends State{
         proxy.combatFacing = false;
     }
 
-    PickStrafeTime(proxy){
-        // Re-juke to a new position fairly often so movement stays unpredictable (shorter than the
-        // patrol-style reposition cadence, jittered per soldier so a squad never strafes in unison).
-        return 0.7 + Math.random() * (0.5 + proxy.repositionInterval * 0.4);
+    // Plant and fire. Hold ~0.6..2.9s — longer when cautious (low aggression), shorter when
+    // aggressive — jittered per soldier so a squad doesn't plant/strafe in unison.
+    EnterHold(proxy){
+        this.phase = 'hold';
+        proxy.SetMoveIntent(0.0);                    // stop: the legs settle to idle, the torso keeps firing
+        proxy.ClearPath();
+        const base = 2.2 - 1.4 * proxy.aggression;   // cautious ~2.2s, aggressive ~0.8s
+        this.phaseTimer = base * (0.7 + Math.random() * 0.6);
+    }
+
+    // Reposition: pick a fresh flanking spot and strafe to it while facing + firing. Some soldiers
+    // (holdGroundChance) skip the move and just hold again, for variety. No usable path => hold.
+    EnterStrafe(proxy){
+        if(!proxy.target || Math.random() < proxy.holdGroundChance){ this.EnterHold(proxy); return; }
+        const ok = proxy.NavigateToCombatPosition(proxy.target);
+        if(!ok){ this.EnterHold(proxy); return; }
+        this.phase = 'strafe';
+        proxy.SetMoveIntent(proxy.combatMoveSpeed);
+        // Strafe for a juke or two; shorter than the hold so movement stays unpredictable.
+        this.phaseTimer = 0.7 + Math.random() * (0.5 + proxy.repositionInterval * 0.4);
     }
 
     Update(t){
@@ -185,15 +226,7 @@ class CombatState extends State{
             return;
         }
 
-        // Keep relocating: pick a fresh strafe spot on a timer, or the moment the current one is reached.
-        this.strafeTimer -= t;
-        if((this.strafeTimer <= 0.0 || !proxy.path || proxy.path.length === 0) && proxy.target){
-            proxy.NavigateToCombatPosition(proxy.target);
-            this.strafeTimer = this.PickStrafeTime(proxy);
-        }
-
-        // Fire whenever we have a shot — WHILE moving. If the shot is lost for a moment (strafed
-        // behind cover / an angle), keep strafing; only drop to chase if it stays lost.
+        // Fire whenever we have a shot — planted OR strafing (the soldier faces the target either way).
         const hasShot = proxy.target && proxy.InRangeOf(proxy.target) && proxy.HasLineOfSightTo(proxy.target);
         if(hasShot){
             this.loseSightTimer = 0.0;
@@ -204,9 +237,19 @@ class CombatState extends State{
             }
         }else{
             this.loseSightTimer += t;
-            if(this.loseSightTimer >= 1.3){
-                this.parent.SetState('chase');
-            }
+            // No shot for a moment (target behind cover / broke the angle): go regain LOS rather than
+            // standing firing at a wall. A planted soldier reacts a touch sooner than a strafing one.
+            const patience = this.phase === 'hold' ? 0.8 : 1.3;
+            if(this.loseSightTimer >= patience){ this.parent.SetState('chase'); return; }
+        }
+
+        // Advance the duty cycle: alternate plant <-> strafe on the phase timer, and end a strafe the
+        // instant it reaches its chosen spot (so it plants and fires there instead of overshooting).
+        this.phaseTimer -= t;
+        const reachedSpot = this.phase === 'strafe' && (!proxy.path || proxy.path.length === 0);
+        if(this.phaseTimer <= 0.0 || reachedSpot){
+            if(this.phase === 'hold'){ this.EnterStrafe(proxy); }
+            else{ this.EnterHold(proxy); }
         }
     }
 }

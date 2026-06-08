@@ -24,4 +24,9 @@ export default class Component{
     Update(_) {}
 
     PhysicsUpdate(_){}
+
+    // Release any owned resources (physics bodies, scene objects, audio). Called by Entity.Dispose
+    // when the entity is removed from the manager. No-op by default; components that allocate
+    // world/scene resources override it.
+    Dispose(){}
 }

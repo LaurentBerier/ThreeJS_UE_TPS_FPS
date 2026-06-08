@@ -30,10 +30,21 @@ export default class AttackTrigger extends Component{
     }
 
     PhysicsUpdate(world, t){
+        if(!this.ghostObj){ return; }
         this.overlapping = AmmoHelper.IsTriggerOverlapping(this.ghostObj, this.playerPhysics.body);
     }
-    
+
+    // Remove the sensor ghost from the world when the entity is despawned (else it lingers as a
+    // phantom trigger where the dead character used to be).
+    Dispose(){
+        if(this.ghostObj){
+            this.physicsWorld.removeCollisionObject(this.ghostObj);
+            this.ghostObj = null;
+        }
+    }
+
     Update(t){
+        if(!this.ghostObj){ return; }
         const entityPos = this.parent.position;
         const entityRot = this.parent.rotation;
         const transform = this.ghostObj.getWorldTransform();

@@ -5,6 +5,8 @@ import UeSoldierFSM from './UeSoldierFSM.js'
 import { buildUeMannequin, collectUpperBoneNames, splitClipByBones } from '../Common/UeMannequin.js'
 import { installProximityDitherOnObject } from '../Common/CameraDither.js'
 import Ragdoll from './Ragdoll.js'
+import DroppedWeapon from './DroppedWeapon.js'
+import HurtFlinch from '../Common/HurtFlinch.js'
 import { Faction, isHostile, isPriorityThreat } from './Factions.js'
 
 
@@ -44,11 +46,14 @@ export default class UeSoldierController extends Component{
         this.animTimeScale = { idle: 1.0, shoot: 1.4 };
         this.authoredJogSpeed = 5.884628;                     // m/s baked into the jog at timeScale 1.0
         this.invAuthoredJogSpeed = 1 / this.authoredJogSpeed; // per-(m/s) timeScale factor
-        // This soldier patrols (2.2 m/s -> 0.37x) and chases (4.6 -> 0.78x) BELOW the authored jog
-        // speed, so its foot-sync rates are <1.0 (the jog is slowed). Floor 0.35 keeps patrol
-        // foot-synced (0.37x is left unclamped) while still preventing a near-frozen slow-mo cadence
-        // while accelerating from a stop; the 2.2 cap is insurance (never reached at chase speed).
-        this.locoTimeScaleMin = 0.35;
+        // This soldier patrols (2.2 m/s) and chases (4.6) BELOW the authored jog speed, so a pure
+        // foot-sync (rate = measuredSpeed / authoredJogSpeed) plays the legs at 0.35..0.8x — and when
+        // the measured speed COLLAPSES (navmesh clamping, grinding on a wall / another body, the accel
+        // ramp from a stop) it floors out into a visible SLOW-MOTION crawl. That was the "some AI are
+        // in slow motion sometimes" bug. Fix: a higher floor AND drive the cadence off the COMMANDED
+        // speed (LocoTimeScale), so an impeded soldier still cycles its legs at a believable pace
+        // instead of crawling. A little foot-skate at low ground speed reads far better than slow-mo.
+        this.locoTimeScaleMin = 0.7;   // match the player's floor — never a slow-mo crawl
         this.locoTimeScaleMax = 2.2;
 
         // ---- Two-layer animation (so the soldier can RUN-AND-GUN: fire while strafing) ----
@@ -134,6 +139,22 @@ export default class UeSoldierController extends Component{
         // Facing: a smoothed yaw the body turns toward (movement dir or the target).
         this.facingYaw = 0.0;
         this.targetYaw = 0.0;
+        // While engaging, turn to keep the gun on the target FAST (rad/s) so a circling/strafing
+        // player stays covered — "always looking at the target when shooting and moving".
+        this.combatFaceRate = 11.0;
+
+        // ---- Non-combat lookout / scanning ----
+        // Out of combat the soldier doesn't just stand or stare straight ahead — it actively SWEEPS its
+        // view around to hunt for the player or the beast, so its forward view cone covers the area over
+        // time and it reads as an alert sentry. The sweep centres on the last spot a threat was seen
+        // (investigate that angle) or the current facing, picking a new look direction within scanArc,
+        // turning to it deliberately, holding a beat, then choosing another. Driven by the FSM's idle
+        // (and patrol-pause) states via UpdateScan; combat overrides facing entirely.
+        this.scanTargetYaw = null;                  // current sweep look goal (rad), or null = pick one
+        this.scanHoldTimer = 0.0;                   // time left holding the current look direction
+        this.scanBaseYaw = 0.0;                     // heading the sweep is centred on
+        this.scanArc = Math.PI * 0.6;               // sweep up to ±108° off the base heading
+        this.scanTurnRate = 2.4;                    // rad/s turning between look directions (deliberate)
 
         // ---- Faction / relationships ----
         // Who this soldier is willing to attack is decided by faction hostility (see
@@ -148,9 +169,17 @@ export default class UeSoldierController extends Component{
 
         // Death.
         this.dead = false;
-        this.deadTimer = 0.0;
-        this.deadDuration = 1.1;
         this.ragdoll = null;        // verlet ragdoll built on death (drives the skeleton)
+        this.droppedWeapon = null;  // the AK falls out of the hand on death (DroppedWeapon physics)
+        // Corpse despawn: the ragdoll settles and lies for corpseLingerTime, then SINKS out of view over
+        // corpseSinkTime and the whole entity is removed (mesh, dropped rifle, hit volumes, sensors).
+        // Total death->gone ≈ 4.9 s (within the requested 4-5 s). Sinking is material-agnostic (no fade/
+        // shader needed) and unobtrusive on a body that's been still for seconds.
+        this.corpseLingerTime = 4.2;
+        this.corpseSinkTime = 0.7;
+        this.corpseSinkDepth = 1.6;     // metres sunk before removal (fully buries a lying body)
+        this._deathElapsed = 0.0;
+        this._despawned = false;
 
         // Muzzle flash (built in Initialize): a brief warm point light + an additive
         // sprite-ish sphere parked at the gun barrel each shot, so the ranged fire
@@ -193,6 +222,7 @@ export default class UeSoldierController extends Component{
         this.modelRoot = built.modelRoot;
         this.rootBone = built.rootBone;
         this.handBone = built.handBone;   // muzzle flash rides forward of the gun hand
+        this.weaponPivot = built.weaponPivot;   // in-hand AK group; dropped + simulated on death
         this.skinnedmesh = built.meshes.find(m => m.isSkinnedMesh) || null;   // ragdoll skeleton source
         this.rootRef = this.rootBone ? {
             position: this.rootBone.position.clone(),
@@ -208,6 +238,11 @@ export default class UeSoldierController extends Component{
 
         this.mixer = new THREE.AnimationMixer(this.model);
         this.SetupAnimations();
+
+        // Hurt feedback: additive upper-body flinch (torso recoil + head twitch) layered on the pose
+        // when shot — reads even while the soldier is strafing and firing (the shoot overlay owns the
+        // upper layer; this composes additively on top). Triggered (scaled by damage) in TakeHit.
+        this.hurtFlinch = new HurtFlinch(this.model);
 
         // Cache the navmesh group/node we start on so movement can be clamped to it.
         this.navGroup = this.navmesh.GetGroup(this.position);
@@ -334,7 +369,10 @@ export default class UeSoldierController extends Component{
                 // LOS dominates: a spot you can actually SHOOT from must always beat a slightly
                 // better-ranged/flanked spot with no shot (else the soldier relocates somewhere it
                 // can't fire and immediately drops back to chase — a visible "run then re-chase" wobble).
-                const score = losScore * 3.0 + rangeScore * 1.2 + flankScore * 0.9 + advanceScore * 0.7;
+                // Flank is weighted high (with rangeScore holding the distance roughly constant) so the
+                // chosen spots sit LATERAL to the target at the preferred range — the soldier reads as
+                // CIRCLE-STRAFING around the player rather than relocating to scattered cover.
+                const score = losScore * 3.0 + rangeScore * 1.3 + flankScore * 1.6 + advanceScore * 0.6;
                 if(score > bestScore){ bestScore = score; best = node; }
             }
         }
@@ -579,7 +617,10 @@ export default class UeSoldierController extends Component{
     // a hit that damages it. The 'hit' is broadcast to the target ENTITY, so it works the same
     // whether the victim is the player, another soldier, or the beast.
     FireAtTarget(){
-        if(this.dead || !this.target){ return; }
+        // Bail if the target just died (the retarget cadence can lag a frame behind a kill): otherwise
+        // the soldier plays a muzzle flash / shot SFX at a fresh corpse. Damage is already LOS+roll
+        // gated, but the flash/light/sound below are unconditional, so guard the whole shot here.
+        if(this.dead || !this.target || !this.IsAlive(this.target)){ return; }
 
         // Park the flash just forward of the gun hand along the facing direction.
         this.fireDir.set(Math.sin(this.facingYaw), 0, Math.cos(this.facingYaw));
@@ -618,6 +659,28 @@ export default class UeSoldierController extends Component{
             this.flashLight.visible = false;
             this.flashMesh.visible = false;
         }
+    }
+
+    // Out-of-combat LOOKOUT: sweep the view around to hunt for the player / beast. Centres the sweep
+    // on the last spot a threat was seen (keep watching that angle), else the current facing; picks a
+    // new look direction within scanArc, turns to it deliberately, holds a beat, then chooses another.
+    // Turning the facing sweeps the forward view CONE, so this genuinely improves detection (CanSee
+    // uses facingYaw) AND reads as an alert sentry rather than a soldier staring at a wall. Called by
+    // the FSM's idle/lookout state; combat owns the facing instead (combatFacing).
+    UpdateScan(t){
+        // Base the sweep on the last-seen threat direction (investigate it) or, first time, the facing.
+        if(this.hasLastSeen){
+            this.faceVec.copy(this.lastSeenPos).sub(this.position); this.faceVec.y = 0.0;
+            if(this.faceVec.lengthSq() > 1e-4){ this.scanBaseYaw = Math.atan2(this.faceVec.x, this.faceVec.z); }
+        }else if(this.scanTargetYaw === null){
+            this.scanBaseYaw = this.facingYaw;
+        }
+        this.scanHoldTimer -= t;
+        if(this.scanTargetYaw === null || this.scanHoldTimer <= 0.0){
+            this.scanTargetYaw = this.scanBaseYaw + (Math.random() * 2 - 1) * this.scanArc;
+            this.scanHoldTimer = 0.6 + Math.random() * 1.1;   // hold each look a beat before sweeping on
+        }
+        this.facingYaw = this.StepYaw(this.facingYaw, this.scanTargetYaw, this.scanTurnRate * t);
     }
 
     // Turn to face the current target (falls back to the player if somehow unset).
@@ -685,12 +748,12 @@ export default class UeSoldierController extends Component{
             dir.normalize();
             const yaw = (Math.random() - 0.5) * 1.0;            // spread the shove ±~29°
             const cy = Math.cos(yaw), sy = Math.sin(yaw);
-            const mag = 2.3 * (0.7 + Math.random() * 0.7);      // ~1.6 .. 3.1 m/s horizontal (exaggerated)
+            const mag = 3.1 * (0.7 + Math.random() * 0.7);      // ~2.2 .. 4.2 m/s horizontal (punchy knockback)
             const impulse = new THREE.Vector3(
                 (dir.x * cy - dir.z * sy) * mag,
-                1.4 * (0.8 + Math.random() * 0.7),              // lift ~1.1 .. 2.1 m/s
+                1.9 * (0.8 + Math.random() * 0.7),              // lift ~1.5 .. 2.85 m/s (the body kicks up)
                 (dir.x * sy + dir.z * cy) * mag);
-            const twist = (Math.random() - 0.5) * 6.0;          // ±3 rad/s spin while falling
+            const twist = (Math.random() - 0.5) * 7.5;          // ±3.75 rad/s spin while falling
             this.ragdoll = new Ragdoll(this.skinnedmesh, {
                 groundY: this.position.y,
                 impulse,
@@ -701,15 +764,91 @@ export default class UeSoldierController extends Component{
             console.error('Soldier ragdoll failed to build:', e);
             this.ragdoll = null;
         }
+
+        // Drop the weapon: a dying soldier lets go of his rifle. Detach it from the (now ragdolling)
+        // hand into the scene at its current world transform and hand it to its own rigid-body
+        // simulator so it tumbles, bounces and settles on the floor independently of the corpse. Tossed
+        // out of the hand along the knockback with a touch of lift + a random spin so it spins away.
+        this.DropWeapon();
+    }
+
+    // Detach the in-hand AK and start its physics. The gun keeps its on-screen size/orientation
+    // (THREE.attach preserves the world transform) and then falls under DroppedWeapon. Guarded so a
+    // failure leaves the gun parented to the ragdolling hand (harmless) instead of throwing.
+    DropWeapon(){
+        if(!this.weaponPivot || this.droppedWeapon){ return; }
+        try{
+            const pivot = this.weaponPivot;
+            pivot.updateWorldMatrix(true, false);
+            this.scene.attach(pivot);   // reparent into the scene, preserving the world transform
+
+            // Toss: mostly down/forward out of the grip, biased along the body's facing, plus a small
+            // random spread + lift and a brisk tumble so the rifle spins as it falls.
+            const fwd = this.fireDir.set(Math.sin(this.facingYaw), 0, Math.cos(this.facingYaw));
+            const toss = new THREE.Vector3(
+                fwd.x * 1.4 + (Math.random() - 0.5) * 1.2,
+                1.2 + Math.random() * 0.8,
+                fwd.z * 1.4 + (Math.random() - 0.5) * 1.2);
+            const spin = new THREE.Vector3(
+                (Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10, (Math.random() - 0.5) * 10);
+            this.droppedWeapon = new DroppedWeapon(pivot, {
+                physicsWorld: this.physicsWorld,
+                groundY: this.position.y,
+                velocity: toss,
+                angularVelocity: spin,
+            });
+        }catch(e){
+            console.error('Soldier weapon drop failed:', e);
+            this.droppedWeapon = null;
+        }
     }
 
     UpdateDeath(t){
-        // Physics drives the skeleton each frame; nothing else. Guard so a ragdoll error can
-        // never propagate up and kill the render loop.
-        if(this.ragdoll){
-            try{ this.ragdoll.update(t); }
-            catch(e){ console.error('Soldier ragdoll update failed:', e); this.ragdoll = null; }
+        this._deathElapsed += t;
+
+        // LINGER: physics drives the skeleton + the dropped rifle as they settle. Guarded so a ragdoll
+        // error can never propagate up and kill the render loop.
+        if(this._deathElapsed < this.corpseLingerTime){
+            if(this.ragdoll){
+                try{ this.ragdoll.update(t); }
+                catch(e){ console.error('Soldier ragdoll update failed:', e); this.ragdoll = null; }
+            }
+            if(this.droppedWeapon){
+                try{ this.droppedWeapon.update(t); }
+                catch(e){ console.error('Soldier dropped-weapon update failed:', e); this.droppedWeapon = null; }
+            }
+            return;
         }
+
+        // SINK: freeze the ragdoll (the verlet sim re-pins bones to world particles each frame, which
+        // would fight a downward translation), then lower the whole rig — and the dropped rifle — out
+        // of view. The corpse has settled by now, so freezing then sinking reads clean.
+        this.ragdoll = null;
+        const over = this._deathElapsed - this.corpseLingerTime;
+        if(over < this.corpseSinkTime){
+            const dy = this.corpseSinkDepth * (t / this.corpseSinkTime);
+            this.modelRoot.position.y -= dy;
+            if(this.droppedWeapon && this.droppedWeapon.object){ this.droppedWeapon.object.position.y -= dy; }
+            return;
+        }
+
+        // REMOVE: hand the entity to the manager for disposal (mesh, rifle, hit volumes, sensor ghost).
+        if(!this._despawned){
+            this._despawned = true;
+            this.parent.parent.Remove(this.parent);
+        }
+    }
+
+    // Despawn cleanup (called by Entity.Dispose on removal): pull the corpse + dropped rifle + muzzle-
+    // flash objects out of the scene and stop the sims. The hit volumes / attack sensor are freed by
+    // their own components' Dispose.
+    Dispose(){
+        if(this.modelRoot && this.modelRoot.parent){ this.modelRoot.parent.remove(this.modelRoot); }
+        if(this.flashLight && this.flashLight.parent){ this.flashLight.parent.remove(this.flashLight); }
+        if(this.flashMesh && this.flashMesh.parent){ this.flashMesh.parent.remove(this.flashMesh); }
+        if(this.shotSound){ try{ this.shotSound.isPlaying && this.shotSound.stop(); }catch(_){ /* ignore */ } }
+        if(this.droppedWeapon){ try{ this.droppedWeapon.dispose(); }catch(_){ /* ignore */ } this.droppedWeapon = null; }
+        this.ragdoll = null;
     }
 
     // ---- Movement & animation ----
@@ -742,7 +881,7 @@ export default class UeSoldierController extends Component{
             this.faceVec.copy(this.target.Position).sub(this.position); this.faceVec.y = 0.0;
             if(this.faceVec.lengthSq() > 1e-6){
                 this.targetYaw = Math.atan2(this.faceVec.x, this.faceVec.z);
-                this.facingYaw = this.StepYaw(this.facingYaw, this.targetYaw, 9.0 * t);
+                this.facingYaw = this.StepYaw(this.facingYaw, this.targetYaw, this.combatFaceRate * t);
                 facedTarget = true;
             }
         }
@@ -836,14 +975,19 @@ export default class UeSoldierController extends Component{
         }
     }
 
-    // Foot-synced timeScale for a locomotion action: jogs scale with the measured ground speed so
-    // the feet match the floor; idle/shoot keep their fixed rate. Floored so a stop/start never
-    // plays a near-frozen slow-mo cadence; multiplies by a constant (never divides) so it can't NaN.
+    // Cadence (timeScale) for a locomotion action: jogs scale with ground speed so the feet roughly
+    // match the floor; idle/shoot keep their fixed rate. The speed used is the MAX of the measured
+    // speed and (when the soldier intends to move) most of its COMMANDED speed — so a soldier that's
+    // being clamped/grinding (measured ~0) still cycles its legs at its commanded pace instead of
+    // dropping into slow-motion. Floored (no crawl) and capped (no flutter); multiplies by a constant
+    // (never divides) so it can't NaN.
     LocoTimeScale(name){
         if(!this.IsJogState(name)){ return this.animTimeScale[name] ?? 1.0; }
-        if(this.currentSpeed <= this.moveAnimThreshold){ return this.locoTimeScaleMin; }
+        const commanded = this.canMove ? this.desiredSpeed * 0.85 : 0;
+        const sp = Math.max(this.currentSpeed, commanded);
+        if(sp <= this.moveAnimThreshold){ return this.locoTimeScaleMin; }
         return THREE.MathUtils.clamp(
-            this.currentSpeed * this.invAuthoredJogSpeed, this.locoTimeScaleMin, this.locoTimeScaleMax);
+            sp * this.invAuthoredJogSpeed, this.locoTimeScaleMin, this.locoTimeScaleMax);
     }
 
     // Legs: crossfade between locomotion states, carrying the gait phase across a jog<->jog direction
@@ -901,6 +1045,14 @@ export default class UeSoldierController extends Component{
         if(this.dead){ return; }
         this.health = Math.max(0, this.health - (msg.amount ?? 0));
 
+        // Additive hit-react flinch (scaled by the damage, so a beast swipe rocks harder than an AK
+        // round). Fire it for any non-fatal hit; on a fatal hit the ragdoll takes over instead. A
+        // GUARANTEED visible base (0.7) plus a damage term: the player AK only does 2/shot, and the
+        // old amount/8 mapping floored to a ~3° twitch that vanished under the firing overlay — so the
+        // bullet impact "didn't read". This jolts the torso ~10° per round and stacks under sustained
+        // fire (the spring compounds; see HurtFlinch.Trigger), clamped by HurtFlinch's max angles.
+        if(this.health > 0 && this.hurtFlinch){ this.hurtFlinch.Trigger(0.7 + (msg.amount ?? 0) / 5); }
+
         // Remember who hit us — a NEUTRAL retaliates against this attacker; everyone else uses it as
         // chase MEMORY so a soldier shot from cover pushes toward the shooter (instead of bailing
         // straight back to patrol because the attacker isn't currently visible).
@@ -945,6 +1097,10 @@ export default class UeSoldierController extends Component{
         this.UpdateLocomotionAnim();
         this.UpdateLocoTimeScale();    // foot-sync the live walk/run playback rate to ground speed
         this.UpdateStuckRecovery(t);   // repath / subtle teleport if wedged (after the move)
+
+        // Additive hurt flinch on top of the mixer pose (idle no-op when not recently hit), about the
+        // soldier's facing yaw. After locomotion so it layers over the strafe/fire pose.
+        this.hurtFlinch && this.hurtFlinch.Update(t, this.facingYaw);
 
         // Apply transforms: body follows position + smoothed facing yaw.
         this.modelRoot.position.copy(this.position);

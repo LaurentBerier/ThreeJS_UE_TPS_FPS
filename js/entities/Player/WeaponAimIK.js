@@ -59,9 +59,18 @@ export default class WeaponAimIK{
         this.minAimDistance         = opts.minAimDistance ?? 0.9;         // target closer than this to the muzzle => aim down camera-forward instead
         this.refineIterations       = opts.refineIterations ?? 1;         // muzzle-move refine passes for exact convergence
 
-        // Optional support-hand WRIST rotation offset, applied only when matchHandToGrip is on (default
-        // off => the hand follows the forearm as animated, which already reads naturally). A real
-        // weapon can turn this on to wrap the palm onto its foregrip at an authored angle.
+        // Support-hand WRIST LOCK. On by default: the support hand is glued to the gun in BOTH
+        // translation (the two-bone IK plants it on the foregrip) AND orientation (the palm keeps the
+        // exact hand-vs-gun rotation the animation had at rest, carried by the gun as it aims). This is
+        // what kills the "the hand drifts off the gun / the contact offsets" glitch — without it the
+        // wrist follows the forearm as animated and slides on the grip when the gun rotates to aim. The
+        // rest relationship is CAPTURED from the posed hand (CaptureGripSockets), so it self-calibrates
+        // to whatever grip the rifle clips author — no per-rig hand-tuned angle needed.
+        this.lockSupportHand       = opts.lockSupportHand ?? true;
+        this.leftGripQuatLocal     = new THREE.Quaternion();   // hand_l orientation in weaponPivot-local frame (rest)
+        this._leftGripQuatCaptured = false;
+        // Legacy explicit-offset path (a real weapon can author a palm angle instead of the captured
+        // rest). When matchHandToGrip is on it overrides the captured lock with weaponWorld*offset.
         this.matchHandToGrip       = opts.matchHandToGrip ?? false;
         this.LeftHandRotationOffset = opts.LeftHandRotationOffset ? opts.LeftHandRotationOffset.clone() : new THREE.Quaternion();
 
@@ -213,6 +222,13 @@ export default class WeaponAimIK{
         if(this.bones.hand_l){
             this.bones.hand_l.getWorldPosition(this._tmpV);
             this.leftGripLocal.copy(pivot.worldToLocal(this._tmpV.clone()));
+            // Capture hand_l's orientation RELATIVE to the gun at rest (pivot-local). The wrist lock
+            // keeps exactly this hand-vs-gun rotation as the gun rotates to aim, so the palm stays
+            // wrapped on the foregrip instead of sliding/twisting off it — self-calibrating, no offset.
+            pivot.getWorldQuaternion(this._pW);
+            this.bones.hand_l.getWorldQuaternion(this._hq2);
+            this.leftGripQuatLocal.copy(this._pW).invert().multiply(this._hq2);
+            this._leftGripQuatCaptured = true;
         }else{
             // No left hand bone: default the foregrip to ~35% up the barrel from centre.
             this.leftGripLocal.copy(this.muzzleLocal).multiplyScalar(0.55);
@@ -250,6 +266,16 @@ export default class WeaponAimIK{
     // All weapons in this template share the in-hand mesh, so the init-captured sockets already fit; a
     // genuinely different rigged mesh supplies its own via ikConfig (SetWeaponConfig), applied on equip.
     OnWeaponChanged(){
+        this._aimDirSeeded = false;
+    }
+
+    // Hard-reset the eased correction to fully OFF. Used when the body hands the whole pose off to a
+    // dodge roll: Update is skipped for the roll's duration, so without this the master blend stays
+    // FROZEN at its pre-roll value (~1 if you rolled while firing) and re-applies the full barrel/
+    // support-hand correction in a single frame at roll recovery — a one-frame pop. Reset to 0 so it
+    // eases back in from nothing (and reseed the aim low-pass so it doesn't swing in from a stale dir).
+    Reset(){
+        this._alpha = 0;
         this._aimDirSeeded = false;
     }
 
@@ -339,15 +365,19 @@ export default class WeaponAimIK{
         if(this.AimCorrectionStrength < 0.999){ this._scaleQuatAngle(this._qFull, this.AimCorrectionStrength); }
         this._qApplied.copy(this._idQ).slerp(this._qFull, this._alpha);
 
-        // Apply the world rotation about the wrist by writing the weapon's local transform: convert
-        // the world delta into the hand's local frame and rotate the base placement about the local
-        // origin (= the wrist). Keeps the dominant hand attached (the grip stays in the palm).
-        this.handBoneR.getWorldQuaternion(this._handWQ);
-        this._handWQInv.copy(this._handWQ).invert();
-        this._qLocal.copy(this._handWQInv).multiply(this._qApplied).multiply(this._handWQ);
-        pivot.quaternion.copy(this._qLocal).multiply(this._baseQuat);
-        pivot.position.copy(this._basePos).applyQuaternion(this._qLocal);
-        pivot.updateWorldMatrix(false, false);
+        // Apply the aim correction to the WRIST BONE (hand_r) about its origin, NOT to the gun pivot.
+        // The gun is a child of hand_r, so rotating the wrist lands the barrel in the SAME world pose a
+        // pivot rotation would (the rotation is about the same point — the wrist — so muzzle position &
+        // direction, and hence convergence, are identical). The difference is that the dominant hand's
+        // FINGER bones are also children of hand_r, so they now rotate WITH the gun — the grip stays
+        // glued in the palm. The old pivot-only rotation left the fingers at the animated (un-aimed)
+        // pose while the gun swung, so the gun slid out from under them: the "hand slides a bit on the
+        // gun when aiming" glitch, worst at up/down aim where the correction angle is largest. The
+        // pivot stays at its captured base (reset above); the wrist articulates by the (clamped)
+        // correction — exactly how a shooter cocks the wrist to fine-aim. The support hand is still
+        // re-planted on the foregrip by the IK below, so BOTH hands stay attached.
+        this._applyWorldQuat(this.handBoneR, this._qApplied);
+        this.handBoneR.updateWorldMatrix(false, true);   // refresh the gun (child) world for the IK + debug reads
 
         // --- Support-hand IK: plant hand_l on the (now-rotated) foregrip socket. ---
         const ikW = this._alpha * this.WeaponIKBlendAlpha;
@@ -360,13 +390,16 @@ export default class WeaponAimIK{
             this._tmpV2.copy(this._ikE).lerp(this._leftTarget, ikW);
             this._solveTwoBone(this.bones.upperarm_l, this.bones.lowerarm_l, this.bones.hand_l, this._tmpV2);
 
-            // Optional wrist wrap: orient hand_l to the weapon (+ authored offset), blended by the IK
-            // weight. Off by default (the hand follows the forearm as animated, already natural); a
-            // weapon turns it on via ikConfig.matchHandToGrip to seat the palm at an authored angle.
-            if(this.matchHandToGrip){
+            // Wrist LOCK: orient hand_l to the gun so the palm stays glued to the foregrip as the gun
+            // aims (translation is already planted by the IK above). The desired world orientation is
+            // the gun's world quat times the captured rest hand-vs-gun rotation (lockSupportHand, on by
+            // default — self-calibrating), or an authored offset (matchHandToGrip). Blended by the IK
+            // weight so it eases in/out with the aim and never snaps.
+            if((this.lockSupportHand && this._leftGripQuatCaptured) || this.matchHandToGrip){
                 const hand = this.bones.hand_l;
                 pivot.getWorldQuaternion(this._weaponWQ);
-                this._hq1.copy(this._weaponWQ).multiply(this.LeftHandRotationOffset);   // desired world quat
+                if(this.matchHandToGrip){ this._hq1.copy(this._weaponWQ).multiply(this.LeftHandRotationOffset); }
+                else{ this._hq1.copy(this._weaponWQ).multiply(this.leftGripQuatLocal); }
                 hand.getWorldQuaternion(this._hq2).slerp(this._hq1, ikW);               // blend from animated
                 hand.parent.getWorldQuaternion(this._pW);
                 hand.quaternion.copy(this._pWInv.copy(this._pW).invert()).multiply(this._hq2);

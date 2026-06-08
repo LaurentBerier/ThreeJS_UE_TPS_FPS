@@ -1,21 +1,28 @@
 import * as THREE from 'three'
 import Component from '../../Component.js'
 import Input from '../../Input.js'
-import { WEAPON_GRIP_DEFAULT } from '../Common/UeMannequin.js'
+import { WEAPON_GRIP_DEFAULT, WEAPON_GRIP_FPS_DEFAULT } from '../Common/UeMannequin.js'
 
 
-// Live in-hand weapon placement tool. Toggle with the backquote key (`) in TPS to
-// nudge the AK's grip transform by eye instead of guessing offsets in code. The
-// pivot it drives is the same group seated by buildUeMannequin (hand-local space,
-// centimetres for position / degrees here for rotation), so whatever looks right
-// pastes straight back into WEAPON_GRIP in UeMannequin.js.
+// Live in-hand weapon placement tool. Toggle with the backquote key (`) to nudge the AK's grip
+// transform by eye instead of guessing offsets in code.
+//
+// PER CAMERA MODE. The AK is the same mesh in first- and third-person (the FP camera rides the
+// body's head bone, so FPS shows this body's gun), but each mode wants its own seat — the framing
+// differs. This panel edits whichever mode is ACTIVE: open it in FPS and you nudge the FPS grip; open
+// it in TPS and you nudge the TPS grip. Each mode keeps its own values, and the edit is pushed to
+// PlayerBody (SetWeaponGripLive), which seats the pivot and re-syncs the aim IK, so it shows live. To
+// switch which mode you're editing: close the panel, press V, reopen.
+//
+// Units match WEAPON_GRIP: position in hand-local centimetres, rotation in degrees. Whatever looks
+// right pastes straight back into WEAPON_GRIP (TPS) / WEAPON_GRIP_FPS (FPS) in UeMannequin.js.
 //
 // Keys (only while the panel is open):
 //   [ ]            select previous / next field (posX..rotZ)
 //   ArrowUp/Down   decrease / increase the selected field by the current step
 //   ArrowLeft/Right  cycle the step size (fine <-> coarse)
-//   Enter          print + copy a paste-ready WEAPON_GRIP snippet
-//   Backspace      reset to the WEAPON_GRIP defaults
+//   Enter          print + copy a paste-ready grip snippet for the active mode
+//   Backspace      reset the active mode to its code defaults
 //
 // This is a dev aid; it ships off and costs nothing until you press `.
 export default class WeaponPlacementDebug extends Component{
@@ -26,10 +33,13 @@ export default class WeaponPlacementDebug extends Component{
         this.pivot = null;
         this.el = null;
 
-        // Editable state, in the pivot's own units: position in hand-local cm,
-        // rotation in degrees (converted to the Euler radians on apply).
-        this.pos = { x: 0, y: 0, z: 0 };
-        this.rotDeg = { x: 0, y: 0, z: 0 };
+        // Editable state PER CAMERA MODE, in the pivot's own units: position in hand-local cm,
+        // rotation in degrees (converted to the Euler radians on apply). Seeded from the code
+        // defaults in Initialize.
+        this.modes = {
+            TPS: { pos: { x: 0, y: 0, z: 0 }, rotDeg: { x: 0, y: 0, z: 0 } },
+            FPS: { pos: { x: 0, y: 0, z: 0 }, rotDeg: { x: 0, y: 0, z: 0 } },
+        };
 
         this.fields = ['posX', 'posY', 'posZ', 'rotX', 'rotY', 'rotZ'];
         this.selected = 0;
@@ -62,20 +72,31 @@ export default class WeaponPlacementDebug extends Component{
         this.controls = this.GetComponent('PlayerControls');
         this.camera = this.controls ? this.controls.camera : null;
 
-        // Seed the editable state from the code defaults so the readout shows clean
-        // numbers (e.g. 90, not a quaternion round-trip).
-        const g = WEAPON_GRIP_DEFAULT;
-        this.pos = { x: g.position.x, y: g.position.y, z: g.position.z };
-        this.rotDeg = {
-            x: THREE.MathUtils.radToDeg(g.rotationEuler.x),
-            y: THREE.MathUtils.radToDeg(g.rotationEuler.y),
-            z: THREE.MathUtils.radToDeg(g.rotationEuler.z),
-        };
+        // Seed each mode's editable state from its code default so the readout shows clean numbers
+        // (e.g. 90, not a quaternion round-trip).
+        this.modes.TPS = this.FromGrip(WEAPON_GRIP_DEFAULT);
+        this.modes.FPS = this.FromGrip(WEAPON_GRIP_FPS_DEFAULT);
 
         this.BuildPanel();
         Input.AddKeyDownListner(this.OnKeyDown);
         Input.AddMouseMoveListner(this.OnMouseMove);
     }
+
+    // Decompose a code grip ({position, rotationEuler}) into the panel's cm/degree editable state.
+    FromGrip(g){
+        return {
+            pos: { x: g.position.x, y: g.position.y, z: g.position.z },
+            rotDeg: {
+                x: THREE.MathUtils.radToDeg(g.rotationEuler.x),
+                y: THREE.MathUtils.radToDeg(g.rotationEuler.y),
+                z: THREE.MathUtils.radToDeg(g.rotationEuler.z),
+            },
+        };
+    }
+
+    // The camera mode currently being edited (the live PlayerControls mode), and its editable state.
+    Mode(){ return (this.controls && this.controls.cameraMode) || 'TPS'; }
+    Cur(){ return this.modes[this.Mode()] || this.modes.TPS; }
 
     // Mouse drives the free-fly look only while the panel is open and the pointer is
     // locked; otherwise PlayerControls owns the mouse as usual.
@@ -120,31 +141,26 @@ export default class WeaponPlacementDebug extends Component{
     }
 
     Nudge(sign){
+        const cur = this.Cur();
         const isRot = this.selected >= 3;
         const step = sign * (isRot ? this.rotSteps[this.stepIndex] : this.posSteps[this.stepIndex]);
         const axis = ['x', 'y', 'z'][this.selected % 3];
-        if(isRot){ this.rotDeg[axis] = +(this.rotDeg[axis] + step).toFixed(3); }
-        else      { this.pos[axis]    = +(this.pos[axis] + step).toFixed(3); }
+        if(isRot){ cur.rotDeg[axis] = +(cur.rotDeg[axis] + step).toFixed(3); }
+        else      { cur.pos[axis]    = +(cur.pos[axis] + step).toFixed(3); }
     }
 
     Reset(){
-        const g = WEAPON_GRIP_DEFAULT;
-        this.pos = { x: g.position.x, y: g.position.y, z: g.position.z };
-        this.rotDeg = {
-            x: THREE.MathUtils.radToDeg(g.rotationEuler.x),
-            y: THREE.MathUtils.radToDeg(g.rotationEuler.y),
-            z: THREE.MathUtils.radToDeg(g.rotationEuler.z),
-        };
+        const def = this.Mode() === 'FPS' ? WEAPON_GRIP_FPS_DEFAULT : WEAPON_GRIP_DEFAULT;
+        this.modes[this.Mode()] = this.FromGrip(def);
     }
 
+    // Push the active mode's grip to PlayerBody, which seats the pivot for that mode and re-syncs the
+    // aim IK base — so the nudge shows live whether or not the gun is currently aim-corrected.
     Apply(){
-        if(!this.pivot){ return; }
-        this.pivot.position.set(this.pos.x, this.pos.y, this.pos.z);
-        this.pivot.quaternion.setFromEuler(new THREE.Euler(
-            THREE.MathUtils.degToRad(this.rotDeg.x),
-            THREE.MathUtils.degToRad(this.rotDeg.y),
-            THREE.MathUtils.degToRad(this.rotDeg.z),
-        ));
+        if(!this.body){ return; }
+        const m = this.Mode();
+        const s = this.modes[m];
+        this.body.SetWeaponGripLive(m, s.pos, s.rotDeg);
     }
 
     Toggle(){
@@ -198,10 +214,12 @@ export default class WeaponPlacementDebug extends Component{
     }
 
     Snippet(){
-        const p = this.pos, r = this.rotDeg;
+        const cur = this.Cur();
+        const p = cur.pos, r = cur.rotDeg;
         const n = v => Number.isInteger(v) ? v : +v.toFixed(3);
+        const name = this.Mode() === 'FPS' ? 'WEAPON_GRIP_FPS' : 'WEAPON_GRIP';
         return (
-`const WEAPON_GRIP = {
+`const ${name} = {
     position: new THREE.Vector3(${n(p.x)}, ${n(p.y)}, ${n(p.z)}),
     rotationEuler: new THREE.Euler(
         THREE.MathUtils.degToRad(${n(r.x)}),
@@ -213,7 +231,7 @@ export default class WeaponPlacementDebug extends Component{
 
     EmitSnippet(){
         const text = this.Snippet();
-        console.log('[WeaponPlacementDebug] paste into UeMannequin.js:\n' + text);
+        console.log(`[WeaponPlacementDebug] paste into UeMannequin.js (${this.Mode()}):\n` + text);
         try { navigator.clipboard && navigator.clipboard.writeText(text); } catch(_){ /* non-secure context */ }
     }
 
@@ -234,12 +252,13 @@ export default class WeaponPlacementDebug extends Component{
     Render(){
         if(!this.el){ return; }
         if(!this.pivot){
-            this.el.textContent = 'WEAPON DEBUG: no weapon socketed (TPS body only).';
+            this.el.textContent = 'WEAPON DEBUG: no weapon socketed.';
             return;
         }
+        const cur = this.Cur();
         const isRot = this.selected >= 3;
         const step = isRot ? this.rotSteps[this.stepIndex] : this.posSteps[this.stepIndex];
-        const vals = [this.pos.x, this.pos.y, this.pos.z, this.rotDeg.x, this.rotDeg.y, this.rotDeg.z];
+        const vals = [cur.pos.x, cur.pos.y, cur.pos.z, cur.rotDeg.x, cur.rotDeg.y, cur.rotDeg.z];
         const units = ['cm', 'cm', 'cm', '°', '°', '°'];
         const rows = this.fields.map((f, i) => {
             const cursor = i === this.selected ? '▶' : ' ';
@@ -248,13 +267,15 @@ export default class WeaponPlacementDebug extends Component{
         }).join('\n');
 
         this.el.textContent =
-`WEAPON PLACEMENT  (\` to close)
+`WEAPON PLACEMENT · ${this.Mode()}  (\` to close)
 ──────────────────────────
 ${rows}
 ──────────────────────────
 step  ${String(step).padStart(5)} ${isRot ? '°' : 'cm'}   (←/→ change)
 [ ]=field  ↑/↓=adjust
 Enter=copy snippet  ⌫=reset
+editing the ${this.Mode()} grip (V swaps mode
+when the panel is closed)
 ── free cam ──
 WASD move · Q/E down/up
 mouse look · Shift faster`;

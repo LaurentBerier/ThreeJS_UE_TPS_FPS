@@ -70,6 +70,9 @@ export default class UeSoldierCollision extends Component{
         }
     }
 
+    // Despawn cleanup: drop the hit volumes from the world (no-op if already Disabled on death).
+    Dispose(){ this.Disable(); }
+
     Update(t){
         if(!this.enabled){ return; }
 

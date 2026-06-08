@@ -18,6 +18,7 @@ export default class DirectionDebug extends Component{
     }
 
     Update(t){
+        if(!this.arrowHelper){ return; }
         this.dir.copy(this.forwardVec);
         this.dir.applyQuaternion(this.parent.rotation);
         this.arrowHelper.position.copy(this.parent.position);
@@ -25,5 +26,15 @@ export default class DirectionDebug extends Component{
         this.arrowHelper.setDirection(this.dir);
         this.arrowHelper.setLength(1);
         this.arrowHelper.setColor(0xffff00);
+    }
+
+    // Free the debug arrow when the entity is despawned (else it's orphaned in the scene at the
+    // dead character's last spot).
+    Dispose(){
+        if(this.arrowHelper){
+            if(this.arrowHelper.parent){ this.arrowHelper.parent.remove(this.arrowHelper); }
+            this.arrowHelper.dispose && this.arrowHelper.dispose();
+            this.arrowHelper = null;
+        }
     }
 }

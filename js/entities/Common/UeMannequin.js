@@ -57,6 +57,22 @@ const WEAPON_GRIP = {
     ),
 };
 
+// SEPARATE first-person grip transform. The in-hand AK is the SAME mesh in both camera modes (the
+// FP camera rides the body's head bone, so first-person shows this body's gun, not a viewmodel), but
+// the FRAMING differs: over-the-shoulder in TPS vs down-the-sights at the eye in FPS, so the gun
+// wants a different seat for each. PlayerBody swaps the pivot to whichever applies for the current
+// camera mode (see PlayerBody.ApplyWeaponGrip), and the placement tool (WeaponPlacementDebug, the `
+// panel) edits whichever mode you're in. Starts as a COPY of the TPS grip so FPS reads identically
+// until you tune it; paste the FPS panel's snippet here. Hand-local cm / degrees, same as above.
+const WEAPON_GRIP_FPS = {
+    position: new THREE.Vector3(-19.6, -2.4, 0.6),
+    rotationEuler: new THREE.Euler(
+        THREE.MathUtils.degToRad(0),
+        THREE.MathUtils.degToRad(4),
+        THREE.MathUtils.degToRad(272),
+    ),
+};
+
 // Build the runtime-ready avatar from a freshly-cloned GLB scene.
 //   model    : SkeletonUtils.clone() of the loaded SK_Mannequin.glb scene
 //   textures : optional { bodyColor, bodyNormal, logoColor, logoNormal } THREE.Textures
@@ -190,8 +206,10 @@ export function buildUeMannequin(model, { textures = null, weapon = null, preOri
 
 // The default in-hand grip transform, exposed so the placement-debug tool can show
 // the current values and so a found-by-debug transform can be pasted straight back
-// into WEAPON_GRIP above.
+// into WEAPON_GRIP above. WEAPON_GRIP_FPS_DEFAULT is the matching first-person seat
+// (see WEAPON_GRIP_FPS) — PlayerBody applies one or the other per camera mode.
 export const WEAPON_GRIP_DEFAULT = WEAPON_GRIP;
+export const WEAPON_GRIP_FPS_DEFAULT = WEAPON_GRIP_FPS;
 
 // Collect the names of every bone in the "upper body": the split bone (default
 // 'spine_01', the first spine joint above the pelvis on the UE skeleton) and all of

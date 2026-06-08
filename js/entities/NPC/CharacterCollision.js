@@ -106,10 +106,26 @@ export default class CharacterCollision extends Component{
 
     }
 
-    Update(t){
+    // Drop every hit capsule from the world. Called on DEATH (so the corpse stops absorbing the
+    // player's bullets / occluding line-of-sight while it lingers — matching the soldier) AND on
+    // despawn (so a removed corpse leaves no phantom colliders; this rig's capsules follow the ragdoll
+    // bones, so without this they'd freeze at the last bone positions). Idempotent.
+    Disable(){
+        if(this._disposed){ return; }
+        this._disposed = true;
         Object.keys(this.collisions).forEach(key=>{
             const collision = this.collisions[key];
-            
+            if(collision.object){ this.world.removeCollisionObject(collision.object); }
+        });
+    }
+
+    Dispose(){ this.Disable(); }
+
+    Update(t){
+        if(this._disposed){ return; }
+        Object.keys(this.collisions).forEach(key=>{
+            const collision = this.collisions[key];
+
             const transform = collision.object.getWorldTransform();
 
             collision.bone.getWorldPosition(this.bonePos);

@@ -83,7 +83,8 @@ export default class PlayerControls extends Component{
         // target is a far point straight down the crosshair (still a correct aim direction).
         this.aimTarget = new THREE.Vector3();      // world point under the crosshair
         this.aimOrigin = new THREE.Vector3();      // camera world position the ray starts from
-        this.aimDir = new THREE.Vector3(0, 0, -1); // unit camera-forward (crosshair direction)
+        this.aimDir = new THREE.Vector3(0, 0, -1); // unit camera-forward (crosshair direction; carries shake/wobble)
+        this.aimDirRaw = new THREE.Vector3(0, 0, -1); // FX-FREE look forward (pure yaw*pitch) — for cosmetic head-aim
         this.aimTargetValid = false;               // true => the ray hit something (else far fallback)
         this.aimDistance = 0;                      // metres from the camera to the (smoothed) aim target
         this.aimMaxDistance = 150;                 // far fallback distance when nothing is hit (m)
@@ -94,7 +95,13 @@ export default class PlayerControls extends Component{
         // while keeping lateral aim fully responsive (the direction is the live crosshair). The actual
         // shot still uses the exact instantaneous hit (Weapon.Raycast), so accuracy is unaffected and a
         // steady aim still converges the barrel exactly on the target.
-        this.aimDistLerp = 9;                      // depth ease rate (1/s) — smooth but responsive
+        // Depth ease rate (1/s). The visible barrel points AT aimTarget, so a raw hit-depth JUMP as the
+        // crosshair sweeps a near/far edge — which happens constantly WHILE TURNING — swings the muzzle
+        // (it is offset from the camera, so the muzzle->point direction is depth/parallax sensitive) and
+        // reads as the gun/arms "strobing" on a turn. Easing the depth lower-passes that swing; kept
+        // responsive enough that a steady aim still converges the barrel on the target. The SHOT uses
+        // the exact instantaneous hit (Weapon.Raycast), so accuracy is unaffected by this smoothing.
+        this.aimDistLerp = 6;
         this._aimDistSmooth = 0;                   // low-passed aim distance
         this._aimDistSeeded = false;               // seed on first use so it doesn't ease in from 0
         this._aimNear = new THREE.Vector3();       // scratch: near-plane crosshair point
@@ -175,11 +182,16 @@ export default class PlayerControls extends Component{
         // small, applied on top of the look orientation so the crosshair stays put. ---
         this._fxTime = 0.0;
         this.trauma = 0.0;              // 0..1; decays each frame
-        this.traumaDecay = 1.7;        // trauma/sec
-        this.maxShakeRot = 0.012;      // radians at full trauma (small rotation only)
+        this.traumaDecay = 2.0;        // trauma/sec (settles a touch quicker so hits don't linger as a shake)
+        this.maxShakeRot = 0.009;      // radians at full trauma (small rotation only) — trimmed for less buzz
         this.recoilPitch = 0.0;        // transient view kick, recovers to 0
         this.recoilYaw = 0.0;
-        this.recoilRecover = 9.0;      // 1/s settle rate
+        this.recoilRecover = 11.0;     // 1/s settle rate (snappier recovery, less lingering wobble)
+        // Precise aim must stay STEADY: while ADS the trauma shake + per-shot recoil kick are scaled
+        // DOWN (not off — a hair of gun kick still reads) so the crosshair doesn't jitter while you
+        // line up / hold a shot. The user's "camera shakes while aiming + shooting" complaint is this —
+        // damped hard so sustained ADS fire stays calm (a clean, barely-there kick, not a buzz).
+        this.aimShakeDamp = 0.16;
         this._shakeEuler = new THREE.Euler();
         this._shakeQuat = new THREE.Quaternion();
 
@@ -190,7 +202,10 @@ export default class PlayerControls extends Component{
         // (so the deliberately-slow aim walk still conveys) plus a little speed.
         this._aimWobbleW = 0;                                  // eased 0..1 weight (aiming & moving)
         this.aimWobbleLerp = 6;                                // ease in/out rate (1/s)
-        this.aimWobbleAmount = THREE.MathUtils.degToRad(1.1);  // peak roll sway (rad); pitch/yaw scale off this
+        // Kept DELIBERATELY small: this exists only so the slow ADS walk doesn't read as a frozen
+        // glide, but at the old 1.1° it presented as the "camera shakes when aiming" the user flagged.
+        // Trimmed to a barely-there footfall breath — the aim stays steady enough to hold a shot.
+        this.aimWobbleAmount = THREE.MathUtils.degToRad(0.4);  // peak roll sway (rad); pitch/yaw scale off this
         this.aimWobbleFreq = 5.0;                              // base stride frequency for the sway
         this._wobbleEuler = new THREE.Euler();
         this._wobbleQuat = new THREE.Quaternion();
@@ -205,6 +220,12 @@ export default class PlayerControls extends Component{
         this.rollDuration = 0.78;        // s of locked roll movement (~ the 0.97s clip at 1.25x)
         this.rollSpeed = 10.0;           // forward m/s at the start of the roll (boosted momentum)
         this.rollEndSpeedFactor = 0.55;  // speed multiplier by the end of the roll (eases out)
+        // Front-loaded impulse: a short, fast surge of EXTRA speed in the very first slice of the roll
+        // so it kicks off with a satisfying pop/lunge, then settles into the normal eased momentum
+        // within ~0.1 s. Shapes the per-frame roll velocity (a one-shot velocity impulse would be
+        // overwritten next frame, since UpdateRoll re-sets the linear velocity each tick).
+        this.rollImpulseBoost = 0.6;     // peak extra fraction of rollSpeed at the very start (u=0)
+        this.rollImpulseDecay = 9.0;     // how fast the surge decays over normalized roll progress u
         this.rollCooldown = 0.18;        // s after a roll before another can start (prevents chaining)
         this._rollCooldownTimer = 0.0;
         this.rollDir = new THREE.Vector3();   // world-horizontal roll direction (camera forward)
@@ -334,9 +355,11 @@ export default class PlayerControls extends Component{
     AddTrauma(amount){ this.trauma = Math.min(1.0, this.trauma + amount); }
 
     AddRecoil(){
-        this.trauma = Math.min(1.0, this.trauma + 0.025);
-        this.recoilPitch += 0.005;                          // small kick up
-        this.recoilYaw += (Math.random() - 0.5) * 0.0025;   // very slight horizontal jitter
+        // Mostly a clean vertical kick; only a hair of horizontal jitter. Less trauma per shot so
+        // sustained auto-fire doesn't pile into a buzzing view (it reads as a firm kick, not a shake).
+        this.trauma = Math.min(1.0, this.trauma + 0.012);
+        this.recoilPitch += 0.005;                          // small kick up (the main feedback)
+        this.recoilYaw += (Math.random() - 0.5) * 0.0014;   // very slight horizontal jitter
     }
 
     // Apply trauma-driven shake + the per-shot recoil kick on top of the look
@@ -347,14 +370,19 @@ export default class PlayerControls extends Component{
         this.recoilPitch *= settle;
         this.recoilYaw *= settle;
 
-        const shake = this.trauma * this.trauma;   // ease-in so light trauma is subtle
+        // Steady the view while aiming: scale the whole shake + recoil contribution down so a precise
+        // aim doesn't jitter (the crosshair, the gun barrel IK and the shot all read off this view).
+        const steady = this.aiming ? this.aimShakeDamp : 1.0;
+        const shake = this.trauma * this.trauma * steady;   // ease-in so light trauma is subtle
         const f = this._fxTime;
+        const recoilP = this.recoilPitch * steady;
+        const recoilY = this.recoilYaw * steady;
 
         // Rotation-only shake (no positional offset) so the camera never lurches in
         // space — just a small, quickly-settling jitter of the view angle, plus the
         // per-shot recoil kick.
-        const rp = (shake > 0.0001 ? Math.sin(f * 59.0) * shake * this.maxShakeRot : 0) + this.recoilPitch;
-        const ry = (shake > 0.0001 ? Math.sin(f * 43.0 + 0.5) * shake * this.maxShakeRot : 0) + this.recoilYaw;
+        const rp = (shake > 0.0001 ? Math.sin(f * 59.0) * shake * this.maxShakeRot : 0) + recoilP;
+        const ry = (shake > 0.0001 ? Math.sin(f * 43.0 + 0.5) * shake * this.maxShakeRot : 0) + recoilY;
         const rz = shake > 0.0001 ? Math.sin(f * 67.0 + 1.1) * shake * this.maxShakeRot * 0.6 : 0;
         if(rp || ry || rz){
             this._shakeEuler.set(rp, ry, rz);
@@ -388,6 +416,31 @@ export default class PlayerControls extends Component{
         this.camera.quaternion.multiply(this._wobbleQuat);
     }
 
+    // Place the first-person eye on the body's head bone (+ a small forward/up nudge onto the eye
+    // line), flooring the height during a roll so the somersault dips hard but never clips the floor.
+    //
+    // STROBE FIX. Components update Controls-BEFORE-Body, so the eye placed during UpdateCamera reads
+    // the head bone from LAST frame's pose while the gun/arms render at THIS frame's — a one-frame
+    // desync that reads as the viewmodel strobing/juddering against the view when you turn. PlayerBody
+    // re-calls this at the END of its Update (after it has posed the body), so the eye and the gun it
+    // holds are locked to the same frame. Reading the head bone (animation), not the camera, so there
+    // is no feedback loop. capPos is the capsule eye position (Player.Position).
+    PlaceFpsEyePosition(capPos){
+        if(this.cameraMode !== 'FPS' || !this.camera){ return; }
+        this._fwd.copy(this._fwdBase).applyQuaternion(this.parent.Rotation);
+        if(this.body && this.body.GetHeadWorldPosition(this._headPos)){
+            this._camTarget.copy(this._headPos)
+                .addScaledVector(this._fwd, this.fpsEyeForward);
+            this._camTarget.y += this.fpsEyeUp;
+        }else{
+            this._camTarget.copy(capPos);
+        }
+        if(this.rolling){
+            this._camTarget.y = Math.max(this._camTarget.y, capPos.y - 0.45);
+        }
+        this.camera.position.copy(this._camTarget);
+    }
+
     // Place the camera for the current mode. capPos is the capsule-tracked
     // position (eye height); it is also Player.Position so NPC targeting/raycasts
     // are camera-mode-independent.
@@ -395,32 +448,12 @@ export default class PlayerControls extends Component{
         this._fxTime += t;
 
         if(this.cameraMode === 'FPS'){
-            // Same character as third-person: the eye rides the mesh's head bone, so
-            // the walk/run animation gives a subtle, real head bob. Nudge slightly
-            // forward + up toward the eye line; the head mesh itself is hidden by the
-            // camera's near plane (set on the mode switch). Fall back to the capsule
-            // eye height if the head bone isn't available yet.
-            this._fwd.copy(this._fwdBase).applyQuaternion(this.parent.Rotation);
-            if(this.body && this.body.GetHeadWorldPosition(this._headPos)){
-                this._camTarget.copy(this._headPos)
-                    .addScaledVector(this._fwd, this.fpsEyeForward);
-                this._camTarget.y += this.fpsEyeUp;
-            }else{
-                this._camTarget.copy(capPos);
-            }
-            // During a dodge roll the head bone tucks toward the ground (forward somersault); the FP
-            // ORIENTATION already stays as the look direction (set below, not the head bone), so the
-            // view doesn't tumble, but the POSITION would dip through the floor at the roll's lowest
-            // point. Floor the eye height so the first-person roll reads as a strong dip, never a
-            // through-the-floor clip.
-            if(this.rolling){
-                this._camTarget.y = Math.max(this._camTarget.y, capPos.y - 0.45);
-            }
-            // Lock the eye RIGIDLY to the head bone (no follow lag here): if the camera
-            // lagged, the head mesh — rigged to the same bone — would swing ahead of
-            // the near plane during the walk cycle and we'd see the inside of the skull.
-            // The animated head bob still comes through because the camera rides the bone.
-            this.camera.position.copy(this._camTarget);
+            // Same character as third-person: the eye rides the mesh's head bone, so the walk/run
+            // animation gives a subtle, real head bob. PlaceFpsEyePosition sets the eye position; it is
+            // also re-called by PlayerBody AFTER it has posed the body this frame (see the note there)
+            // so the eye stays locked to the SAME-frame head — without that re-call the eye reads last
+            // frame's pose (Controls update before Body) and the gun/arms strobe against it on a turn.
+            this.PlaceFpsEyePosition(capPos);
             this._camInit = true;
             this.camera.quaternion.copy(this.parent.Rotation);
             this.ApplyCameraShake(t);
@@ -551,6 +584,11 @@ export default class PlayerControls extends Component{
         this.aimDir.copy(this._aimFar).sub(this._aimNear);
         if(this.aimDir.lengthSq() < 1e-12){ this.aimDir.set(0, 0, -1).applyQuaternion(this.camera.quaternion); }
         this.aimDir.normalize();
+        // FX-free crosshair direction from the PURE look orientation (parent.Rotation = yaw*pitch). The
+        // camera quaternion above carries the shake + ADS-walk wobble (applied in UpdateCamera); aimDir
+        // therefore jitters with them. The cosmetic head-aim consumes aimDirRaw so the head doesn't
+        // inherit that view jitter, while the gun/shot keep using the FX-affected aimDir/aimTarget.
+        this.aimDirRaw.set(0, 0, -1).applyQuaternion(this.parent.Rotation).normalize();
 
         const mask = CollisionFilterGroups.AllFilter & ~CollisionFilterGroups.SensorTrigger;
         let rawDist;
@@ -630,8 +668,10 @@ export default class PlayerControls extends Component{
         const u = Math.min(1.0, this.rollTimer / this.rollDuration);
         this.invulnerable = (this.rollTimer >= this.rollIFrameStart && this.rollTimer <= this.rollIFrameEnd);
 
-        // Forward momentum from rollSpeed easing down to rollSpeed*endFactor across the roll.
-        const speed = this.rollSpeed * (1 - (1 - this.rollEndSpeedFactor) * u);
+        // Forward momentum from rollSpeed easing down to rollSpeed*endFactor across the roll, with a
+        // brief front-loaded surge (decays over the first ~0.1 s of u) so the roll launches with a pop.
+        const burst = 1 + this.rollImpulseBoost * Math.exp(-this.rollImpulseDecay * u);
+        const speed = this.rollSpeed * (1 - (1 - this.rollEndSpeedFactor) * u) * burst;
         const velocity = this.physicsBody.getLinearVelocity();
         velocity.setX(this.rollDir.x * speed);
         velocity.setZ(this.rollDir.z * speed);

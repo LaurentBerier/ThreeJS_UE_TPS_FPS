@@ -84,6 +84,22 @@ export default class Ragdoll{
         // a stable column that never falls). Constant (no time-varying scripted stiffening anymore).
         this.braceStiffness = 0.16;    // grandparent braces resist bending only gently
 
+        // ---- Joint angle limits (AAA "no impossible poses") ----
+        // The distance + brace sticks alone let a verlet skeleton fold into anatomically impossible
+        // poses (a forearm bent backward through the upper arm, a shin folding through the thigh). We
+        // add a JOINT-DISTANCE LIMIT on each 3-bone chain A-B-C: the span |A-C| encodes the angle at B
+        // (law of cosines), so clamping that span between a folded minimum and a near-straight maximum
+        // limits the joint angle — the limb can't hyperextend past straight and can't over-fold through
+        // itself. The bounds come from the two bone LENGTHS (geometry, not the death pose), so they're
+        // anatomically meaningful regardless of the pose at death. Crucially this is a symmetric
+        // distance projection just like the limb sticks — it never injects energy, so the corpse still
+        // tumbles freely and then SETTLES to a clean rest (an earlier angular-cone version pumped energy
+        // and made a limb flail forever). The existing soft braces still pull gently toward the
+        // death-pose span, which reads as a bit of joint RESISTANCE / muscle tone (the GTA feel).
+        this.jointFoldFrac = 0.42;       // |A-C| min as a fraction of straight length (tightest fold)
+        this.jointStraightFrac = 0.985;  // |A-C| max as a fraction of straight length (no hyperextension)
+        this.limitStiffness = 0.9;       // how hard the joint-span limits pull (stiff — they're hard limits)
+
         // ---- World collision (the AAA "reacts to the environment" bit) ----
         // The corpse particles collide with the REAL static level via Ammo sweeps/rays, so it
         // bounces off walls, rolls down slopes and piles against props instead of clipping through.
@@ -91,9 +107,11 @@ export default class Ragdoll{
         // Impact response: restitution gives visible REBOUNDS off the first ground hit; the high
         // tangential keep lets the body SLIDE/ROLL/tumble after landing rather than freezing dead
         // (the old build bled ~70% of horizontal speed on contact — that was the "dead-weight
-        // freeze"). Pure physics: no post-landing animation assist of any kind.
-        this.restitution = 0.42;         // bounce: fraction of into-surface speed returned on impact
-        this.tangentKeep = 0.86;         // fraction of along-surface speed kept on contact (slide/roll)
+        // freeze"). Pure physics: no post-landing animation assist of any kind. Pushed up for a
+        // juicier, more visible rebound off the floor on the kill slam (the resting-contact gate
+        // below still drops it to 0 at low speed so the body always settles to a clean rest).
+        this.restitution = 0.68;         // bounce: fraction of into-surface speed returned on impact (juicy)
+        this.tangentKeep = 0.88;         // fraction of along-surface speed kept on contact (slide/roll)
         // Resting-contact threshold (per-substep displacement; ≈1.2 m/s). Below this into-surface
         // speed, restitution is dropped to 0 so the body comes to REST instead of micro-bouncing on
         // gravity's per-frame nudge forever (a bouncy sphere never settles in a discrete sim). The
@@ -118,7 +136,15 @@ export default class Ragdoll{
         this._asleep = false;
         this._lastCentroid = new THREE.Vector3();
         this._haveCentroid = false;
-        this.sleepDwell = 0.6;              // centroid must be still this long (s) before sleeping
+        this.sleepDwell = 0.6;              // centroid must be still this long (s) before it counts as SETTLED
+        // Post-settle LINGER: once the corpse has come to rest (still for sleepDwell), keep the verlet
+        // sim RUNNING for a beat instead of freezing on the spot — so the body stays physically
+        // reactive (and finishes any last micro-settle / weight-shift) for a couple seconds after it
+        // lands, reading as a freshly-dropped body rather than one that snaps rigid the instant it
+        // stops. After sleepDwell + postSettleLinger of continuous stillness it sleeps (bounding the
+        // per-corpse cost). Any real motion in between (a late roll, a secondary collision) resets the
+        // stillness timer, so a body that's still tumbling never sleeps early.
+        this.postSettleLinger = 2.5;        // seconds to keep simulating AFTER settling, before sleeping
         // Sleep on CENTROID translation, not per-node motion: a verlet constraint network always has
         // sub-mm internal jitter even at rest (the soft braces never perfectly freeze), so summing
         // per-node motion never crosses a tight threshold. The centroid averages that jitter out and
@@ -204,6 +230,28 @@ export default class Ragdoll{
             }
         }
 
+        // Joint-span limits. For each 3-bone chain grand(A) -> parent(B) -> node(C), the span |A-C|
+        // is clamped to [foldFrac, straightFrac] * (|A-B| + |B-C|): it can never exceed the straight
+        // length (no hyperextension) nor fold tighter than the minimum (no folding through itself).
+        // The bounds come from the two bone lengths, so they hold whatever pose the body died in.
+        this.limitSticks = [];
+        for(const node of this.nodes){
+            const B = node.parent;
+            if(!B){ continue; }
+            const A = B.parent;
+            if(!A){ continue; }                              // need a full 3-bone chain
+            const ab = node.p.distanceTo(B.p);
+            const bc = B.p.distanceTo(A.p);
+            const straight = ab + bc;
+            if(straight < 1e-5){ continue; }
+            this.limitSticks.push({
+                a: node, b: A,
+                min: straight * this.jointFoldFrac,
+                max: straight * this.jointStraightFrac,
+                k: this.limitStiffness,
+            });
+        }
+
         // Precompute the root -> leaf (BFS) order so _applyToBones reuses it each frame and
         // every bone reads its parent's already-updated world transform.
         this.order = [];
@@ -278,7 +326,7 @@ export default class Ragdoll{
         if(dir.lengthSq() < 1e-6){ dir.set(0, 1, 0); }
         dir.normalize();
 
-        const strength = 2.6 * (0.7 + Math.random() * 0.9);   // ~1.8 .. 4.2 m/s at the impact joint
+        const strength = 3.7 * (0.7 + Math.random() * 0.9);   // ~2.6 .. 5.9 m/s at the impact joint (punchy)
 
         const push = (node, scale) => {
             if(!node){ return; }
@@ -318,7 +366,9 @@ export default class Ragdoll{
             const dx = cx - this._lastCentroid.x, dy = cy - this._lastCentroid.y, dz = cz - this._lastCentroid.z;
             if(dx * dx + dy * dy + dz * dz < this.sleepCentroidSq){
                 this._stillTime += dt;
-                if(this._stillTime >= this.sleepDwell){ this._asleep = true; }
+                // Settle is reached at sleepDwell; keep simulating through the post-settle LINGER and
+                // only sleep once the body has been continuously still for the whole window.
+                if(this._stillTime >= this.sleepDwell + this.postSettleLinger){ this._asleep = true; }
             }else{
                 this._stillTime = 0;
             }
@@ -336,7 +386,9 @@ export default class Ragdoll{
             node.p.add(_v);
             node.p.y += g;
         }
-        // Relax distance constraints (limb sticks hard, brace sticks gently).
+        // Relax constraints: limb sticks (hard length), braces (gentle bend stiffness), then the
+        // joint-span LIMITS (only act at the fold/straight extremes). All are symmetric distance
+        // projections (move both endpoints), so none injects energy — the corpse still settles + sleeps.
         for(let it = 0; it < this.iterations; it++){
             for(const st of this.sticks){
                 _v.copy(st.b.p).sub(st.a.p);
@@ -346,6 +398,22 @@ export default class Ragdoll{
                 _v.multiplyScalar(diff);
                 st.a.p.add(_v);
                 st.b.p.sub(_v);
+            }
+            // One-sided joint-span limits: pull together only when over-extended, push apart only when
+            // over-folded. Inside the band they do nothing (the limb is free to flop), so this is a
+            // pure JOINT LIMIT, not a pose spring — it stops impossible poses without holding a stance.
+            for(const ls of this.limitSticks){
+                _v.copy(ls.b.p).sub(ls.a.p);
+                const d = _v.length();
+                if(d < 1e-5){ continue; }
+                let target = 0;
+                if(d > ls.max){ target = ls.max; }
+                else if(d < ls.min){ target = ls.min; }
+                else{ continue; }
+                const diff = ((d - target) / d) * 0.5 * ls.k;
+                _v.multiplyScalar(diff);
+                ls.a.p.add(_v);
+                ls.b.p.sub(_v);
             }
         }
     }

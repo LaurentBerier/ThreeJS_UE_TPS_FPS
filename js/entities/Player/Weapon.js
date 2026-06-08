@@ -120,7 +120,13 @@ export default class Weapon{
 
     // Returns true if a shot was fired this frame so the manager can react.
     Shoot(t){
-        if(!this.shoot || !this.magAmmo){
+        // Don't fire mid-reload. The mousedown handler blocks STARTING a shot while reloading, but a
+        // trigger HELD from before the reload would otherwise keep firing through it — each round
+        // broadcasts 'weapon.shoot', which hijacks the TPS body's upper layer from the reload one-shot
+        // to the fire pose (the reload animation visibly cuts to recoil) while the mag silently refills.
+        // Gating here keeps the reload one-shot intact and its 'reload.done' in sync. (Auto-reload is
+        // unaffected — it keys off magAmmo===0 && !reloading separately in WeaponManager.)
+        if(!this.shoot || !this.magAmmo || this.reloading){
             return false;
         }
 

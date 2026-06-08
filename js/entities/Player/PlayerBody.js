@@ -1,7 +1,8 @@
 import * as THREE from 'three'
 import Component from '../../Component.js'
-import { buildUeMannequin, UE_BODY_LAYER, collectUpperBoneNames, splitClipByBones } from '../Common/UeMannequin.js'
+import { buildUeMannequin, UE_BODY_LAYER, collectUpperBoneNames, splitClipByBones, WEAPON_GRIP_DEFAULT, WEAPON_GRIP_FPS_DEFAULT } from '../Common/UeMannequin.js'
 import WeaponAimIK from './WeaponAimIK.js'
+import HurtFlinch from '../Common/HurtFlinch.js'
 
 
 // Full-body player avatar: the Unreal Engine Mannequin (SK_Mannequin) driven by UE rifle
@@ -70,7 +71,13 @@ export default class PlayerBody extends Component{
         // (a moderate fade), but the TORSO + arms carry the rifle: the roll tucks them away from the
         // gun-hold pose, so they get a noticeably LONGER crossfade to ease the weapon back up into the
         // idle holding pose instead of snapping it into the hands.
-        this.rollBlendOut = 0.35;      // legs -> idle/locomotion
+        this.rollBlendOut = 0.35;      // legs -> idle (settling to a stop: a moderate fade)
+        // When the roll ends while STILL MOVING, snap the legs into the matching jog over a much
+        // SHORTER fade so they're "walking the moment the feet touch back down" — a long blend leaves
+        // the roll pose mixed with the jog for too long and the (foot-synced) feet skate over the
+        // ground. The jog's playback rate is foot-synced to the live ground speed from frame one
+        // (LocoTimeScale in SetLowerState), so a quick blend lands clean with no slide.
+        this.rollLandFade = 0.12;      // legs -> jog when landing into movement (fast, anti-slide)
         this.rollUpperBlendOut = 0.55; // torso + gun arms -> idle gun-hold (longer, smoother weapon settle)
         // The UPPER body (torso + gun) starts blending into the FOLLOWING animation a LOT earlier than
         // the legs: the legs need the whole roll to tumble, but the arms can recover the rifle to its
@@ -130,6 +137,20 @@ export default class PlayerBody extends Component{
         this.bodyTurnDeadzone = THREE.MathUtils.degToRad(45); // idle look-around arc before the body follows
         this.bodyTurnIdleLerp = 5.0;                       // soft idle catch-up (1/s) — the turn "delay"
         this.bodyTurnMoveLerp = 14.0;                      // prompt alignment while moving / aiming (1/s)
+        // FPS body-turn. In first-person the camera is the player's eyes and the arms + gun hang off
+        // THIS body, so it must track the look yaw TIGHTLY — there's no idle deadzone/soft-trail (that
+        // TPS "look around a still character" behaviour swings the whole viewmodel out of frame on a
+        // fast turn). A high lerp keeps only a SMALL natural lag, so a portion of the arms/weapon
+        // always stays on screen and snaps back to centre as you stop turning.
+        this.fpsBodyTurnLerp = 18.0;                       // tight look-yaw tracking in FPS (1/s)
+        // FPS aim centring: while ADS in first-person the right-held gun is biased toward the screen
+        // centre so it lines up under the camera, then WeaponAimIK points the barrel exactly at the
+        // target — together the gun reads as properly shouldered on the crosshair. Eased so entering/
+        // leaving ADS glides. Sign: + turns the body so the right-hand gun swings toward centre (flip
+        // if a future rig centres the other way). Cosmetic — the body is invisible in FPS (head culled).
+        this.fpsAimYawBias = THREE.MathUtils.degToRad(13); // body-yaw bias that centres the gun while ADS
+        this.fpsAimBiasLerp = 10.0;                        // ease rate for the centring bias (1/s)
+        this._fpsAimBias = 0;                              // eased current bias (rad)
 
         // --- Head dither-dissolve (TPS only). When the camera comes close enough
         // that the head fills a big chunk of the screen — aiming from cover, backed
@@ -216,6 +237,23 @@ export default class PlayerBody extends Component{
         this._runAimYawValue = 0;                          // eased current run-aim yaw (rad)
         this.runAimYawLerp = 8;                            // ease in/out rate with movement (1/s)
 
+        // --- Additive HIP-FIRE aim yaw (TPS). When shooting WITHOUT aiming (hip fire), the body only
+        // SOFT-trails the camera (the idle look-around deadzone), so the torso isn't squared to where
+        // you're shooting. A small additive spine yaw twists the upper body toward the aim target's
+        // horizontal direction, so the torso reads as oriented at the threat while you spray from the
+        // hip. Computed as the signed yaw from the body facing to the aim direction, scaled by a gain
+        // and clamped; eased in/out. Zero while AIMING (ADS already squares the body to the look) and
+        // in FPS. Purely cosmetic (the shot ray stays camera-relative). Flip hipAimYawGain if inverted.
+        this.hipAimYawGain = 0.6;                          // fraction of the body->aim yaw offset twisted into the spine
+        this.hipAimYawMax  = THREE.MathUtils.degToRad(32); // clamp on the hip-fire torso twist
+        // Rear-cone falloff: fade the twist to 0 as the aim goes far behind the body, so the wrapped
+        // signed-angle can't flip the torso the long way round when the aim crosses directly-behind
+        // (and so you don't twist toward something behind you). Full within fadeStart, none by fadeEnd.
+        this.hipAimYawFadeStart = THREE.MathUtils.degToRad(75);
+        this.hipAimYawFadeEnd   = THREE.MathUtils.degToRad(130);
+        this._hipAimYawValue = 0;                           // eased current hip-aim yaw (rad)
+        this._aimFwd = new THREE.Vector3();                 // scratch: horizontal aim direction
+
         // --- Hip/body stabilization on camera PROXIMITY. When the camera is close to the character
         // (aiming, or collision pushing the boom in), the locomotion bob/sway reads as an unstable
         // character right in front of the lens. We damp the PELVIS toward a settled (low-passed)
@@ -251,6 +289,44 @@ export default class PlayerBody extends Component{
         // out otherwise so plain locomotion is left exactly as authored. Works in TPS and FPS.
         this.weaponAimIK = null;
         this._weaponAimActive = false;                    // cached gate (for the debug overlay)
+
+        // --- Head aim. Orient the head to look in the PURE DIRECTION of the crosshair (camera-forward)
+        // so the character looks where the camera looks. Applied as an additive world-space rotation on
+        // the head bone AFTER the spine lean + weapon IK (final say on the head), eased in/out and
+        // clamped so the neck never over-rotates. Purely cosmetic and TPS-visible — in FPS the head is
+        // culled and the camera orientation IS the look direction, so it's inert there.
+        //
+        // The reference gaze is the head's ACTUAL animated world-forward (not the bare body yaw): the
+        // head is a child of spine_03, so it already carries the spine pitch-lean + hip-fire twist this
+        // frame; referencing the head's PRE-FLINCH world-forward keeps the delta from DOUBLE-COUNTING
+        // them (which over-rotated the head and made it slew when the lean/twist eased) WHILE letting the
+        // hurt flinch survive. The head's local gaze axis is pre-seeded once from the rig's rest pose
+        // (Initialize), so it's rig-agnostic and never latches onto a transient. Past the neck clamp the
+        // head HOLDS at its limit (tracking the target's azimuth) and only eases out very near 180°,
+        // where the shortest-arc axis is unstable — that was the head "snap/roll" on a fast camera whip.
+        this.headAimWeight = 0;                          // eased 0..1 blend
+        // The head tracks the aim point CONTINUOUSLY in TPS (not only while aiming) so the character
+        // visibly looks where the camera looks, and FASTER than the gun (the weapon IK eases at ~12)
+        // so the gaze leads — the head snaps onto the target and the gun follows, like a real shooter.
+        this.headAimLerp = 16;                           // ease rate (1/s) for the look in/out
+        this.maxHeadAimAngle = THREE.MathUtils.degToRad(70); // clamp so the head can't wring the neck
+        // Antiparallel safety: ease the WHOLE look delta out only when the target is nearly directly
+        // behind the body (this band), where setFromUnitVectors' axis collapses/flips. Below it the head
+        // simply HOLDS at the neck clamp and tracks the target's azimuth — no direction reversal.
+        this.headAimAntiparallelStart = THREE.MathUtils.degToRad(150);
+        this.headAimAntiparallelEnd   = THREE.MathUtils.degToRad(175);
+        this._headFwdRef = new THREE.Vector3();
+        this._headFwdDes = new THREE.Vector3();
+        this._headAimPos = new THREE.Vector3();
+        this._headWorldQ = new THREE.Quaternion();       // scratch: head world quat (rest pre-seed)
+        this._headPreFlinchWQ = new THREE.Quaternion();  // head world quat snapshot BEFORE the flinch (the gaze reference)
+        this._headFwdLocal = null;                       // head-forward local axis, pre-seeded from the rest pose
+        this._headAimQ = new THREE.Quaternion();         // full look delta (world)
+        this._headAimWorld = new THREE.Quaternion();     // clamped+eased look delta (world)
+        this._headAimId = new THREE.Quaternion();        // identity (slerp base) — never mutated
+        this._headAimPW = new THREE.Quaternion();
+        this._headAimPWInv = new THREE.Quaternion();
+        this._headAimLocal = new THREE.Quaternion();
     }
 
     SetupAnimations(){
@@ -298,15 +374,24 @@ export default class PlayerBody extends Component{
             this._rollDuration = rollClip.duration;
         }
 
-        // reload/shoot are UPPER-body-only one-shots that layer over the torso while
-        // the legs keep their locomotion. Only the upper half of each clip is used.
+        // reload/shoot are UPPER-body overlays that layer over the torso while the legs keep their
+        // locomotion. Only the upper half of each clip is used. RELOAD is a one-shot (clamps + the
+        // 'finished' event hands back). SHOOT instead LOOPS while the trigger is held: re-triggering a
+        // one-shot on every round (full-auto fires ~10/s) re-zeroed the clip every ~100 ms, snapping
+        // the torso back to the firing pose's first frame — that was the upper-body "stutter/jitter"
+        // when shooting. Looping plays a continuous fire cadence; EndShoot hands the torso back when
+        // _shootHold lapses (no shot for shootHoldTime). Mirrors the soldier's BeginFire/EndFire.
         ['reload', 'shoot'].forEach(name => {
             const clip = this.clips[name];
             if(!clip){ return; }
             const { upper } = splitClipByBones(clip, upperBones);
             const a = this.mixer.clipAction(upper);
-            a.setLoop(THREE.LoopOnce);
-            a.clampWhenFinished = true;
+            if(name === 'shoot'){
+                a.setLoop(THREE.LoopRepeat);
+            }else{
+                a.setLoop(THREE.LoopOnce);
+                a.clampWhenFinished = true;
+            }
             this.upperActions[name] = a;
         });
 
@@ -353,6 +438,24 @@ export default class PlayerBody extends Component{
             if(spineBones[n]){ this.aimBones.push({ bone: spineBones[n], weight: spineWeights[n] }); }
         });
 
+        // Pre-seed the head-aim gaze axis from the rig's REST pose (the bones are still at bind here —
+        // no mixer update has run). _headFwdLocal is the head-bone-LOCAL axis that points along the
+        // character's forward (modelRoot-local +Z) at rest; carrying it by the head's live world quat
+        // each frame then yields the head's true world gaze (incl. spine lean/twist), so the head-aim
+        // delta supplies only the residual. Computed from the head's orientation RELATIVE TO modelRoot
+        // (so it's independent of modelRoot's current world yaw) at the guaranteed-clean bind pose, so
+        // it can never latch onto a flinch/roll/idle-bob transient and is always set (fixes the "never
+        // calibrated when entering already-aiming" double-count). Rig-agnostic.
+        if(this.headBone){
+            this.modelRoot.updateMatrixWorld(true);
+            const rootWQ = new THREE.Quaternion();
+            this.modelRoot.getWorldQuaternion(rootWQ);
+            this.headBone.getWorldQuaternion(this._headWorldQ);
+            // headRel = root⁻¹ · head (head orientation in modelRoot-local space); local fwd = headRel⁻¹ · (+Z).
+            const headRel = new THREE.Quaternion().copy(rootWQ).invert().multiply(this._headWorldQ);
+            this._headFwdLocal = new THREE.Vector3(0, 0, 1).applyQuaternion(headRel.invert()).normalize();
+        }
+
         // Pelvis (hips) for proximity stabilization; seed the settled-pose reference from its bind.
         this.model.traverse(o => { if(o.isBone && o.name === 'pelvis'){ this._pelvisBone = o; } });
         if(this._pelvisBone){
@@ -367,6 +470,27 @@ export default class PlayerBody extends Component{
         if(this.weaponPivot){
             this.weaponAimIK = new WeaponAimIK(this.model, this.weaponPivot);
         }
+
+        // --- Per-camera-mode in-hand grip. The AK is the SAME mesh in both modes (FPS rides the head
+        // bone, so first-person shows THIS body's gun), but the framing differs, so each mode gets its
+        // own seat: ApplyWeaponGrip swaps the pivot transform on a mode switch and the placement tool
+        // (`) edits whichever mode is active. Both are seeded from the code defaults (FPS == TPS until
+        // tuned). Stored as position(Vector3)+quaternion(Quaternion) ready to drop onto the pivot.
+        this.weaponGrips = {
+            TPS: {
+                position: WEAPON_GRIP_DEFAULT.position.clone(),
+                quaternion: new THREE.Quaternion().setFromEuler(WEAPON_GRIP_DEFAULT.rotationEuler),
+            },
+            FPS: {
+                position: WEAPON_GRIP_FPS_DEFAULT.position.clone(),
+                quaternion: new THREE.Quaternion().setFromEuler(WEAPON_GRIP_FPS_DEFAULT.rotationEuler),
+            },
+        };
+
+        // Hurt feedback: an additive upper-body flinch layered on top of the pose when the player is
+        // damaged (a torso recoil + head twitch), so getting shot reads on the third-person body
+        // without dropping locomotion or aim. Skipped during the dodge roll / i-frames (see OnHurt).
+        this.hurtFlinch = new HurtFlinch(this.model);
 
         this.scene.add(this.modelRoot);
 
@@ -390,6 +514,8 @@ export default class PlayerBody extends Component{
         this.parent.RegisterEventHandler(this.OnJump, 'player.jump');
         // Forward dodge roll: PlayerControls fires this on a double-tap of Ctrl.
         this.parent.RegisterEventHandler(this.OnRoll, 'player.roll');
+        // Taking damage: trigger the additive hurt flinch (PlayerHealth handles the health bookkeeping).
+        this.parent.RegisterEventHandler(this.OnHurt, 'hit');
     }
 
     // Back-compat alias: the leg (locomotion) state is the body's overall state for
@@ -398,9 +524,20 @@ export default class PlayerBody extends Component{
 
     OnCameraMode = (msg) => { this.SetCameraMode(msg.mode); }
     OnReload = () => { this.PlayOneShot('reload'); }
-    OnShoot = () => { this.PlayOneShot('shoot'); this._shootHold = this.shootHoldTime; }
+    // Don't re-arm the recently-fired window mid-roll: the roll owns the body (PlayOneShot already
+    // no-ops while rolling), and a held trigger firing through the roll would otherwise keep _shootHold
+    // alive so the aim-IK/aim-pose snap on at recovery instead of easing in. ResetAimPoseAccumulators
+    // clears it on roll exit too.
+    OnShoot = () => { this.PlayOneShot('shoot'); if(!this.rolling){ this._shootHold = this.shootHoldTime; } }
     OnJump = () => { this._jumpRequested = true; }
     OnRoll = () => { this.StartRoll(); }
+    // Hit reaction. A dodge roll's i-frames negate the damage, so don't flinch then (and the roll owns
+    // the whole body anyway). Scale the jolt by the damage so a beast melee rocks harder than an AK round.
+    OnHurt = (msg) => {
+        if(!this.hurtFlinch || this.rolling || (this.playerControls && this.playerControls.invulnerable)){ return; }
+        const amount = (msg && msg.amount) ? msg.amount : 10;
+        this.hurtFlinch.Trigger(amount / 12);
+    }
 
     // Begin the full-body forward roll: snap both layers onto the roll one-shot, fading out whatever
     // locomotion / upper one-shot was playing so neither layer is ever left empty (no bind-pose flash).
@@ -441,7 +578,7 @@ export default class PlayerBody extends Component{
     // roll actions keep playing (and clamp) THROUGH their fades, so nothing hard-cuts.
     UpdateRoll(){
         const lo = this.lowerActions['roll'];
-        if(!lo){ this.rolling = false; return; }
+        if(!lo){ this.rolling = false; this.ResetAimPoseAccumulators(); return; }
         const dur = lo.getClip().duration;
 
         // Early UPPER-body hand-off: torso + gun arms blend to the following anim well before the end.
@@ -465,12 +602,40 @@ export default class PlayerBody extends Component{
     // Hand the body back to the locomotion graph after the roll, from whatever the legs are doing now
     // (idle when settling, a jog if still carrying movement) — over a longer crossfade so the stand-up
     // eases into the resting/locomotion pose instead of snapping.
+    // Zero EVERY eased additive-pose accumulator on a roll clear: the spine pitch-lean weight/value,
+    // collision + run-aim yaws, hip-fire twist, head-aim blend, AND the hip stabilizer. UpdateAimPose,
+    // UpdateHeadAim and StabilizeHips are all skipped for the whole ~0.8s roll, so without this they
+    // THAW at their frozen pre-roll values and re-apply in a single frame — a one-frame torso/head/gun/
+    // pelvis pop. Zeroing the weights lets each early-return guard fire on frame 1 so the whole pose
+    // eases back in coherently (in lockstep), not half-snapped/half-eased; clearing _hipRefSeeded makes
+    // StabilizeHips re-acquire its settled-pelvis reference from the live post-roll stand-up pose.
+    ResetAimPoseAccumulators(){
+        this._aimPitchWeight = 0;
+        this._aimPitchValue = 0;
+        this._aimYawValue = 0;
+        this._runAimYawValue = 0;
+        this._hipAimYawValue = 0;
+        this.headAimWeight = 0;
+        this._hipStab = 0;
+        this._hipRefSeeded = false;
+        // Also clear the recently-fired window and hard-reset the weapon aim-IK blend: if you rolled
+        // while HOLDING fire, _shootHold stays re-armed and the IK's master blend freezes near 1 through
+        // the roll (Update skipped), snapping the gun/support-hand on in one frame at recovery. Zeroing
+        // both makes the IK ease back in from nothing if you're still firing out of the roll.
+        this._shootHold = 0;
+        if(this.weaponAimIK){ this.weaponAimIK.Reset(); }
+    }
+
     EndRoll(){
         this.rolling = false;
+        this.ResetAimPoseAccumulators();
         const loco = this.DesiredLocoState();
-        // Fade the legs from the roll into the resolved locomotion.
+        // Fade the legs from the roll into the resolved locomotion: a FAST blend into a jog when
+        // landing in motion (so the feet are walking immediately and don't slide), a moderate one when
+        // settling to a stop. The jog is foot-synced to the ground speed from the first frame.
         this.lowerState = 'roll';
-        this.SetLowerState(loco, this.rollBlendOut);
+        const landFade = this.IsJogState(loco) ? this.rollLandFade : this.rollBlendOut;
+        this.SetLowerState(loco, landFade);
         // If the torso already homed to this SAME jog during the early upper blend, phase-match the
         // legs to it so the torso bob and the footfalls don't run out of sync coming out of the roll.
         if(this._upperBlendStarted && this.upperState === loco && this.IsJogState(loco)){
@@ -491,6 +656,33 @@ export default class PlayerBody extends Component{
         for(const mesh of this.meshes){
             mesh.layers.set(0);
         }
+        // Seat the in-hand gun with this mode's grip (FPS vs TPS framing).
+        this.ApplyWeaponGrip(mode);
+    }
+
+    // Drop the active camera mode's grip transform onto the weapon pivot and re-sync the aim IK's
+    // captured base to it, so the swap is correct both at rest (the pivot just sits at the grip) and
+    // while aiming (WeaponAimIK resets the pivot to this base every frame before correcting it). The
+    // barrel/foregrip sockets are pivot-LOCAL, so they don't need re-deriving — they ride the new seat.
+    ApplyWeaponGrip(mode){
+        if(!this.weaponPivot || !this.weaponGrips){ return; }
+        const g = this.weaponGrips[mode] || this.weaponGrips.TPS;
+        this.weaponPivot.position.copy(g.position);
+        this.weaponPivot.quaternion.copy(g.quaternion);
+        if(this.weaponAimIK){ this.weaponAimIK.CaptureBase(); }
+    }
+
+    // Live edit from the placement tool: store the grip for `mode` (hand-local cm position + degree
+    // Euler) and, if it's the active mode, apply it immediately so the nudge shows in real time.
+    SetWeaponGripLive(mode, pos, rotDeg){
+        if(!this.weaponGrips || !this.weaponGrips[mode]){ return; }
+        this.weaponGrips[mode].position.set(pos.x, pos.y, pos.z);
+        this.weaponGrips[mode].quaternion.setFromEuler(new THREE.Euler(
+            THREE.MathUtils.degToRad(rotDeg.x),
+            THREE.MathUtils.degToRad(rotDeg.y),
+            THREE.MathUtils.degToRad(rotDeg.z),
+        ));
+        if(mode === this.cameraMode){ this.ApplyWeaponGrip(mode); }
     }
 
     // First-person eye anchor: the head bone's current world position. Returns false
@@ -697,10 +889,11 @@ export default class PlayerBody extends Component{
         if(this.rolling){ return; }
         const action = this.upperActions[name];
         if(!action){ return; }
-        // Already mid one-shot of this clip (continuous fire re-triggers 'shoot' every shot):
-        // just restart its time so it pulses again — it is already the upper-body primary.
+        // Already mid one-shot of this clip. For 'shoot' (held-trigger, full-auto) it's a LOOP — leave
+        // it cycling so the fire motion stays smooth (re-zeroing it every round was the firing stutter);
+        // _shootHold + EndShoot tear it down when the trigger releases. A reload re-trigger restarts.
         if(this.oneShot === name){
-            action.time = 0;
+            if(name !== 'shoot'){ action.time = 0; }
             action.setEffectiveWeight(1.0);
             return;
         }
@@ -712,6 +905,16 @@ export default class PlayerBody extends Component{
         // this one-shot the upper-body primary, fading out the locomotion AND any prior
         // one-shot — so the layer is never left empty for a frame (no bind/T-pose flash).
         this.SetUpperPrimary(action, 0.1);
+    }
+
+    // End the looped shoot overlay (trigger released — _shootHold lapsed) and hand the torso back to
+    // its locomotion / aim pose, exactly like the reload one-shot's finish handler. No-op if a reload
+    // or roll has since taken the upper layer (oneShot is no longer 'shoot').
+    EndShoot(){
+        if(this.oneShot !== 'shoot'){ return; }
+        this.oneShot = null;
+        this.upperState = 'shoot';                   // so PlayUpperLocomotion fades out of it
+        this.PlayUpperLocomotion(this.DesiredUpperState(this.lowerState || 'idle'), 0.18);
     }
 
     OnOneShotFinished = (e) => {
@@ -819,7 +1022,11 @@ export default class PlayerBody extends Component{
         if(!this.mixer){ return; }
 
         this.mixer.update(t);
-        if(this._shootHold > 0){ this._shootHold = Math.max(0, this._shootHold - t); }
+        if(this._shootHold > 0){
+            this._shootHold = Math.max(0, this._shootHold - t);
+            // Trigger released (no shot for shootHoldTime): tear down the looped shoot overlay.
+            if(this._shootHold === 0){ this.EndShoot(); }
+        }
 
         // Strip root motion so the clip animates in place; the capsule moves us.
         if(this.rootBone && this.rootRef){
@@ -848,16 +1055,38 @@ export default class PlayerBody extends Component{
             // close). Runs after the body yaw (it reads the facing) and before the head dither (it moves
             // the head). It edits the animated pose this frame, on top of the mixer.
             this.UpdateAimPose(t);
+            // Snapshot the head's PRE-FLINCH world orientation (it already carries the spine lean+twist
+            // from UpdateAimPose) as the head-aim gaze reference. Taken before the flinch so the head-aim
+            // delta — which re-points the gaze onto the crosshair — does NOT cancel the flinch's head
+            // jolt: the flinch displacement, applied after, rides through to the final gaze.
+            if(this.headBone){ this.headBone.getWorldQuaternion(this._headPreFlinchWQ); }
+            // Additive hurt flinch on the torso + head (idle no-op when not recently hit). Runs BEFORE
+            // the weapon IK so that, while aiming, the IK re-plants the support hand on the (flinched)
+            // gun and holds the barrel on target — the torso/head jolt reads, the hands stay attached.
+            this.hurtFlinch && this.hurtFlinch.Update(t, this._bodyYaw);
             // Fine layer: rotate the in-hand gun so the barrel points EXACTLY at the crosshair target
             // and IK the support hand back onto the foregrip. Runs after the gross spine lean so it
             // corrects the leaned pose; eased in/out so it's inert when not aiming/shooting.
             this.UpdateWeaponAim(t);
+            // Head looks in the pure direction of the aim target. Last, so it overrides the head pose
+            // the spine lean / locomotion left (and the weapon IK never touches the head).
+            this.UpdateHeadAim(t);
 
             this.UpdateLocomotion(t);
             this.UpdateLocoTimeScale();   // foot-sync the live directional-jog playback rate to ground speed
         }
         // Dissolve the head when the camera crowds it (TPS aim-from-cover).
         this.UpdateHeadDither(t);
+
+        // FPS eye re-sync. PlayerControls placed the camera at the START of the frame, reading the head
+        // bone from LAST frame's pose (components update Controls-before-Body). Now that the body is
+        // fully posed for THIS frame, re-seat the eye on the current head bone so the eye and the
+        // gun/arms it holds are locked to the same frame — otherwise the one-frame desync reads as the
+        // viewmodel strobing against the view when turning. Position only; orientation/shake stay as
+        // PlayerControls set them.
+        if(this.cameraMode === 'FPS' && this.playerControls && !this.playerControls.cameraOverride){
+            this.playerControls.PlaceFpsEyePosition(this.parent.Position);
+        }
     }
 
     // Damp the pelvis (hips) toward a settled, low-passed pose when the camera is CLOSE, so the
@@ -869,10 +1098,16 @@ export default class PlayerBody extends Component{
     StabilizeHips(t){
         if(!this._pelvisBone){ return; }
         const pc = this.playerControls;
-        // Close = aiming (boom pulled in) OR raw camera proximity (collision push-in). TPS only.
-        const aiming = this.IsAiming();
+        // Steady the hips when the camera is close to the body. In TPS that's ADS (boom pulled in) OR a
+        // collision push-in. In FPS the camera RIDES the head bone, so the walk bob shakes the view —
+        // steady it while AIMING (so ADS is rock-steady) but leave the natural first-person head bob
+        // when not aiming. The head mesh stays glued to the (damped) bone, so the camera never desyncs.
+        const tpsAiming = this.IsAiming();
+        const fpsAiming = (this.cameraMode === 'FPS') && !!(pc && pc.aiming);
+        const aiming = tpsAiming || fpsAiming;
         const close = (this.cameraMode === 'TPS')
-            ? Math.max(aiming ? 1 : 0, pc ? pc.CameraProximity : 0) : 0;
+            ? Math.max(tpsAiming ? 1 : 0, pc ? pc.CameraProximity : 0)
+            : (fpsAiming ? 1 : 0);
         const moving = this.IsJogState(this.lowerState);
         // Aiming damps harder (steady gun while strafing) than a plain collision push-in.
         const cap = aiming ? this.aimHipStab : this.hipStabMax;
@@ -920,7 +1155,33 @@ export default class PlayerBody extends Component{
         // torso glides into/out of the aiming lean instead of popping (and stays calm running).
         const targetGain = aimLean ? this.aimPitchGainAim : this.aimPitchGainIdle;
         this._aimGain += (targetGain - this._aimGain) * (1 - Math.exp(-this.aimGainLerp * t));
-        if(this._aimPitchWeight < 0.001){ return; }
+
+        // Hip-fire torso twist: when shooting WITHOUT aiming in TPS (at ANY camera distance — its own
+        // gate, broader than the close-only hipFire above), twist the spine toward the aim target's
+        // horizontal direction so the torso reads as oriented at the threat while you spray from the
+        // hip. Signed yaw from the body facing to the aim direction, scaled + clamped, eased on its OWN
+        // value so it applies even when the pitch lean is inactive (it is NOT scaled by the pitch
+        // weight below). Zero when aiming (ADS squares the body to the look already) and in FPS. Body
+        // facing angle = _bodyYaw (forward = (sin,0,cos)); aim angle = atan2(aimDir.x, aimDir.z).
+        const hipAimActive = (this.cameraMode === 'TPS') && (this._shootHold > 0) && !this.IsAiming();
+        let hipYawTarget = 0;
+        if(hipAimActive && pc){
+            this._aimFwd.set(pc.aimDir.x, 0, pc.aimDir.z);
+            if(this._aimFwd.lengthSq() > 1e-4){
+                this._aimFwd.normalize();
+                let d = Math.atan2(this._aimFwd.x, this._aimFwd.z) - this._bodyYaw;
+                d = Math.atan2(Math.sin(d), Math.cos(d));   // shortest signed arc, [-π,π]
+                // Rear-cone falloff: fade the twist out as |d| grows so a near-180° aim (the wrap point,
+                // reachable on a fast standing whip while the body trails) can't flip the torso sign.
+                const fall = 1 - THREE.MathUtils.smoothstep(Math.abs(d), this.hipAimYawFadeStart, this.hipAimYawFadeEnd);
+                hipYawTarget = THREE.MathUtils.clamp(
+                    d * this.hipAimYawGain, -this.hipAimYawMax, this.hipAimYawMax) * fall;
+            }
+        }
+        this._hipAimYawValue += (hipYawTarget - this._hipAimYawValue) * (1 - Math.exp(-this.aimPitchLerp * t));
+
+        // Nothing to apply unless the pitch lean is active OR the hip-fire twist is non-negligible.
+        if(this._aimPitchWeight < 0.001 && Math.abs(this._hipAimYawValue) < 1e-4){ return; }
 
         // Target lean = look pitch * eased gain, NEGATED so looking down pitches the torso/gun
         // down (the rig leaned the wrong way before), clamped so a full up/down look leans the
@@ -951,7 +1212,9 @@ export default class PlayerBody extends Component{
         this._runAimYawValue += (this.runAimYaw * runYawActive - this._runAimYawValue)
             * (1 - Math.exp(-this.runAimYawLerp * t));
 
-        const yaw = (this._aimYawValue + this._runAimYawValue) * this._aimPitchWeight;
+        // The collision + run-aim yaws ride the pitch-lean weight (they're aim-coupled); the hip-fire
+        // twist is added RAW (its own ease above) so it works even when the pitch lean is inactive.
+        const yaw = (this._aimYawValue + this._runAimYawValue) * this._aimPitchWeight + this._hipAimYawValue;
 
         // Character right axis in world: local +X carried through the yaw-only facing.
         this._aimRight.set(Math.cos(this._bodyYaw), 0, -Math.sin(this._bodyYaw));
@@ -997,6 +1260,61 @@ export default class PlayerBody extends Component{
         });
     }
 
+    // Orient the head to look along the crosshair direction, so the character visibly looks where the
+    // camera looks. ALWAYS-ON in TPS (eased fast so the gaze LEADS the gun); inert in FPS (head culled).
+    // Builds a world-space delta from the head's PRE-FLINCH animated gaze (reference) onto the crosshair
+    // DIRECTION (desired), holds at the neck clamp + eases out only near 180°, eased by the weight, and
+    // applies it additively to the head bone (world delta -> bone-local). See the constructor note:
+    // direction (not point) kills depth-parallax swing; pre-flinch actual-gaze reference kills the
+    // double-count WHILE preserving the hurt flinch; the hold-at-clamp avoids a direction reversal and
+    // the near-180° ease avoids the antiparallel axis flip.
+    UpdateHeadAim(t){
+        if(!this.headBone || !this.playerControls){ return; }
+        const pc = this.playerControls;
+        const active = (this.cameraMode === 'TPS') ? 1 : 0;
+        this.headAimWeight += (active - this.headAimWeight) * (1 - Math.exp(-this.headAimLerp * t));
+        if(this.headAimWeight < 1e-3){ return; }
+
+        // Desired gaze = the pure crosshair DIRECTION (the FX-free look forward, pc.aimDirRaw). NOT the
+        // world aim POINT (the TPS camera is behind/beside the head, so head->point is depth/parallax-
+        // sensitive and the depth low-pass would swing the head on a near/far edge crossing), and NOT
+        // pc.aimDir (which carries the camera shake + ADS-walk wobble and would leak that into the head).
+        // A direction is depth-free; lateral tracking stays instant. (The GUN still uses the exact point.)
+        this._headFwdDes.copy(pc.aimDirRaw || pc.aimDir);
+        if(this._headFwdDes.lengthSq() < 1e-6){ return; }
+        this._headFwdDes.normalize();
+
+        // Reference gaze = the head's PRE-FLINCH world-forward this frame (snapshot in Update, before
+        // hurtFlinch). It already carries the spine lean + hip twist (so the delta supplies only the
+        // residual — no double-count), but NOT the flinch (so the head-aim doesn't cancel the hit jolt).
+        // _headFwdLocal is the rest-pose gaze axis pre-seeded in Initialize, so it's always set.
+        if(this._headFwdLocal){
+            this._headFwdRef.copy(this._headFwdLocal).applyQuaternion(this._headPreFlinchWQ).normalize();
+        }else{
+            // Defensive fallback (no head bone at init): the bare body facing is correct while un-leaned.
+            this._headFwdRef.set(Math.sin(this._bodyYaw), 0, Math.cos(this._bodyYaw));
+        }
+
+        // Look delta (ref -> desired), eased by the weight. Past the neck clamp the head HOLDS at its
+        // limit (s = maxAngle/ang keeps the rendered turn at exactly maxAngle while still tracking the
+        // target's AZIMUTH — no direction reversal). A SEPARATE near-180° ease drops the whole delta to 0
+        // only where the target is nearly directly behind, the one region where setFromUnitVectors' axis
+        // is unstable — so the head gives up gracefully there instead of snapping/rolling.
+        this._headAimQ.setFromUnitVectors(this._headFwdRef, this._headFwdDes);
+        const ang = Math.acos(THREE.MathUtils.clamp(this._headFwdRef.dot(this._headFwdDes), -1, 1));
+        let s = this.headAimWeight;
+        if(ang > this.maxHeadAimAngle){ s *= this.maxHeadAimAngle / ang; }
+        s *= 1 - THREE.MathUtils.smoothstep(ang, this.headAimAntiparallelStart, this.headAimAntiparallelEnd);
+        this._headAimWorld.copy(this._headAimId).slerp(this._headAimQ, s);
+
+        // Apply the world delta about the head's origin: newLocal = parentW^-1 * delta * parentW * old.
+        this.headBone.parent.getWorldQuaternion(this._headAimPW);
+        this._headAimPWInv.copy(this._headAimPW).invert();
+        this._headAimLocal.copy(this._headAimPWInv).multiply(this._headAimWorld).multiply(this._headAimPW);
+        this.headBone.quaternion.premultiply(this._headAimLocal);
+        this.headBone.updateWorldMatrix(false, false);
+    }
+
     // Ease the avatar's facing toward the camera yaw instead of snapping to it. While
     // moving or aiming the body tracks promptly (the walk/aim must read forward); while
     // idle it stays put inside bodyTurnDeadzone and only trails the camera softly past
@@ -1005,6 +1323,20 @@ export default class PlayerBody extends Component{
     UpdateBodyYaw(t){
         const target = this.playerControls.angles.y + this.yawOffset;
         if(this._bodyYaw === null){ this._bodyYaw = target; }
+
+        // First-person: track the look yaw tightly (small lag) so the arms/gun stay in frame, with an
+        // eased aim-centring bias while ADS. No deadzone/idle-trail here — that's a TPS-only behaviour.
+        if(this.cameraMode === 'FPS'){
+            const aiming = !!(this.playerControls && this.playerControls.aiming);
+            const biasTarget = aiming ? this.fpsAimYawBias : 0;
+            this._fpsAimBias += (biasTarget - this._fpsAimBias) * (1 - Math.exp(-this.fpsAimBiasLerp * t));
+            const goalF = target + this._fpsAimBias;
+            const dF = Math.atan2(Math.sin(goalF - this._bodyYaw), Math.cos(goalF - this._bodyYaw));
+            this._bodyYaw += dF * (1 - Math.exp(-this.fpsBodyTurnLerp * t));
+            this._bodyYaw = Math.atan2(Math.sin(this._bodyYaw), Math.cos(this._bodyYaw));
+            this.modelRoot.rotation.set(0, this._bodyYaw, 0);
+            return;
+        }
 
         const responsive = this.playerControls.HorizontalSpeed > 0.5 || this.IsAiming();
         let goal = target;

@@ -13,3 +13,6 @@ npm-debug.log*
 # Export outputs produced by the in-game P-key exporter
 level_ue.glb
 mechanics.json
+
+# Claude Code local runtime
+.claude/

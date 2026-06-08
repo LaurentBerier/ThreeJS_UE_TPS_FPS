@@ -80,4 +80,13 @@ export default class Entity{
           this.components[k].Update(timeElapsed);
         }
     }
+
+    // Release every component's resources (physics bodies, scene meshes, audio) when the entity is
+    // removed from the manager. Each component's Dispose is a no-op by default (see Component).
+    Dispose() {
+        for (let k in this.components) {
+          try { this.components[k].Dispose && this.components[k].Dispose(); }
+          catch(e){ console.error('Component dispose failed:', e); }
+        }
+    }
 }
