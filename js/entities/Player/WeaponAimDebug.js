@@ -129,14 +129,15 @@ export default class WeaponAimDebug extends Component{
 
         // HUD readout.
         if(this.el){
-            const a = ik ? ik._alpha : 0;
+            const a = ik ? ik._aimAlpha : 0;
+            const g = ik ? ik._gripAlpha : 0;
             const dbg = ik ? ik._debug : null;
             this.el.textContent =
 `WEAPON AIM IK  (K to close)
 ──────────────────────────
 mode        ${pc.cameraMode}
 active      ${this.body._weaponAimActive ? 'YES' : 'no'}
-blend α     ${a.toFixed(3)}
+blend α     aim ${a.toFixed(3)}  grip ${g.toFixed(3)}
 aim valid   ${pc.aimTargetValid ? 'hit' : 'far'}
 aim dist    ${pc.aimDistance.toFixed(2)} m
 maxAngle    ${THREE.MathUtils.radToDeg(ik ? ik.MaxAimCorrectionAngle : 0).toFixed(0)}°

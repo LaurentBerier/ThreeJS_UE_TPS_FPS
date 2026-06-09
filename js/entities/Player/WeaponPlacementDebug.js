@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import Component from '../../Component.js'
 import Input from '../../Input.js'
-import { WEAPON_GRIP_DEFAULT, WEAPON_GRIP_FPS_DEFAULT } from '../Common/UeMannequin.js'
+import { WEAPON_GRIP_DEFAULT, WEAPON_GRIP_FPS_DEFAULT, WEAPON_GRIP_FPS_AIM_DEFAULT } from '../Common/UeMannequin.js'
 
 
 // Live in-hand weapon placement tool. Toggle with the backquote key (`) to nudge the AK's grip
@@ -9,13 +9,19 @@ import { WEAPON_GRIP_DEFAULT, WEAPON_GRIP_FPS_DEFAULT } from '../Common/UeManneq
 //
 // PER CAMERA MODE. The AK is the same mesh in first- and third-person (the FP camera rides the
 // body's head bone, so FPS shows this body's gun), but each mode wants its own seat — the framing
-// differs. This panel edits whichever mode is ACTIVE: open it in FPS and you nudge the FPS grip; open
-// it in TPS and you nudge the TPS grip. Each mode keeps its own values, and the edit is pushed to
-// PlayerBody (SetWeaponGripLive), which seats the pivot and re-syncs the aim IK, so it shows live. To
-// switch which mode you're editing: close the panel, press V, reopen.
+// differs. This panel edits whichever seat is ACTIVE (it follows PlayerBody.ActiveGripMode):
+//   * TPS      — open the panel in third-person.
+//   * FPS      — open the panel in first-person (hip seat).
+//   * FPS_AIM  — open the panel in first-person while HOLDING right click (the down-the-sights seat,
+//                so you can place the weapon where you want it when aiming). The header shows FPS_AIM.
+// Each seat keeps its own values, and the edit is pushed to PlayerBody (SetWeaponGripLive), which
+// seats the pivot and re-syncs the aim IK, so it shows live (the IK is suspended while the panel owns
+// the camera, so the gun holds still at the seat as you nudge it). Switch TPS<->FPS by closing the
+// panel, pressing V, reopening; switch FPS<->FPS_AIM by holding/releasing right click.
 //
 // Units match WEAPON_GRIP: position in hand-local centimetres, rotation in degrees. Whatever looks
-// right pastes straight back into WEAPON_GRIP (TPS) / WEAPON_GRIP_FPS (FPS) in UeMannequin.js.
+// right pastes straight back into WEAPON_GRIP (TPS) / WEAPON_GRIP_FPS (FPS) / WEAPON_GRIP_FPS_AIM
+// (FPS aim) in UeMannequin.js.
 //
 // Keys (only while the panel is open):
 //   [ ]            select previous / next field (posX..rotZ)
@@ -39,6 +45,7 @@ export default class WeaponPlacementDebug extends Component{
         this.modes = {
             TPS: { pos: { x: 0, y: 0, z: 0 }, rotDeg: { x: 0, y: 0, z: 0 } },
             FPS: { pos: { x: 0, y: 0, z: 0 }, rotDeg: { x: 0, y: 0, z: 0 } },
+            FPS_AIM: { pos: { x: 0, y: 0, z: 0 }, rotDeg: { x: 0, y: 0, z: 0 } },
         };
 
         this.fields = ['posX', 'posY', 'posZ', 'rotX', 'rotY', 'rotZ'];
@@ -76,6 +83,7 @@ export default class WeaponPlacementDebug extends Component{
         // (e.g. 90, not a quaternion round-trip).
         this.modes.TPS = this.FromGrip(WEAPON_GRIP_DEFAULT);
         this.modes.FPS = this.FromGrip(WEAPON_GRIP_FPS_DEFAULT);
+        this.modes.FPS_AIM = this.FromGrip(WEAPON_GRIP_FPS_AIM_DEFAULT);
 
         this.BuildPanel();
         Input.AddKeyDownListner(this.OnKeyDown);
@@ -94,8 +102,13 @@ export default class WeaponPlacementDebug extends Component{
         };
     }
 
-    // The camera mode currently being edited (the live PlayerControls mode), and its editable state.
-    Mode(){ return (this.controls && this.controls.cameraMode) || 'TPS'; }
+    // The grip currently being edited. Follows PlayerBody's ACTIVE grip mode so it tracks the aim
+    // state: TPS, the FPS hip grip, or — while HOLDING right click in FPS — the FPS down-the-sights
+    // grip (FPS_AIM). Falls back to the raw camera mode if the body isn't wired yet.
+    Mode(){
+        if(this.body && this.body.ActiveGripMode){ return this.body.ActiveGripMode(); }
+        return (this.controls && this.controls.cameraMode) || 'TPS';
+    }
     Cur(){ return this.modes[this.Mode()] || this.modes.TPS; }
 
     // Mouse drives the free-fly look only while the panel is open and the pointer is
@@ -150,8 +163,11 @@ export default class WeaponPlacementDebug extends Component{
     }
 
     Reset(){
-        const def = this.Mode() === 'FPS' ? WEAPON_GRIP_FPS_DEFAULT : WEAPON_GRIP_DEFAULT;
-        this.modes[this.Mode()] = this.FromGrip(def);
+        const m = this.Mode();
+        const def = m === 'FPS_AIM' ? WEAPON_GRIP_FPS_AIM_DEFAULT
+                  : m === 'FPS'     ? WEAPON_GRIP_FPS_DEFAULT
+                  :                   WEAPON_GRIP_DEFAULT;
+        this.modes[m] = this.FromGrip(def);
     }
 
     // Push the active mode's grip to PlayerBody, which seats the pivot for that mode and re-syncs the
@@ -217,7 +233,10 @@ export default class WeaponPlacementDebug extends Component{
         const cur = this.Cur();
         const p = cur.pos, r = cur.rotDeg;
         const n = v => Number.isInteger(v) ? v : +v.toFixed(3);
-        const name = this.Mode() === 'FPS' ? 'WEAPON_GRIP_FPS' : 'WEAPON_GRIP';
+        const m = this.Mode();
+        const name = m === 'FPS_AIM' ? 'WEAPON_GRIP_FPS_AIM'
+                   : m === 'FPS'     ? 'WEAPON_GRIP_FPS'
+                   :                   'WEAPON_GRIP';
         return (
 `const ${name} = {
     position: new THREE.Vector3(${n(p.x)}, ${n(p.y)}, ${n(p.z)}),
@@ -274,8 +293,8 @@ ${rows}
 step  ${String(step).padStart(5)} ${isRot ? '°' : 'cm'}   (←/→ change)
 [ ]=field  ↑/↓=adjust
 Enter=copy snippet  ⌫=reset
-editing the ${this.Mode()} grip (V swaps mode
-when the panel is closed)
+editing the ${this.Mode()} grip (V swaps TPS/FPS
+when closed; HOLD right-click in FPS for FPS_AIM)
 ── free cam ──
 WASD move · Q/E down/up
 mouse look · Shift faster`;

@@ -49,10 +49,10 @@ const WEAPON_GRIP = {
     // Hand-tuned in TPS with the in-game placement tool (WeaponPlacementDebug, the `
     // panel). Position is hand-local centimetres; rotation seats the AK upright in the
     // palm with the barrel running forward. Re-tune with the panel and paste here.
-    position: new THREE.Vector3(-19.6, -2.4, 0.6),
+    position: new THREE.Vector3(-21.2, -4.4, 0.7),
     rotationEuler: new THREE.Euler(
         THREE.MathUtils.degToRad(0),
-        THREE.MathUtils.degToRad(4),
+        THREE.MathUtils.degToRad(-5),
         THREE.MathUtils.degToRad(272),
     ),
 };
@@ -65,11 +65,27 @@ const WEAPON_GRIP = {
 // panel) edits whichever mode you're in. Starts as a COPY of the TPS grip so FPS reads identically
 // until you tune it; paste the FPS panel's snippet here. Hand-local cm / degrees, same as above.
 const WEAPON_GRIP_FPS = {
-    position: new THREE.Vector3(-19.6, -2.4, 0.6),
+    position: new THREE.Vector3(-29.5, -27.4, 0.6),
     rotationEuler: new THREE.Euler(
         THREE.MathUtils.degToRad(0),
-        THREE.MathUtils.degToRad(4),
-        THREE.MathUtils.degToRad(272),
+        THREE.MathUtils.degToRad(1),
+        THREE.MathUtils.degToRad(280),
+    ),
+};
+
+// SEPARATE first-person AIM (down-the-sights) grip. When ADS in FPS the gun wants to come UP and
+// CENTRE so you actually see the weapon down the view, which is a different seat from the FPS hip
+// grip above — so PlayerBody swaps to this one while aiming in first-person (see ApplyWeaponGrip /
+// ActiveGripMode). Tune it by eye with the placement tool (WeaponPlacementDebug): in FPS, HOLD right
+// click to edit this AIM grip (the panel header reads FPS_AIM), nudge until the weapon sits where you
+// want it down the sights, then paste the snippet back here. Starts as a COPY of the FPS hip grip so
+// ADS reads identically until you tune it. Hand-local cm / degrees, same as above.
+const WEAPON_GRIP_FPS_AIM = {
+    position: new THREE.Vector3(-29.5, -27.4, 0.6),
+    rotationEuler: new THREE.Euler(
+        THREE.MathUtils.degToRad(0),
+        THREE.MathUtils.degToRad(1),
+        THREE.MathUtils.degToRad(280),
     ),
 };
 
@@ -210,6 +226,7 @@ export function buildUeMannequin(model, { textures = null, weapon = null, preOri
 // (see WEAPON_GRIP_FPS) — PlayerBody applies one or the other per camera mode.
 export const WEAPON_GRIP_DEFAULT = WEAPON_GRIP;
 export const WEAPON_GRIP_FPS_DEFAULT = WEAPON_GRIP_FPS;
+export const WEAPON_GRIP_FPS_AIM_DEFAULT = WEAPON_GRIP_FPS_AIM;
 
 // Collect the names of every bone in the "upper body": the split bone (default
 // 'spine_01', the first spine joint above the pelvis on the UE skeleton) and all of

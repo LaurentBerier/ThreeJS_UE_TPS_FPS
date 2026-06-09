@@ -22,6 +22,19 @@ export default class PlayerControls extends Component{
         this.decceleration = -7.0;
         this.isSprinting = false;
 
+        // --- Crouch. Toggle with C (latched edge) OR hold Left Alt / Option. Effective crouch also
+        // requires being grounded (jumping/airborne force-stands). Crouching shrinks the physics capsule
+        // (PlayerPhysics — gameplay hitbox + fit under low cover), slows movement, lowers the TPS camera,
+        // and the body lowers the pelvis + bends the knees PROCEDURALLY (PlayerBody + FootIK) — there is
+        // no crouch CLIP. `crouching` is the single source of truth other components read.
+        this.crouching = false;             // effective crouch state (read by PlayerBody)
+        this._crouchToggle = false;         // C-key toggle state
+        this._crouchLatch = false;          // C-key edge latch (so a held key fires once)
+        this.crouchSpeedMultiplier = 0.5;   // top-speed scale while crouched (slow, deliberate)
+        this.crouchCamDrop = 0.32;          // TPS camera pivot drop while crouched (m), eased
+        this._crouchCamEased = 0;           // eased 0..crouchCamDrop applied to the TPS camera pivot
+        this.crouchCamLerp = 8;             // ease rate (1/s) for the camera drop
+
         this.mouseSpeed = 0.002;
         this.physicsComponent = null;
         this.isLocked = false;
@@ -457,6 +470,11 @@ export default class PlayerControls extends Component{
     // are camera-mode-independent.
     UpdateCamera(capPos, t = 0.016){
         this._fxTime += t;
+        // Ease the crouch camera drop (applied to the TPS pivot below) so entering/leaving crouch glides
+        // the third-person view down/up. Eased here (before the FPS early-out) so it never jumps on a
+        // camera-mode switch. FPS lowers via the head bone (the body's pelvis drop), so it's not used there.
+        this._crouchCamEased += ((this.crouching ? this.crouchCamDrop : 0) - this._crouchCamEased)
+            * (1 - Math.exp(-this.crouchCamLerp * t));
 
         if(this.cameraMode === 'FPS'){
             // Same character as third-person: the eye rides the mesh's head bone, so the walk/run
@@ -515,7 +533,7 @@ export default class PlayerControls extends Component{
         this._fwd.copy(this._fwdBase).applyQuaternion(this.parent.Rotation);
         this._right.copy(this._rightBase).applyQuaternion(this.parent.Rotation);
         this._pivot.copy(capPos);
-        this._pivot.y += this.tpsPivotHeight;   // CENTRED pivot — start of the spline
+        this._pivot.y += this.tpsPivotHeight - this._crouchCamEased;   // CENTRED pivot — start of the spline (lowered while crouched)
         // Far end of the spline: behind by the (aim/sprint + look-down) distance + over the shoulder.
         this._free.copy(this._pivot)
             .addScaledVector(this._fwd, -boom)
@@ -669,6 +687,11 @@ export default class PlayerControls extends Component{
         this.rolling = true;
         this.rollTimer = 0.0;
         this.aiming = false;                                 // a roll drops precise-aim
+        // A roll force-stands: the roll clip assumes a standing body, and the crouch input block is
+        // skipped while rolling, so clear the toggle and stand the capsule now (best-effort — if blocked
+        // by low cover SetCrouched keeps it crouched, which the roll tolerates). Post-roll stays standing.
+        this._crouchToggle = false;
+        this.physicsComponent.SetCrouched(false);
         // Roll direction from the tapped key, in the camera's horizontal frame (tempVec/moveDir are
         // free scratch here: a rolling frame returns before the normal movement path uses them).
         const fwd = this.tempVec.set(0, 0, -1).applyQuaternion(this.yaw);
@@ -775,6 +798,22 @@ export default class PlayerControls extends Component{
         // or not Shift is held. The legs still read as a jog, just a slow one.
         if(this.aiming){ this.maxSpeed = this.walkSpeed * this.aimMoveMultiplier; }
 
+        // Crouch input: C toggles (latched edge), Left Alt / Option holds. Effective crouch also needs
+        // to be grounded (a jump force-stands). Drive the capsule resize; SetCrouched gates standing on
+        // head clearance, so if blocked we stay crouched — reflect the ACTUAL physics state back into
+        // `crouching` so the body pose + speed match what the capsule did.
+        if(Input.GetKeyDown('KeyC')){
+            if(!this._crouchLatch){ this._crouchLatch = true; this._crouchToggle = !this._crouchToggle; }
+        }else{ this._crouchLatch = false; }
+        const crouchHeld = Input.GetKeyDown('AltLeft') || Input.GetKeyDown('AltRight');
+        const wantCrouch = (this._crouchToggle || crouchHeld) && this.IsGrounded;
+        this.physicsComponent.SetCrouched(wantCrouch);
+        this.crouching = this.physicsComponent.crouched;
+        if(this.crouching){
+            this.maxSpeed *= this.crouchSpeedMultiplier;   // slow crouch-walk (composes with aim)
+            this.isSprinting = false;                      // no crouch-sprint
+        }
+
         const velocity = this.physicsBody.getLinearVelocity();
 
         if(Input.GetKeyDown('Space') && this.physicsComponent.canJump){
@@ -806,7 +845,11 @@ export default class PlayerControls extends Component{
             const p = this.transform.getOrigin();
             // Capsule-tracked eye position. This is Player.Position in BOTH camera
             // modes (NPCs target it), independent of where the TPS boom sits.
-            this._cap.set(p.x(), p.y() + this.yOffset, p.z());
+            // Crouch shrinks the capsule and drops its origin by centerDrop to keep the FEET grounded;
+            // add that back here so the tracked EYE stays stable across the resize (no jump). The
+            // crouch LOOK comes from the body lowering the pelvis, and the TPS camera from crouchCamDrop.
+            const crouchEye = this.physicsComponent.crouched ? this.physicsComponent.centerDrop : 0;
+            this._cap.set(p.x(), p.y() + this.yOffset + crouchEye, p.z());
             this.parent.SetPosition(this._cap);
             this.UpdateCamera(this._cap, t);
             this.UpdateAimTarget(t);

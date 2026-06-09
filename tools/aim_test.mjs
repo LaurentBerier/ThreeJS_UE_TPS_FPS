@@ -90,17 +90,33 @@ try {
       const pc = window._APP.entityManager.Get('Player').GetComponent('PlayerControls');
       pc.angles.x = x; pc.UpdateRotation();
     };
+    window.__handLY = () => {
+      const ik = window._APP.entityManager.Get('Player').GetComponent('PlayerBody').weaponAimIK;
+      const h = ik.bones.hand_l; return h ? h.matrixWorld.elements[13] : null;
+    };
+    window.__setTwoHanded = (v) => {
+      window._APP.entityManager.Get('Player').GetComponent('PlayerBody').weaponAimIK.twoHanded = v;
+    };
     window.__aimState = () => {
       const player = window._APP.entityManager.Get('Player');
       const pc = player.GetComponent('PlayerControls');
       const ik = player.GetComponent('PlayerBody').weaponAimIK;
-      return { alpha: +ik._alpha.toFixed(3), valid: pc.aimTargetValid, mode: pc.cameraMode,
+      return { aimAlpha: +ik._aimAlpha.toFixed(3), gripAlpha: +ik._gripAlpha.toFixed(3),
+               valid: pc.aimTargetValid, mode: pc.cameraMode,
                barrelResolved: ik._barrelResolved, socketsCaptured: ik._socketsCaptured };
     };
   });
   const step = (n) => page.evaluate((n) => window.__step(n), n);
 
   await step(150);   // settle on the floor; the IK resolves its barrel/sockets on its first updates
+
+  // --- ALWAYS-ON GRIP (the anti-snap core): the player has NOT aimed yet. The support hand must
+  // already be glued to the foregrip (grip blend high, aim blend ~0) and the sockets captured from the
+  // idle pose. Pre-split this would read the raw clip hand position (far off the foregrip). ---
+  const idleState = await page.evaluate(() => window.__aimState());
+  const idleHandDist = await page.evaluate(() => window.__handGripDist());
+  const idleFinite = await page.evaluate(() => window.__armFinite());
+  log('IDLE (never aimed) state:', JSON.stringify(idleState), 'hand→grip:', idleHandDist == null ? null : +idleHandDist.toFixed(3));
 
   // --- TPS aiming at three pitches: barrel must converge on the crosshair target every time. ---
   const tpsAngles = {};
@@ -117,11 +133,13 @@ try {
   const stateAiming = await page.evaluate(() => window.__aimState());
   log('TPS aiming state:', JSON.stringify(stateAiming));
 
-  // --- Release aim: the correction must blend fully OUT. ---
+  // --- Release aim: the BARREL correction must blend out, but the GRIP must STAY on (hands stay glued
+  // to the gun — no release/re-grab snap). Hand must still be on the foregrip after release. ---
   await page.evaluate(() => { window.__setAim(false); window.__setPitch(0); });
   await step(60);
   const released = await page.evaluate(() => window.__aimState());
-  log('after release:', JSON.stringify(released));
+  const releasedHandDist = await page.evaluate(() => window.__handGripDist());
+  log('after release:', JSON.stringify(released), 'hand→grip:', releasedHandDist == null ? null : +releasedHandDist.toFixed(3));
 
   // --- Weapon switch WHILE aiming: must not throw and must re-align. ---
   await page.evaluate(() => window.__setAim(true));
@@ -145,23 +163,52 @@ try {
                 finite: await page.evaluate(() => window.__armFinite()) };
   log('FPS aim:', JSON.stringify(fps));
 
+  // --- One-handed: flip twoHanded off. The foregrip solve is skipped and the off-hand relaxes DOWN,
+  // but the barrel still aims (dominant-hand wrist aim is independent of the support arm). ---
+  await page.evaluate(() => { window.__setAim(true); window.__setPitch(0); });
+  await step(20);
+  const handLTwo = await page.evaluate(() => window.__handLY());
+  await page.evaluate(() => window.__setTwoHanded(false));
+  await step(40);
+  const oneH = {
+    handLOne: await page.evaluate(() => window.__handLY()),
+    angle: +(await page.evaluate(() => window.__angleBarrelToTarget())).toFixed(2),
+    finite: await page.evaluate(() => window.__armFinite()),
+  };
+  await page.evaluate(() => window.__setTwoHanded(true));   // restore for any later checks
+  log('one-handed:', JSON.stringify(oneH), 'handL two-handed Y:', handLTwo == null ? null : +handLTwo.toFixed(3));
+
   // ---- verdicts ----
   let ok = true;
   const fail = (m) => { ok = false; log('ASSERT FAIL:', m); };
+  // Anti-snap (always-on grip) — measured BEFORE the player ever aimed.
+  if (!idleState.socketsCaptured) fail('grip sockets never captured at idle (capture must not require aiming)');
+  if (idleState.gripAlpha < 0.9) fail(`grip blend not engaged at idle (gripAlpha ${idleState.gripAlpha} < 0.9) — support hand not glued`);
+  if (idleState.aimAlpha > 0.1) fail(`aim blend active while NOT aiming (aimAlpha ${idleState.aimAlpha})`);
+  if (!idleFinite) fail('IDLE: non-finite arm/weapon quaternion');
+  if (idleHandDist != null && idleHandDist > 0.06) fail(`IDLE: support hand off the foregrip (${idleHandDist.toFixed(3)} m > 0.06) — grip not always-on`);
+
   if (!stateAiming.barrelResolved) fail('barrel never resolved');
   if (!stateAiming.socketsCaptured) fail('grip sockets never captured');
-  if (stateAiming.alpha < 0.9) fail('aim blend never reached full (alpha < 0.9 while aiming)');
+  if (stateAiming.aimAlpha < 0.9) fail('aim blend never reached full (aimAlpha < 0.9 while aiming)');
   for (const k of ['up', 'level', 'down']) {
     if (!tpsAngles[k].finite) fail(`TPS ${k}: non-finite arm/weapon quaternion`);
     if (tpsAngles[k].angle > 3.0) fail(`TPS ${k}: barrel not on target (${tpsAngles[k].angle}° > 3°)`);
     if (tpsAngles[k].handDist != null && tpsAngles[k].handDist > 0.035) fail(`TPS ${k}: support hand off the foregrip (${tpsAngles[k].handDist} m > 0.035)`);
   }
-  if (released.alpha > 0.1) fail(`correction did not blend out on release (alpha ${released.alpha})`);
+  if (released.aimAlpha > 0.1) fail(`barrel correction did not blend out on release (aimAlpha ${released.aimAlpha})`);
+  if (released.gripAlpha < 0.9) fail(`grip released on aim-out (gripAlpha ${released.gripAlpha} < 0.9) — hands should stay on the gun`);
+  if (releasedHandDist != null && releasedHandDist > 0.06) fail(`after release: support hand left the foregrip (${releasedHandDist.toFixed(3)} m > 0.06) — the snap`);
   if (!afterSwap.finite) fail('weapon swap while aiming produced non-finite pose');
   if (afterSwap.angle > 3.5) fail(`barrel off target after weapon swap (${afterSwap.angle}°)`);
   if (fps.mode !== 'FPS') fail('did not switch to FPS');
   if (!fps.finite) fail('FPS: non-finite arm/weapon quaternion');
   if (fps.angle > 4.0) fail(`FPS barrel not on target (${fps.angle}° > 4°)`);
+  // One-handed.
+  if (!oneH.finite) fail('one-handed: non-finite arm/weapon quaternion');
+  if (oneH.angle > 4.5) fail(`one-handed barrel off target (${oneH.angle}° > 4.5°)`);
+  if (handLTwo != null && oneH.handLOne != null && oneH.handLOne > handLTwo - 0.02)
+    fail(`one-handed off-hand did not relax downward (two-handed Y ${handLTwo.toFixed(3)} -> one-handed Y ${oneH.handLOne.toFixed(3)})`);
   if (errors.length) { ok = false; log('\n=== RUNTIME ERRORS (' + errors.length + ') ==='); errors.slice(0, 40).forEach((e) => log(e)); }
 
   log('\n' + (ok ? '✅ AIM IK TEST PASSED' : '❌ AIM IK TEST FAILED'));

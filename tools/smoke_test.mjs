@@ -87,6 +87,23 @@ try {
   log('player grounded:', setupInfo.grounded, 'camera:', setupInfo.mode);
   log('soldiers:', JSON.stringify(setupInfo.soldiers));
 
+  // Soldier SUPPORT HAND on the gun: with always-on grip IK, an alive soldier's hand_l must be planted
+  // near its gun (hand_r) — NOT flung into the air (the bind-pose-capture bug). Measure hand_l<->hand_r.
+  await step(30);
+  const grip = await page.evaluate(() => {
+    const em = window._APP.entityManager;
+    const c = em.entities.filter((e) => /UeSoldier/.test(e.Name))
+      .map((e) => e.GetComponent('UeSoldierController')).find((x) => x && !x.dead);
+    if (!c) return { ok: false, reason: 'no alive soldier' };
+    const ik = c.weaponAimIK; if (!ik || !ik.bones.hand_l || !ik.bones.hand_r) return { ok: false, reason: 'no ik/hands' };
+    c.model.updateMatrixWorld(true);
+    const l = ik.bones.hand_l.matrixWorld.elements, r = ik.bones.hand_r.matrixWorld.elements;
+    const dist = Math.hypot(l[12]-r[12], l[13]-r[13], l[14]-r[14]);
+    return { ok: true, handDist: +dist.toFixed(3), handLY: +l[13].toFixed(3), handRY: +r[13].toFixed(3),
+             captured: ik._socketsCaptured, gripAlpha: +ik._gripAlpha.toFixed(2) };
+  });
+  log('soldier support hand:', JSON.stringify(grip));
+
   // Verify soldier RUN-AND-GUN: an alive soldier has the directional locomotion + shoot-overlay
   // layers, and can fire (shoot overlay on the torso) while strafing (a directional jog on the legs,
   // moving). Driven directly (bypassing the FSM/visibility) so it's deterministic.
@@ -231,6 +248,10 @@ try {
   if (!ragInfo.soldierFinite) fail('ragdoll produced non-finite (NaN) positions');
   if (!settle.finite) fail('ragdoll non-finite after long sim (wall/floor collision instability)');
   if (!settle.despawned && !settle.asleep) log('WARN: ragdoll neither despawned nor asleep yet (perf gate best-effort; depends where the corpse landed)');
+  if (!grip.ok) fail('soldier support-hand check failed: ' + (grip.reason || '?'));
+  if (grip.ok && !grip.captured) fail('soldier weapon-grip socket never captured');
+  if (grip.ok && grip.handDist > 0.6) fail(`soldier support hand off the gun (hand_l<->hand_r ${grip.handDist} m > 0.6) — bind-pose capture / arm in the air`);
+  if (grip.ok && (grip.handLY - grip.handRY) > 0.35) fail(`soldier support hand raised above the gun (handL.y-handR.y ${(grip.handLY - grip.handRY).toFixed(3)} > 0.35) — arm flung up`);
   if (!rng.ok || !rng.hasDirLegs) fail('soldier missing directional locomotion layers (jogF/B/L/R)');
   if (!rng.ok || !rng.hasShootUpper) fail('soldier missing shoot upper-body overlay');
   if (!rng.firedWhileMoving) fail('soldier cannot fire while moving (run-and-gun broken)');

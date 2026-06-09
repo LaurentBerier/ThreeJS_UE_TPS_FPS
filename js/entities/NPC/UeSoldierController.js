@@ -4,6 +4,8 @@ import {Ammo, AmmoHelper, CollisionFilterGroups} from '../../AmmoLib.js'
 import UeSoldierFSM from './UeSoldierFSM.js'
 import { buildUeMannequin, collectUpperBoneNames, splitClipByBones } from '../Common/UeMannequin.js'
 import { installProximityDitherOnObject } from '../Common/CameraDither.js'
+import WeaponAimIK from '../Player/WeaponAimIK.js'
+import FootIK from '../Player/FootIK.js'
 import Ragdoll from './Ragdoll.js'
 import DroppedWeapon from './DroppedWeapon.js'
 import HurtFlinch from '../Common/HurtFlinch.js'
@@ -76,6 +78,29 @@ export default class UeSoldierController extends Component{
         this.combatFacing = false;      // when true, Locomote aims facingYaw at the target, not the move dir
         this.faceVec = new THREE.Vector3();   // scratch: direction to the target for combat facing
 
+        // ---- Combat aim (always point the gun at the target) ----
+        // While engaged the soldier doesn't just animate a generic fire pose facing forward — it
+        // VISIBLY aims its rifle at whoever it's shooting, exactly like the player does: a gross
+        // additive SPINE lean toward the target's elevation, then a fine WeaponAimIK pass that rotates
+        // the in-hand gun so the barrel points at the target and IKs the support hand back onto the
+        // foregrip. Combined with combatFacing (turning the body) + the directional STRAFE jogs, the
+        // soldier stays trained on the player while it strafes/advances. Eased in only while engaged.
+        this.weaponAimIK = null;        // built in Initialize (needs the rig + in-hand weaponPivot)
+        this.aimBones = [];             // [{bone, weight}] spine chain for the additive elevation lean
+        this.aimVec = new THREE.Vector3();      // scratch: world aim point (target torso)
+        this._aimChest = new THREE.Vector3();   // scratch: the gun-hand world position (lean reference)
+        this.aimSpineLerp = 8;          // ease rate (1/s) blending the lean + IK in/out with engagement
+        this.aimSpinePitchGain = 1.0;   // fraction of the target elevation fed to the spine lean
+        this.aimSpinePitchSign = -1;    // rig sign: target ABOVE => gun up (flip if the lean inverts)
+        this.aimSpinePitchMax = THREE.MathUtils.degToRad(45);   // clamp so a steep target can't fold the torso
+        this._aimSpineWeight = 0;       // eased 0..1 engagement blend
+        this._aimSpinePitch = 0;        // low-passed lean angle (rad)
+        this._aimRight = new THREE.Vector3();   // scratch: character right axis (lean rotation axis)
+        this._aimR = new THREE.Quaternion();
+        this._aimPW = new THREE.Quaternion();
+        this._aimPWInv = new THREE.Quaternion();
+        this._aimDelta = new THREE.Quaternion();
+
         // Navigation.
         this.path = [];
         this.navGroup = null;
@@ -109,8 +134,10 @@ export default class UeSoldierController extends Component{
         this.viewAngle = Math.cos(Math.PI * 0.42);  // ~150° field of view (was 120°)
         this.proximitySenseRadius = 14.0;           // sense a visible target within this radius, any facing
         this.proximitySenseSq = this.proximitySenseRadius * this.proximitySenseRadius;
-        this.maxViewDistance = 26.0 * 26.0;         // longer sight line (was 20 m)
-        this.shootRange = 18.0;        // start shooting once this close (with line of sight)
+        this.maxViewDistance = 28.0 * 28.0;         // longer sight line so it can fight at range
+        // Long-range gunner: it engages from far off (shootRange) and HOLDS its distance
+        // (preferredRange, see PickCombatPosition) instead of crowding the player. Raised from 18 m.
+        this.shootRange = 22.0;        // start shooting once this close (with line of sight)
         this.shootRangeSq = this.shootRange * this.shootRange;
         // Tuned so a gunner reads as genuinely dangerous (≈9.4 DPS in clear LOS, ~10s solo TTK on a
         // 100 HP player, far less as a squad) without being a hitscan wall — still survivable with
@@ -127,7 +154,9 @@ export default class UeSoldierController extends Component{
         // repositioning cadence, preferred engagement range and flank direction. Read by the FSM's
         // combat states (reposition / attack) and PickCombatPosition.
         this.aggression = Math.random();                       // 0 = cautious (kites), 1 = aggressive (pushes)
-        this.preferredRange = THREE.MathUtils.lerp(13.0, 6.5, this.aggression);   // closer when aggressive
+        // LONG-range hold distance (was 6.5..13): the gunner keeps well back and never closes to
+        // brawling range — aggressive ones sit a touch nearer (11 m), cautious ones farther (18 m).
+        this.preferredRange = THREE.MathUtils.lerp(18.0, 11.0, this.aggression);  // closer when aggressive
         this.repositionInterval = 1.6 + Math.random() * 2.4;   // ~1.6 .. 4.0 s of firing before relocating
         this.combatMoveSpeed = THREE.MathUtils.lerp(3.4, 4.8, this.aggression);   // strafe/relocate speed
         this.flankSign = Math.random() < 0.5 ? -1 : 1;         // preferred lateral direction around the target
@@ -171,13 +200,10 @@ export default class UeSoldierController extends Component{
         this.dead = false;
         this.ragdoll = null;        // verlet ragdoll built on death (drives the skeleton)
         this.droppedWeapon = null;  // the AK falls out of the hand on death (DroppedWeapon physics)
-        // Corpse despawn: the ragdoll settles and lies for corpseLingerTime, then SINKS out of view over
-        // corpseSinkTime and the whole entity is removed (mesh, dropped rifle, hit volumes, sensors).
-        // Total death->gone ≈ 4.9 s (within the requested 4-5 s). Sinking is material-agnostic (no fade/
-        // shader needed) and unobtrusive on a body that's been still for seconds.
+        // Corpse despawn: the ragdoll settles and lies for corpseLingerTime, then the whole entity is
+        // DESTROYED (mesh, dropped rifle, hit volumes, sensors) — it simply disappears. No sink under
+        // the floor (that read as the body melting through the ground); we just remove it once still.
         this.corpseLingerTime = 4.2;
-        this.corpseSinkTime = 0.7;
-        this.corpseSinkDepth = 1.6;     // metres sunk before removal (fully buries a lying body)
         this._deathElapsed = 0.0;
         this._despawned = false;
 
@@ -265,9 +291,26 @@ export default class UeSoldierController extends Component{
         // affects this soldier.
         installProximityDitherOnObject(this.modelRoot, { near: 0.35, far: 1.0 });
 
+        // Combat aim: spine chain (root->tip) for the additive elevation lean, plus the in-hand
+        // weapon barrel + support-hand IK (same solver the player uses). Driven each frame by
+        // UpdateCombatAim while the soldier is engaged, so the rifle visibly tracks the target.
+        const spineWeights = { spine_01: 0.30, spine_02: 0.35, spine_03: 0.35 };
+        this.model.traverse(o => { if(o.isBone && spineWeights[o.name]){ this.aimBones.push({ bone: o, weight: spineWeights[o.name] }); } });
+        if(this.weaponPivot){ this.weaponAimIK = new WeaponAimIK(this.model, this.weaponPivot); }
+
+        // Procedural foot/terrain IK (same reusable solver the player uses). Conforms the soldier's feet
+        // to the ground it walks; fades out with speed so the foot-synced jog isn't fought. No crouch.
+        this.footIK = new FootIK(this.model, this.modelRoot, this.physicsWorld);
+
         this.SetupMuzzleFlash();
 
         this.stateMachine = new UeSoldierFSM(this);
+        // Pose an idle rifle stance BEFORE the first Update (like PlayerBody does) so frame 1 is posed
+        // with both hands on the gun. The weapon-grip IK captures its support-hand foregrip socket from
+        // that first frame; without a posed frame it would capture the bind/T-pose and the always-on grip
+        // IK would then fling the support arm into the air (the NPC "arm not attached to the gun" bug).
+        this.SetLowerState('idle');
+        this.SetUpperState('idle');
         this.stateMachine.SetState('patrol');   // enemies roam by default; only stop to scan briefly
     }
 
@@ -355,7 +398,13 @@ export default class UeSoldierController extends Component{
         let fx = tx - sx, fz = tz - sz;
         const flen = Math.hypot(fx, fz) || 1; fx /= flen; fz /= flen;
         const lx = -fz, lz = fx;                            // left perpendicular
-        const advanceBias = (this.aggression - 0.5) * 2;    // -1 kite/retreat .. +1 push in
+        // Hold the preferred LONG range: advance when too far, KITE OUT when too close, so the gunner
+        // never crowds the player (the request: "don't let them come too close — long-range attack").
+        // advanceBias multiplies `advance` (+1 toward the target); a small aggression term still lets
+        // pushers sit a touch nearer and kiters a touch farther.
+        const rangeError = flen - this.preferredRange;      // + => too far (push in), - => too close (back off)
+        const advanceBias = THREE.MathUtils.clamp(rangeError / 6.0, -1, 1) + (this.aggression - 0.5) * 0.5;
+        const minRange = this.preferredRange * 0.6;         // never voluntarily relocate inside this radius
 
         let best = null, bestScore = -Infinity;
         for(const range of [3.0, 5.0, 7.0]){
@@ -370,7 +419,8 @@ export default class UeSoldierController extends Component{
                 const distT = Math.hypot(node.x - tx, node.z - tz);
                 const rangeScore = 1.0 - Math.min(1.0, Math.abs(distT - this.preferredRange) / 8.0);
                 const flankScore = lateral * this.flankSign;      // reward stepping to the preferred side
-                const advanceScore = advance * advanceBias;       // push or kite per aggression
+                const advanceScore = advance * advanceBias;       // push in or kite out to hold the range
+                const tooClose = distT < minRange ? (minRange - distT) : 0;   // penalty for crowding the player
                 const losScore = this.HasLineOfSightFrom(this.combatA.set(node.x, node.y, node.z), target) ? 1.0 : 0.0;
                 // LOS dominates: a spot you can actually SHOOT from must always beat a slightly
                 // better-ranged/flanked spot with no shot (else the soldier relocates somewhere it
@@ -378,7 +428,7 @@ export default class UeSoldierController extends Component{
                 // Flank is weighted high (with rangeScore holding the distance roughly constant) so the
                 // chosen spots sit LATERAL to the target at the preferred range — the soldier reads as
                 // CIRCLE-STRAFING around the player rather than relocating to scattered cover.
-                const score = losScore * 3.0 + rangeScore * 1.3 + flankScore * 1.6 + advanceScore * 0.6;
+                const score = losScore * 3.0 + rangeScore * 1.3 + flankScore * 1.6 + advanceScore * 0.9 - tooClose * 0.7;
                 if(score > bestScore){ bestScore = score; best = node; }
             }
         }
@@ -826,19 +876,9 @@ export default class UeSoldierController extends Component{
             return;
         }
 
-        // SINK: freeze the ragdoll (the verlet sim re-pins bones to world particles each frame, which
-        // would fight a downward translation), then lower the whole rig — and the dropped rifle — out
-        // of view. The corpse has settled by now, so freezing then sinking reads clean.
+        // REMOVE: once settled, destroy the corpse outright (mesh, rifle, hit volumes, sensor ghost) so
+        // it simply DISAPPEARS — no sink through the floor.
         this.ragdoll = null;
-        const over = this._deathElapsed - this.corpseLingerTime;
-        if(over < this.corpseSinkTime){
-            const dy = this.corpseSinkDepth * (t / this.corpseSinkTime);
-            this.modelRoot.position.y -= dy;
-            if(this.droppedWeapon && this.droppedWeapon.object){ this.droppedWeapon.object.position.y -= dy; }
-            return;
-        }
-
-        // REMOVE: hand the entity to the manager for disposal (mesh, rifle, hit volumes, sensor ghost).
         if(!this._despawned){
             this._despawned = true;
             this.parent.parent.Remove(this.parent);
@@ -1047,6 +1087,66 @@ export default class UeSoldierController extends Component{
         }
     }
 
+    // Combat aim: make the soldier visibly point its rifle at whatever it's shooting. Runs AFTER the
+    // body's facing yaw is applied (so the world matrices are current). Two layers, like the player:
+    // a gross additive spine lean toward the target's elevation, then the WeaponAimIK fine pass that
+    // rotates the gun so the barrel points at the target and re-plants the support hand. Eased in only
+    // while ENGAGED (combatFacing on a live target) so patrol/idle/chase-without-LOS read as authored.
+    UpdateCombatAim(t){
+        if(!this.weaponAimIK){ return; }
+        const engaged = !!(this.combatFacing && this.target && this.IsAlive(this.target) && this.target.Position);
+        if(engaged){
+            // Aim at the target's torso/centre (the player capsule pos is ~eye height; raise other
+            // bodies to a torso).
+            this.aimVec.copy(this.target.Position);
+            if(this.target !== this.player){ this.aimVec.y += 1.0; }
+        }
+        // Refresh the body's world transform so the IK reads this frame's facing.
+        this.modelRoot.updateMatrixWorld(true);
+        // Gross: lean the spine toward the target altitude.
+        this.UpdateAimSpine(t, engaged);
+        // Fine: point the barrel exactly at the target (fireDir is the facing fallback for too-close).
+        this.fireDir.set(Math.sin(this.facingYaw), 0, Math.cos(this.facingYaw));
+        this.weaponAimIK.Update(t, {
+            active: engaged,
+            // Always-on grip while alive: the support hand stays glued to the rifle even while patrolling
+            // (not just when engaged), so the soldier holds the weapon properly throughout — the same
+            // two-alpha split the player uses. The barrel only swings toward the target while `engaged`.
+            gripActive: !this.dead,
+            aimTarget: this.aimVec,
+            aimValid: engaged,
+            cameraForward: this.fireDir,
+        });
+    }
+
+    // Additive spine pitch lean toward the target's elevation (gross aim that the barrel IK then
+    // refines). Eased in/out with engagement so it never pops; rotates each spine bone about the
+    // character's right axis in its parent's world frame (rig-agnostic, matches PlayerBody's lean).
+    UpdateAimSpine(t, engaged){
+        if(!this.aimBones.length){ return; }
+        this._aimSpineWeight += ((engaged ? 1 : 0) - this._aimSpineWeight) * (1 - Math.exp(-this.aimSpineLerp * t));
+        let targetPitch = 0;
+        if(engaged && this.handBone){
+            this.handBone.getWorldPosition(this._aimChest);     // ~gun height
+            const dy = this.aimVec.y - this._aimChest.y;
+            const horiz = Math.hypot(this.aimVec.x - this._aimChest.x, this.aimVec.z - this._aimChest.z);
+            const elev = Math.atan2(dy, Math.max(0.2, horiz));  // + = target above the gun
+            targetPitch = THREE.MathUtils.clamp(this.aimSpinePitchSign * elev * this.aimSpinePitchGain,
+                -this.aimSpinePitchMax, this.aimSpinePitchMax);
+        }
+        this._aimSpinePitch += (targetPitch - this._aimSpinePitch) * (1 - Math.exp(-this.aimSpineLerp * t));
+        const pitch = this._aimSpinePitch * this._aimSpineWeight;
+        if(Math.abs(pitch) < 1e-4){ return; }
+        this._aimRight.set(Math.cos(this.facingYaw), 0, -Math.sin(this.facingYaw));
+        for(const ab of this.aimBones){
+            this._aimR.setFromAxisAngle(this._aimRight, pitch * ab.weight);
+            ab.bone.parent.getWorldQuaternion(this._aimPW);
+            this._aimPWInv.copy(this._aimPW).invert();
+            this._aimDelta.copy(this._aimPWInv).multiply(this._aimR).multiply(this._aimPW);
+            ab.bone.quaternion.premultiply(this._aimDelta);
+        }
+    }
+
     TakeHit = (msg) => {
         if(this.dead){ return; }
 
@@ -1131,7 +1231,21 @@ export default class UeSoldierController extends Component{
         // Apply transforms: body follows position + smoothed facing yaw.
         this.modelRoot.position.copy(this.position);
         this.modelRoot.rotation.set(0, this.facingYaw, 0);
+        // Combat aim: after the facing is applied, lean the spine + IK the rifle barrel onto the
+        // target so the soldier visibly aims at whoever it's shooting (no-op when not engaged).
+        this.UpdateCombatAim(t);
+        // Foot/terrain IK: LAST pose write, after the facing + combat aim. Conforms the feet to the
+        // ground; fades out with speed (anti-skate). Soldiers walk the navmesh, so they're "grounded".
+        this.UpdateFootIK(t);
         this.SyncParentTransform();
+    }
+
+    // Drive the soldier's foot/terrain IK each frame (alive only — the dead branch returns earlier and
+    // hands the body to the ragdoll). FootIK fades itself out with ground speed so a moving soldier's
+    // foot-synced jog isn't fought into a skate; it conforms the planted feet when slow/standing.
+    UpdateFootIK(t){
+        if(!this.footIK){ return; }
+        this.footIK.Update(t, { enabled: !this.dead, speed: this.currentSpeed, bodyYaw: this.facingYaw });
     }
 
     // Keep the entity transform in sync so AttackTrigger / hit capsules follow.
