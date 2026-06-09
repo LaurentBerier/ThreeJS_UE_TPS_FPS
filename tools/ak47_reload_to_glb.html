@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>AK47 mag-reload FBX -&gt; GLB converter</title>
+    <!--
+      Build-time converter (NOT part of the game). Mirrors roll_to_glb.html but bakes
+      the in-hand AK's MAGAZINE reload move: loads A_SK_AK47_Rifle_Reload_.fbx (a UE
+      7500 export the runtime's r127 FBXLoader can't parse) with a MODERN three.js
+      FBXLoader (r160) and exports a tiny binary GLB carrying the gun's 7-bone skeleton
+      and ONE clip named 'reload':
+        assets/guns/New/AK47_Reload.glb
+      The game loads it with its own (r127) GLTFLoader, pulls animations[0], and drives
+      the separately-loaded SK_AK47 mesh BY BONE NAME (same skeleton) — exactly how the
+      mannequin clips drive the player rig. Only the 'Magazine' bone tracks are used at
+      runtime (PlayerBody drops the whole-gun 'Root' motion so the gun stays socketed in
+      the hand). The clip stays in native FBX/UE space; the magazine tracks are bone-LOCAL
+      (Magazine relative to Grip), so they need NO orientation/scale fix-up. Run via
+      tools/convert_ak47_reload.mjs (headless Edge).
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <script type="module">
+      import * as THREE from 'three';
+      import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+      import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+
+      const status = { steps: [] };
+      const log = (m) => { status.steps.push(m); document.title = m; };
+
+      try {
+        const loader = new FBXLoader();
+        const base = '../assets/guns/New/';
+
+        // The reload-anim FBX already ships the gun's full 7-bone skeleton (Root -> Grip
+        // -> {Door,Trigger,Magazine,Barrel,Bolt}), so we load just it — no separate mesh
+        // needed. We only need the CLIP; it drives the game's own SK_AK47 rig by name.
+        log('loading anim');
+        const fbx = await loader.loadAsync(base + 'A_SK_AK47_Rifle_Reload_.fbx');
+        const clip = fbx.animations[0];
+        clip.name = 'reload';   // rename "A_Weapom_Rifle_Reload_" -> reload
+
+        // Export only the bone hierarchy (NOT geometry) to keep the GLB tiny. Find the
+        // topmost bone (its parent is not a bone) and export that subtree; the clip's
+        // tracks all target bones in it, so the animation exports intact.
+        let topBone = null;
+        fbx.traverse((o) => { if (o.isBone && !topBone && !(o.parent && o.parent.isBone)) topBone = o; });
+        const exportRoot = topBone || fbx;
+        exportRoot.animations = [clip];
+
+        log('exporting glb');
+        const exporter = new GLTFExporter();
+        const glb = await new Promise((resolve, reject) => {
+          exporter.parse(exportRoot, resolve, reject, { binary: true, animations: [clip], includeCustomExtensions: true });
+        });
+
+        const bytes = new Uint8Array(glb);
+        let bin = '';
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        window.__GLB_B64 = btoa(bin);
+        status.bytes = bytes.length;
+        status.clips = [{ name: clip.name, dur: +clip.duration.toFixed(4), tracks: clip.tracks.map((t) => t.name) }];
+        status.ok = true;
+        log('done');
+      } catch (e) {
+        status.ok = false;
+        status.error = (e.message || String(e)) + '\n' + (e.stack || '');
+        log('error');
+      }
+      window.__STATUS = status;
+    </script>
+  </body>
+</html>

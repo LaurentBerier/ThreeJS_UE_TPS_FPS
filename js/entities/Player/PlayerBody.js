@@ -52,7 +52,7 @@ function makeClipSeamlessLoop(clip){
 // while still moving. The two layers drive disjoint bones, so they compose on one mixer. An additive
 // spine lean (UpdateAimPose) points the gun at the look altitude while aiming.
 export default class PlayerBody extends Component{
-    constructor(model, clips, scene, camera, textures = null, weapon = null, preOriented = false){
+    constructor(model, clips, scene, camera, textures = null, weapon = null, preOriented = false, magReloadClip = null){
         super();
         this.name = 'PlayerBody';
         this.model = model;            // GLB scene (SkeletonUtils.clone)
@@ -62,6 +62,11 @@ export default class PlayerBody extends Component{
         this.textures = textures;      // { bodyColor, bodyNormal, logoColor, logoNormal } (legacy only)
         this.weapon = weapon;          // cloned SK_AK47 mesh for the right hand
         this.preOriented = preOriented;// true => Y-up, metre-scaled GLB with baked PBR
+        // In-hand AK magazine-reload clip ('Magazine' bone tracks only — the whole-gun 'Root'
+        // motion was stripped at load so the gun stays socketed in the hand). Played on THIS
+        // body's mixer in lockstep with the reload one-shot (see PlayGunReload); null if unbaked.
+        this.magReloadClip = magReloadClip;
+        this.gunReloadAction = null;   // mixer action for magReloadClip, built in SetupAnimations
 
         // --- Anim graph. The legs (lower) and torso (upper) are two independent layers on one
         // mixer (disjoint bone sets — see splitClipByBones). Locomotion is a small directional
@@ -424,6 +429,20 @@ export default class PlayerBody extends Component{
             this.upperActions[name] = a;
         });
 
+        // In-hand AK magazine reload. The clip's only tracks are 'Magazine.*' (the whole-gun
+        // 'Root' motion was stripped at load), and the socketed gun is a descendant of this rig
+        // (hand_r -> weaponPivot -> SK_AK47 -> Root -> Grip -> Magazine), so it binds by bone
+        // name on THIS body's mixer — which keeps the mag drop frame-locked to the character
+        // reload one-shot (same mixer/clock; both clips are 2.2333s). LoopOnce + clamp leaves the
+        // mag reseated when done; PlayGunReload rewinds it to frame 0 on each reload. It drives a
+        // DISJOINT bone (Magazine) from the body clips, so it composes cleanly with them.
+        if(this.magReloadClip){
+            const gun = this.mixer.clipAction(this.magReloadClip);
+            gun.setLoop(THREE.LoopOnce);
+            gun.clampWhenFinished = true;
+            this.gunReloadAction = gun;
+        }
+
         this.mixer.addEventListener('finished', this.OnOneShotFinished);
     }
 
@@ -552,7 +571,7 @@ export default class PlayerBody extends Component{
     get currentState(){ return this.lowerState; }
 
     OnCameraMode = (msg) => { this.SetCameraMode(msg.mode); }
-    OnReload = () => { this.PlayOneShot('reload'); }
+    OnReload = () => { this.PlayOneShot('reload'); this.PlayGunReload(); }
     // Don't re-arm the recently-fired window mid-roll: the roll owns the body (PlayOneShot already
     // no-ops while rolling), and a held trigger firing through the roll would otherwise keep _shootHold
     // alive so the aim-IK/aim-pose snap on at recovery instead of easing in. ResetAimPoseAccumulators
@@ -975,6 +994,16 @@ export default class PlayerBody extends Component{
         // this one-shot the upper-body primary, fading out the locomotion AND any prior
         // one-shot — so the layer is never left empty for a frame (no bind/T-pose flash).
         this.SetUpperPrimary(action, 0.1);
+    }
+
+    // Play the in-hand AK's magazine drop/reseat in lockstep with the body reload one-shot. Gated
+    // exactly like PlayOneShot('reload') — suppressed mid-roll (the roll owns the body and tucks the
+    // gun away). reset() rewinds to a seated mag so a re-reload (or auto-reload) replays from the top.
+    // Runs on the body mixer, so no separate update/teardown is needed; it clamps reseated when done.
+    PlayGunReload(){
+        if(this.rolling || !this.gunReloadAction){ return; }
+        this.gunReloadAction.reset();
+        this.gunReloadAction.play();
     }
 
     // End the looped shoot overlay (trigger released — _shootHold lapsed) and hand the torso back to

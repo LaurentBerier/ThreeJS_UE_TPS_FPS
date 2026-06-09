@@ -74,6 +74,14 @@ const ueRollSrc = 'assets/characters/ue/RollForward.glb'
 // first-person view keeps its own arms+gun viewmodel (Hands/WeaponManager).
 const ak47Tps = 'assets/guns/New/SK_AK47.FBX'
 
+// Magazine-reload clip for the in-hand third-person AK, baked offline from
+// A_SK_AK47_Rifle_Reload_.fbx into a tiny skeleton+clip GLB (FBX->GLB via
+// tools/ak47_reload_to_glb.html; r127's FBXLoader can't parse that UE 7500 export).
+// Carries ONE clip 'reload' (2.2333s, same length as the body reload) that drops/reseats
+// the gun's 'Magazine' bone; the player drives the socketed SK_AK47 by bone name, synced
+// to the body reload. See PlayerBody / the akMagReload extraction below.
+const ak47Reload = 'assets/guns/New/AK47_Reload.glb'
+
 //AK47 Model and textures
 const ak47 = 'assets/guns/ak47/ak47.glb'
 const muzzleFlash = 'assets/muzzle_flash.glb'
@@ -270,6 +278,8 @@ class FPSGameApp{
     promises.push(this.AddAsset(ueRollSrc, gltfLoader, "ueRoll"));
     //Third-person AK
     promises.push(this.AddAsset(ak47Tps, akFbxLoader, "ak47Tps"));
+    //In-hand AK magazine-reload clip (drives the SK_AK47 'Magazine' bone, synced to body reload)
+    promises.push(this.AddAsset(ak47Reload, gltfLoader, "ak47Reload"));
     //AK47
     promises.push(this.AddAsset(ak47, gltfLoader, "ak47"));
     promises.push(this.AddAsset(muzzleFlash, gltfLoader, "muzzleFlash"));
@@ -354,7 +364,23 @@ class FPSGameApp{
     });
 
     this.assets['ak47'].scene.animations = this.assets['ak47'].animations;
-    
+
+    // In-hand AK magazine reload clip. Strip the whole-gun 'Root' tracks so the gun stays
+    // SOCKETED in the hand (it follows hand_r via the body reload anim); keep the 'Magazine'
+    // tracks so only the mag drops out and reseats. The clip drives the in-hand SK_AK47 by
+    // bone name on the player body's own mixer (the gun is a descendant of the rig), so it
+    // stays frame-locked to the character reload — both run 2.2333s. Cloned before filtering
+    // so the source asset is left intact.
+    const akReloadClips = this.assets['ak47Reload'] ? this.assets['ak47Reload'].animations : [];
+    const akReloadRaw = akReloadClips.find(c => c.name === 'reload') || akReloadClips[0];
+    this.akMagReloadClip = undefined;
+    if(akReloadRaw){
+      const clip = akReloadRaw.clone();
+      clip.tracks = clip.tracks.filter(t => !t.name.startsWith('Root.'));
+      clip.name = 'gun_reload';
+      this.akMagReloadClip = clip;
+    }
+
     //Set ammo box textures and other props
     this.assets['ammobox'].scale.set(0.01, 0.01, 0.01);
     this.assets['ammobox'].traverse(child =>{
@@ -404,7 +430,7 @@ class FPSGameApp{
     playerEntity.SetName("Player");
     playerEntity.AddComponent(new PlayerPhysics(this.physicsWorld, Ammo));
     playerEntity.AddComponent(new PlayerControls(this.camera, this.scene));
-    playerEntity.AddComponent(new PlayerBody(SkeletonUtils.clone(this.ueModel), this.ueAnims, this.scene, this.camera, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps']), true));
+    playerEntity.AddComponent(new PlayerBody(SkeletonUtils.clone(this.ueModel), this.ueAnims, this.scene, this.camera, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps']), true, this.akMagReloadClip));
     playerEntity.AddComponent(new Hands(this.camera, this.assets['ak47'].scene));
     playerEntity.AddComponent(new WeaponManager(this.camera, this.physicsWorld, this.assets['muzzleFlash'], this.assets['ak47Shot'], this.listener ));
     playerEntity.AddComponent(new PlayerHealth());

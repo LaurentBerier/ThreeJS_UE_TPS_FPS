@@ -4,16 +4,17 @@
     <meta charset="UTF-8" />
     <title>UE FBX -&gt; GLB converter</title>
     <!--
-      Build-time converter (NOT part of the game). Loads the UE Mannequin mesh +
-      the four A_Rifle animation FBX files with a MODERN three.js FBXLoader
-      (r160, which parses these UE 2020 anim exports that r127 cannot), merges the
-      four clips onto the mesh, and exports ONE binary GLB:
-        assets/characters/ue/SK_Mannequin.glb  (mesh + skeleton + idle/walk/reload/shoot)
-      The game loads that GLB with its own (r127) GLTFLoader — no dual-instance of
-      three in the runtime. Run via tools/convert_ue.mjs (headless Edge).
-      The GLB is kept in native UE space (Z-up, centimetres); PlayerBody applies
-      the Y-up + metre transform at runtime, and UeExporter reuses that same GLB
-      for the UE round-trip.
+      Build-time converter (NOT part of the game). Loads the UE Mannequin FBX (for its
+      skeleton) + the A_Rifle animation FBX files with a MODERN three.js FBXLoader
+      (r160, which parses these UE 2020 anim exports that r127 cannot), names the clips,
+      and exports ONE small binary GLB carrying the SKELETON + clips (NO mesh geometry):
+        assets/characters/ue/SK_Mannequin.glb  (skeleton + idle/walk/jogs/jump/reload/shoot)
+      The runtime loads it with its own (r127) GLTFLoader and uses ONLY its `.animations`
+      — the rendered body comes from the pre-oriented SK_Mannequin_new.glb, and the clips
+      drive that rig by bone name. So this GLB needs no mesh; exporting skeleton-only keeps
+      it tiny and avoids the TGA-material export error. Run via tools/convert_ue.mjs.
+      The clips stay in native UE space (Z-up, cm); adaptClipToPreOriented does the
+      Y-up/metre fix at runtime (PlayerBody/soldier), exactly like every other clip.
     -->
     <script type="importmap">
       {
@@ -37,26 +38,14 @@
         const loader = new FBXLoader();
         const base = '../assets/characters/ue/';
 
+        // Load the mannequin FBX only to harvest its SKELETON — the clips drive the
+        // game's own rig (the pre-oriented SK_Mannequin_new.glb) by bone name, so the
+        // runtime never uses this GLB's mesh, only its `.animations`. We therefore
+        // export just the bone hierarchy (see below), which keeps the GLB tiny and
+        // sidesteps the TGA-material export error entirely (no mesh = no materials).
         log('loading mesh');
         const mesh = await loader.loadAsync(base + 'SK_Mannequin.FBX');
         mesh.name = 'SK_Mannequin';
-
-        // The UE .fbm textures are TGA and don't survive FBXLoader->GLTFExporter
-        // (the exporter throws "No valid image data"). Replace materials with a
-        // neutral PBR material so the GLB exports cleanly; the game can reapply a
-        // body texture at runtime. Skinning is unaffected by the material swap.
-        mesh.traverse((c) => {
-          if (c.isSkinnedMesh || c.isMesh) {
-            const swap = (m) =>
-              new THREE.MeshStandardMaterial({
-                color: 0x9099a4,
-                metalness: 0.1,
-                roughness: 0.75,
-                skinning: true,
-              });
-            c.material = Array.isArray(c.material) ? c.material.map(swap) : swap(c.material);
-          }
-        });
 
         const animFiles = {
           idle: 'A_Rifle_Idle_.FBX',
@@ -66,7 +55,7 @@
           jog_right: 'A_Rifle_Jog_Right.fbx',
           jump_start: 'A_Rifle_Jump_Start.fbx',     // one-shot launch -> transitions to jump_fall
           jump_fall: 'A_Rifle_Jump_Fall_Loop.fbx',  // looping airborne / fall
-          reload: 'A_Rifle_Reload.FBX',
+          reload: 'A_Rifle_Reload_new.fbx',   // updated reload (paired with the AK mag-drop clip; same 2.2333s length)
           shoot: 'A_Rifle_Fire.FBX',
         };
 
@@ -79,14 +68,21 @@
           clips.push(clip);
         }
 
-        // Attach clips so the exporter writes them (also pass via options).
-        mesh.animations = clips;
+        // Export only the bone hierarchy (NOT the skinned-mesh geometry) so the GLB
+        // stays small (~hundreds of KB, clips-only) — the runtime pulls just the clips
+        // and drives the pre-oriented rig by bone name. Find the topmost bone (its
+        // parent is not a bone) and export that subtree; every clip's tracks target a
+        // bone in it, so the animations export intact. (Mirrors roll_to_glb.html.)
+        let topBone = null;
+        mesh.traverse((o) => { if (o.isBone && !topBone && !(o.parent && o.parent.isBone)) topBone = o; });
+        const exportRoot = topBone || mesh;
+        exportRoot.animations = clips;
 
         log('exporting glb');
         const exporter = new GLTFExporter();
         const glb = await new Promise((resolve, reject) => {
           exporter.parse(
-            mesh,
+            exportRoot,
             (result) => resolve(result),
             (err) => reject(err),
             { binary: true, animations: clips, includeCustomExtensions: true }
