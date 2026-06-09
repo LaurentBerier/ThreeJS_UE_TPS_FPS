@@ -5,6 +5,29 @@ import WeaponAimIK from './WeaponAimIK.js'
 import HurtFlinch from '../Common/HurtFlinch.js'
 
 
+// Force a clip to loop with ZERO seam: overwrite each track's LAST keyframe with a copy of its
+// FIRST. The exported UE 'shoot' clip ends ~2.6° off where it began (the recoil doesn't fully settle
+// back), so LoopRepeat jumps that small gap every wrap. On its own that gap is barely visible — but
+// the weapon-aim IK and the additive spine lean re-solve from the freshly-animated pose every frame,
+// and when the gun is aimed off to the side those corrections are LARGE, so they amplify the tiny
+// seam into a ~30-40° one-frame snap of the arms/spine at the loop point (measured via
+// tools/diag_shootpop.mjs: zero spikes firing straight, 40° spikes firing to the side, all exactly at
+// the clip wrap). Zeroing the seam removes the discontinuity the corrections were amplifying. The gap
+// is tiny, so snapping the last key to the first is visually negligible (the body still plays the full
+// recoil, it just returns cleanly to the start each cycle). Mutates the clip in place; safe because
+// splitClipByBones hands us freshly-cloned tracks.
+function makeClipSeamlessLoop(clip){
+    for(const track of clip.tracks){
+        const v = track.values;
+        const stride = track.getValueSize();           // 4 for quaternions, 3 for vectors
+        if(!v || v.length < stride * 2){ continue; }
+        const last = v.length - stride;
+        for(let i = 0; i < stride; i++){ v[last + i] = v[i]; }   // last keyframe := first keyframe
+    }
+    return clip;
+}
+
+
 // Full-body player avatar: the Unreal Engine Mannequin (SK_Mannequin) driven by UE rifle
 // animations and holding the AK in its right hand. The avatar lives in the world at the player's
 // physics capsule and faces the look direction. In first-person it is rendered only on a dedicated
@@ -390,6 +413,7 @@ export default class PlayerBody extends Component{
             const clip = this.clips[name];
             if(!clip){ return; }
             const { upper } = splitClipByBones(clip, upperBones);
+            if(name === 'shoot'){ makeClipSeamlessLoop(upper); }   // kill the ~2.6° loop seam (see helper)
             const a = this.mixer.clipAction(upper);
             if(name === 'shoot'){
                 a.setLoop(THREE.LoopRepeat);

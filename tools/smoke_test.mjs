@@ -121,12 +121,13 @@ try {
   log('soldier run-and-gun:', JSON.stringify(rng));
 
   log('killing a soldier + the beast (ragdoll)…');
-  await page.evaluate(() => {
+  const killed = await page.evaluate(() => {
     const em = window._APP.entityManager;
     const soldier = em.entities.find((e) => /UeSoldier/.test(e.Name));
     const beast = em.entities.find((e) => /Mutant/.test(e.Name));
     if (soldier) soldier.Broadcast({ topic: 'hit', amount: 999 });
     if (beast) beast.Broadcast({ topic: 'hit', amount: 999 });
+    return { soldierName: soldier ? soldier.Name : null };   // track the SAME corpse across despawn
   });
   // Capture each ragdoll's bounding-box height right after death, then again after simulating, to
   // confirm it actually MOVES/settles (no NaN, no freeze-on-spawn).
@@ -190,28 +191,35 @@ try {
   // Ragdoll should have come to REST and entered its sleep state (perf gate), with finite positions.
   // Also MEASURE the residual per-frame centroid motion of the (settled) corpse so the sleep
   // threshold can be set correctly above the verlet's inherent jitter.
-  const centroidOf = () => page.evaluate(() => {
+  const centroidOf = () => page.evaluate((name) => {
     const em = window._APP.entityManager;
-    const sc = em.entities.find((e) => /UeSoldier/.test(e.Name)).GetComponent('UeSoldierController');
-    const r = sc.ragdoll; if (!r || r._asleep || !r.nodes) return null;
+    const e = em.entities.find((x) => x.Name === name);
+    const sc = e && e.GetComponent('UeSoldierController');
+    const r = sc && sc.ragdoll; if (!r || r._asleep || !r.nodes) return null;   // null once asleep/despawned
     let cx = 0, cy = 0, cz = 0; for (const n of r.nodes) { cx += n.p.x; cy += n.p.y; cz += n.p.z; }
     const k = 1 / r.nodes.length; return [cx * k, cy * k, cz * k];
-  });
+  }, killed.soldierName);
   const c1 = await centroidOf();
   await step(1);
   const c2 = await centroidOf();
   let residualSq = null;
   if (c1 && c2) { const dx = c2[0]-c1[0], dy = c2[1]-c1[1], dz = c2[2]-c1[2]; residualSq = dx*dx+dy*dy+dz*dz; }
-  const settle = await page.evaluate(() => {
+  const settle = await page.evaluate((name) => {
     const em = window._APP.entityManager;
-    const sc = em.entities.find((e) => /UeSoldier/.test(e.Name)).GetComponent('UeSoldierController');
-    const n0 = sc.ragdoll && sc.ragdoll.nodes && sc.ragdoll.nodes[0];
-    return { asleep: !!(sc.ragdoll && sc.ragdoll._asleep),
-             stillTime: sc.ragdoll ? +(sc.ragdoll._stillTime || 0).toFixed(3) : null,
+    const e = em.entities.find((x) => x.Name === name);
+    // By this point (~6.8 s post-death) the corpse SHOULD have despawned: the ragdoll is nulled at
+    // corpseLingerTime (~4.2 s) and the whole entity removed after the sink (~4.9 s). A missing entity —
+    // or a present one whose ragdoll has been nulled (sinking) — is the despawn perf-gate working, not an
+    // instability. Only an entity still holding a LIVE ragdoll with non-finite nodes is a real failure.
+    const sc = e && e.GetComponent('UeSoldierController');
+    const r = sc && sc.ragdoll;
+    if (!r || !r.nodes) return { despawned: true, asleep: true, finite: true, stillTime: null, y: null };
+    const n0 = r.nodes[0];
+    return { despawned: false, asleep: !!r._asleep, stillTime: +(r._stillTime || 0).toFixed(3),
              finite: n0 ? (Number.isFinite(n0.p.x) && Number.isFinite(n0.p.y) && Number.isFinite(n0.p.z)) : false,
              y: n0 ? +n0.p.y.toFixed(3) : null };
-  });
-  log('ragdoll settle:', JSON.stringify(settle), 'residual-centroid-motion²:', residualSq === null ? '(asleep)' : residualSq.toExponential(2));
+  }, killed.soldierName);
+  log('ragdoll settle:', JSON.stringify(settle), 'residual-centroid-motion²:', residualSq === null ? '(asleep/despawned)' : residualSq.toExponential(2));
 
   // ---- verdicts ----
   let ok = true;
@@ -222,7 +230,7 @@ try {
   if (!ragInfo.beastRagdoll) fail('beast ragdoll not built');
   if (!ragInfo.soldierFinite) fail('ragdoll produced non-finite (NaN) positions');
   if (!settle.finite) fail('ragdoll non-finite after long sim (wall/floor collision instability)');
-  if (!settle.asleep) log('WARN: ragdoll not asleep yet (perf gate best-effort; depends where the corpse landed)');
+  if (!settle.despawned && !settle.asleep) log('WARN: ragdoll neither despawned nor asleep yet (perf gate best-effort; depends where the corpse landed)');
   if (!rng.ok || !rng.hasDirLegs) fail('soldier missing directional locomotion layers (jogF/B/L/R)');
   if (!rng.ok || !rng.hasShootUpper) fail('soldier missing shoot upper-body overlay');
   if (!rng.firedWhileMoving) fail('soldier cannot fire while moving (run-and-gun broken)');

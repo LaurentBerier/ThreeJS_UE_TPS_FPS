@@ -171,9 +171,9 @@ export default class Ragdoll{
         // A verlet corpse on the floor never perfectly stops — the soft braces + limits leave a low-
         // amplitude residual that reads as the body "shaking" after it lands. Rather than rely on the
         // slow centroid-sleep above, we count distinct GROUND impacts and HARD-FREEZE the sim shortly
-        // after: on the 1st floor hit we absorb some energy (a subtle thud, less splay/bounce) and arm a
-        // fallback freeze; on the 2nd hit (it bounced and came back down) we freeze 0.5 s later. Freezing
-        // leaves the bones exactly where they settled — no jitter. Applies to EVERY ragdoll (beast + human).
+        // after: on the 1st floor hit we KICK the body back up for a visible rebound (see landingBounce)
+        // and arm a fallback freeze; on the 2nd hit (it bounced and came back down) we freeze 0.5 s later.
+        // Freezing leaves the bones exactly where they settled — no jitter. Applies to EVERY ragdoll.
         this._frozen = false;               // true => sim stopped, bones held at their last pose
         this._groundHits = 0;               // distinct ground impacts counted
         this._lastGroundHitAge = -1;        // _age of the last counted impact (debounce)
@@ -183,7 +183,12 @@ export default class Ragdoll{
         this._freezeTimer = -1;             // s until the sim freezes (-1 = unarmed)
         this.firstHitFreeze = 1.3;          // fallback: freeze this long after the 1st hit if no clean 2nd hit
         this.secondHitFreeze = 0.5;         // freeze this long after the 2nd hit (the requested quick kill)
-        this.landingAbsorb = 0.6;           // 1st-hit energy keep (0.6 => absorb 40%): a thud, less bounce/splay
+        // 1st-hit upward velocity GAIN (>1). The floor contact already reflects each particle up by
+        // `restitution`; on the first counted ground impact we further multiply that REBOUND (upward)
+        // velocity so the corpse springs back off the floor with a clearly visible bounce before it
+        // comes down again and settles. Only upward motion is scaled, so parts still falling aren't
+        // driven harder into the ground. (The user wanted a visible bounce when the body lands.)
+        this.landingBounce = 2.2;
 
         skinnedMesh.skeleton.bones.forEach(b => b.updateWorldMatrix(true, false));
 
@@ -580,17 +585,18 @@ export default class Ragdoll{
         }
     }
 
-    // Count a distinct ground impact (debounced) and arm the freeze. 1st hit: absorb a chunk of every
-    // particle's velocity (a subtle thud, much less bounce/splay — the main source of the landing
-    // "shake") and arm a fallback freeze in case the body never bounces for a clean 2nd hit. 2nd hit:
-    // freeze the sim 0.5 s later, killing any residual jitter. Applies to every ragdoll.
+    // Count a distinct ground impact (debounced) and arm the freeze. 1st hit: KICK the body back up —
+    // amplify each particle's upward (rebound) velocity by landingBounce so the corpse springs off the
+    // floor with a visible bounce — and arm a fallback freeze in case it never bounces for a clean 2nd
+    // hit. 2nd hit: freeze the sim 0.5 s later, killing any residual jitter. Applies to every ragdoll.
     _registerGroundHit(){
         if(this._lastGroundHitAge >= 0 && (this._age - this._lastGroundHitAge) < this.groundHitDebounce){ return; }
         this._lastGroundHitAge = this._age;
         this._groundHits++;
         if(this._groundHits === 1){
             for(const node of this.nodes){
-                _v.copy(node.p).sub(node.prev).multiplyScalar(this.landingAbsorb);
+                _v.copy(node.p).sub(node.prev);                 // post-reflect velocity (contacts now point UP)
+                if(_v.y > 0){ _v.y *= this.landingBounce; }      // amplify only the rebound => springs up
                 node.prev.copy(node.p).sub(_v);
             }
             this._freezeTimer = this.firstHitFreeze;
