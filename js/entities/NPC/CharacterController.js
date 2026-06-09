@@ -42,7 +42,7 @@ export default class CharacterController extends Component{
         // Distance at which a waypoint counts as "reached". Generous (and bigger now the agent is
         // 2x) because root motion can't land precisely on a point; accepting waypoints early lets
         // it round corners instead of orbiting them and arcing into walls.
-        this.waypointRadius = 1.0;
+        this.waypointRadius = 0.85;
 
         // ---- AAA path following (the real cornering fix) ----
         // 1) Agent-radius clearance: every fresh path is pushed off the wall corners it would
@@ -58,8 +58,11 @@ export default class CharacterController extends Component{
         // is routed down — see Navmesh.SmoothPath). Too small and the wide body still clips the
         // corner it's routed flush against; this keeps it walking down the middle.
         this.agentClearance = 1.0;     // how far paths hold off wall corners (m) — narrows the route
-        this.lookAhead = 2.0;          // steer toward this far along the path (m) — smooths corners
-        this.turnRate = 11.0;          // body slerp rate toward the steer heading (rad/s-ish)
+        // lookAhead trimmed (was 2.0) so the beast HUGS the path more tightly and corner-cuts less —
+        // "follow the player path closer" — and turnRate raised so its heading snaps onto the fresh
+        // path faster (it re-plans to the moving player ~8x/s, see ChaseState.updateFrequency).
+        this.lookAhead = 1.6;          // steer toward this far along the path (m) — smooths corners
+        this.turnRate = 13.0;          // body slerp rate toward the steer heading (rad/s-ish)
         this.wallSlideBias = 0.8;      // 0..1: how hard a blocked step bends the heading to the wall tangent
         this.blockedThreshold = 0.65;  // a step shorter than this fraction of intended == "wall contact"
         this.isBlocked = false;        // set each frame by ApplyRootMotion, read by MoveAlongPath
@@ -81,25 +84,26 @@ export default class CharacterController extends Component{
         this.progressRadius = 0.5;                // must travel this far from the anchor to count as progress
         this.progressRadiusSq = this.progressRadius * this.progressRadius;
         this.noProgressTime = 0.0;                // seconds since we last genuinely advanced
-        this.retryInterval = 1.0;                 // attempt a repath each ~1 s of no progress...
+        // Faster stuck recovery (was 1.0 / 2.5 / 2.0): the beast "got stuck very often", so it now
+        // retries the path sooner and abandons a wedged waypoint for a detour in ~1.5 s instead of
+        // grinding a wall for 2.5 s, then commits to the detour a shorter beat so it can re-home onto
+        // the player path quickly once it's clear.
+        this.retryInterval = 0.6;                 // attempt a repath each ~0.6 s of no progress...
         this.maxRetries = 2;                      // ...for at most this many retries (1-2) before giving up
         this.stuckRetries = 0;                    // repaths already tried at the current wedge
-        this.abandonTime = 2.5;                   // total no-progress budget (≈2-3 s) before abandoning the waypoint
+        this.abandonTime = 1.5;                   // total no-progress budget before abandoning the waypoint
         this.detourTimer = 0.0;                   // time still committed to a detour (suppresses target repaths)
-        this.detourDuration = 2.0;                // how long to commit to a detour so it isn't instantly overwritten
+        this.detourDuration = 1.2;                // how long to commit to a detour so it isn't instantly overwritten
         this.detourAttempts = 0;                  // consecutive detours that failed to free us
         this.maxDetours = 3;                      // after this many failed detours => last-resort teleport
 
         // Death ragdoll (built on death; drives the skinned mesh in place of the mixer).
         this.dead = false;
         this.ragdoll = null;
-        // Corpse despawn: the ragdoll settles and lies for corpseLingerTime, then SINKS out of view over
-        // corpseSinkTime and the whole entity is removed (mesh + hit capsules + attack sensor). Total
-        // death->gone ≈ 4.9 s (within the requested 4-5 s). Sinking is material-agnostic and unobtrusive
-        // on a body that's been still for seconds.
+        // Corpse despawn: the ragdoll settles and lies for corpseLingerTime, then the whole entity is
+        // DESTROYED (mesh + hit capsules + attack sensor) — it simply disappears. No sink under the
+        // floor (that read as the body melting through the ground); we just remove it once it's still.
         this.corpseLingerTime = 4.2;
-        this.corpseSinkTime = 0.7;
-        this.corpseSinkDepth = 1.8;     // metres sunk before removal (the beast is large)
         this._deathElapsed = 0.0;
         this._despawned = false;
 
@@ -714,11 +718,11 @@ export default class CharacterController extends Component{
         this.rootBone.position.x = this.rootBone.refPos.x;
     }
 
-    // Dead: run the corpse lifecycle (ragdoll settle -> sink -> entity removal). LINGER drives the
-    // verlet ragdoll; SINK freezes it (the sim re-pins bones to world particles each frame, which would
-    // fight a downward translation) and lowers the model out of view; REMOVE hands the entity to the
-    // manager for disposal (mesh + hit capsules + attack sensor). Guarded so a ragdoll error can never
-    // kill the render loop; a corpse whose ragdoll failed to build still despawns on the timer.
+    // Dead: run the corpse lifecycle (ragdoll settle -> entity removal). LINGER drives the verlet
+    // ragdoll as it crumples and settles; REMOVE then hands the entity to the manager for disposal
+    // (mesh + hit capsules + attack sensor) so it simply DISAPPEARS — no sink through the floor.
+    // Guarded so a ragdoll error can never kill the render loop; a corpse whose ragdoll failed to
+    // build still despawns on the timer.
     UpdateDeath(t){
         this._deathElapsed += t;
         if(this._deathElapsed < this.corpseLingerTime){
@@ -728,12 +732,8 @@ export default class CharacterController extends Component{
             }
             return;
         }
+        // Settled: destroy the corpse outright (it just vanishes).
         this.ragdoll = null;
-        const over = this._deathElapsed - this.corpseLingerTime;
-        if(over < this.corpseSinkTime){
-            this.model.position.y -= this.corpseSinkDepth * (t / this.corpseSinkTime);
-            return;
-        }
         if(!this._despawned){
             this._despawned = true;
             this.parent.parent.Remove(this.parent);

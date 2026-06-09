@@ -188,7 +188,7 @@ export default class Ragdoll{
         // velocity so the corpse springs back off the floor with a clearly visible bounce before it
         // comes down again and settles. Only upward motion is scaled, so parts still falling aren't
         // driven harder into the ground. (The user wanted a visible bounce when the body lands.)
-        this.landingBounce = 2.2;
+        this.landingBounce = 20.2;
 
         skinnedMesh.skeleton.bones.forEach(b => b.updateWorldMatrix(true, false));
 

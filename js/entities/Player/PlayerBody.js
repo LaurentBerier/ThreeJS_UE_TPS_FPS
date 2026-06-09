@@ -1,7 +1,8 @@
 import * as THREE from 'three'
 import Component from '../../Component.js'
-import { buildUeMannequin, UE_BODY_LAYER, collectUpperBoneNames, splitClipByBones, WEAPON_GRIP_DEFAULT, WEAPON_GRIP_FPS_DEFAULT } from '../Common/UeMannequin.js'
+import { buildUeMannequin, UE_BODY_LAYER, collectUpperBoneNames, splitClipByBones, WEAPON_GRIP_DEFAULT, WEAPON_GRIP_FPS_DEFAULT, WEAPON_GRIP_FPS_AIM_DEFAULT } from '../Common/UeMannequin.js'
 import WeaponAimIK from './WeaponAimIK.js'
+import FootIK from './FootIK.js'
 import HurtFlinch from '../Common/HurtFlinch.js'
 
 
@@ -179,6 +180,45 @@ export default class PlayerBody extends Component{
         this.fpsAimYawBias = THREE.MathUtils.degToRad(13); // body-yaw bias that centres the gun while ADS
         this.fpsAimBiasLerp = 10.0;                        // ease rate for the centring bias (1/s)
         this._fpsAimBias = 0;                              // eased current bias (rad)
+
+        // --- FPS weapon look-pitch. In first-person the body only tracks the look YAW, so the held
+        // gun stays flat when you look up/down and slides off the screen. To keep it framed, pitch the
+        // weapon up/down with the look altitude ALWAYS (even when NOT aiming). It rotates BOTH upper
+        // arms (which carry the gun + the support hand) about the body-right axis — NOT the spine —
+        // so the head bone (and the FPS eye that rides it) stays put while the weapon tilts. Eased +
+        // clamped; the IK still re-aims the barrel exactly when you ADS. Tune the gain/clamp in-game.
+        this.fpsArmBones = [];                             // [upperarm_r, upperarm_l], filled in Initialize
+        this.fpsLookPitchGain = 0.8;                       // fraction of the look pitch fed to the arms
+        this.fpsLookPitchMax = THREE.MathUtils.degToRad(60); // clamp on the weapon tilt
+        this._fpsPitchValue = 0;                           // eased current arm pitch (rad)
+
+        // --- Per-camera-mode body proximity-dither thresholds (the head-dither shader's whole-body
+        // term). TPS dissolves the body when collision jams the lens against it; FPS pulls the
+        // thresholds right in so the arms + hands holding the weapon stay SOLID (you can see your
+        // hands on the gun) — only something basically at the eye dithers, and the head is near-plane
+        // culled anyway. Applied to the shared uniform holders in ApplyProxDitherForMode.
+        this.tpsHeadProxNear = 0.45;
+        this.tpsHeadProxFar  = 0.90;
+        this.fpsHeadProxNear = 0.08;                       // keep the FPS arms/hands on the gun visible
+        this.fpsHeadProxFar  = 0.22;
+
+        // Active in-hand grip seat: 'TPS' | 'FPS' (hip) | 'FPS_AIM' (down-the-sights). Re-seated when
+        // the FPS aim state flips so the weapon comes up/centres for ADS (see UpdateActiveGrip).
+        this._activeGripMode = 'TPS';
+
+        // --- Crouch (procedural, NO crouch clip). PlayerControls owns the input + the capsule resize
+        // (PlayerPhysics) and exposes `crouching`. Here we lower the VISUAL body — the whole modelRoot in
+        // WORLD metres (so the units are unambiguous, sidestepping the pelvis-local-scale question) — and
+        // FootIK then plants the feet at the ground, which is what BENDS THE KNEES into the crouch. A
+        // small additive spine forward-lean adds character. The head bone rides the lowered body, so the
+        // FPS eye lowers automatically; the TPS camera lowers via PlayerControls.crouchCamDrop.
+        this._crouchEased = 0;                                  // eased 0..1 crouch blend
+        this.crouchModelDrop = 0.32;                           // how far the body lowers when crouched (world m)
+        this.crouchLerp = 8;                                   // ease rate (1/s) for crouch in/out
+        this.crouchSpineLean = THREE.MathUtils.degToRad(10);   // subtle forward torso lean while crouched
+        this._crouchLeanR = new THREE.Quaternion();            // scratch: crouch-lean world rotation
+        this._crouchLeanPW = new THREE.Quaternion();           // scratch: parent world quat
+        this._crouchLeanDelta = new THREE.Quaternion();        // scratch: bone-local delta
 
         // --- Head dither-dissolve (TPS only). When the camera comes close enough
         // that the head fills a big chunk of the screen — aiming from cover, backed
@@ -467,6 +507,12 @@ export default class PlayerBody extends Component{
             if(spineBones[n]){ this.aimBones.push({ bone: spineBones[n], weight: spineWeights[n] }); }
         });
 
+        // Upper-arm bones for the FPS weapon look-pitch (carry the gun + support hand without moving
+        // the head/eye). Each pitches by the FULL look angle so the gun's orientation tracks the look.
+        const armBones = { upperarm_r: null, upperarm_l: null };
+        this.model.traverse(o => { if(o.isBone && (o.name in armBones) && !armBones[o.name]){ armBones[o.name] = o; } });
+        ['upperarm_r', 'upperarm_l'].forEach(n => { if(armBones[n]){ this.fpsArmBones.push(armBones[n]); } });
+
         // Pre-seed the head-aim gaze axis from the rig's REST pose (the bones are still at bind here —
         // no mixer update has run). _headFwdLocal is the head-bone-LOCAL axis that points along the
         // character's forward (modelRoot-local +Z) at rest; carrying it by the head's live world quat
@@ -500,6 +546,13 @@ export default class PlayerBody extends Component{
             this.weaponAimIK = new WeaponAimIK(this.model, this.weaponPivot);
         }
 
+        // Procedural foot/terrain IK (legs). Raycasts the level under each foot and plants the ankles +
+        // tilts the feet to the slope; also what bends the knees into the crouch (the crouch lowers the
+        // body, FootIK keeps the feet on the ground). Needs the Ammo world to raycast against; the
+        // PlayerPhysics component holds it (set in its constructor, so it's available here).
+        const physics = this.GetComponent('PlayerPhysics');
+        this.footIK = new FootIK(this.model, this.modelRoot, physics ? physics.world : null);
+
         // --- Per-camera-mode in-hand grip. The AK is the SAME mesh in both modes (FPS rides the head
         // bone, so first-person shows THIS body's gun), but the framing differs, so each mode gets its
         // own seat: ApplyWeaponGrip swaps the pivot transform on a mode switch and the placement tool
@@ -513,6 +566,11 @@ export default class PlayerBody extends Component{
             FPS: {
                 position: WEAPON_GRIP_FPS_DEFAULT.position.clone(),
                 quaternion: new THREE.Quaternion().setFromEuler(WEAPON_GRIP_FPS_DEFAULT.rotationEuler),
+            },
+            // Down-the-sights FPS seat (the gun comes up/centres while ADS); see ActiveGripMode.
+            FPS_AIM: {
+                position: WEAPON_GRIP_FPS_AIM_DEFAULT.position.clone(),
+                quaternion: new THREE.Quaternion().setFromEuler(WEAPON_GRIP_FPS_AIM_DEFAULT.rotationEuler),
             },
         };
 
@@ -649,6 +707,7 @@ export default class PlayerBody extends Component{
     ResetAimPoseAccumulators(){
         this._aimPitchWeight = 0;
         this._aimPitchValue = 0;
+        this._fpsPitchValue = 0;        // FPS weapon look-pitch — ease back in cleanly after a roll
         this._aimYawValue = 0;
         this._runAimYawValue = 0;
         this._hipAimYawValue = 0;
@@ -661,6 +720,10 @@ export default class PlayerBody extends Component{
         // both makes the IK ease back in from nothing if you're still firing out of the roll.
         this._shootHold = 0;
         if(this.weaponAimIK){ this.weaponAimIK.Reset(); }
+        // Crouch + foot IK ease back in from zero after a roll (the roll owns the whole body and skips
+        // them, so without this they'd thaw at their frozen pre-roll values and pop the pelvis/legs).
+        this._crouchEased = 0;
+        if(this.footIK){ this.footIK.Reset(); }
     }
 
     EndRoll(){
@@ -693,8 +756,43 @@ export default class PlayerBody extends Component{
         for(const mesh of this.meshes){
             mesh.layers.set(0);
         }
-        // Seat the in-hand gun with this mode's grip (FPS vs TPS framing).
+        // Seat the in-hand gun for this mode (TPS / FPS-hip / FPS-ADS framing) and set the body
+        // proximity-dither thresholds for the mode (keep the FPS hands on the gun solid).
+        this._activeGripMode = this.ActiveGripMode();
+        this.ApplyWeaponGrip(this._activeGripMode);
+        this.ApplyProxDitherForMode(mode);
+    }
+
+    // The grip seat the current camera/aim state wants: TPS, the FPS hip grip, or the FPS down-the-
+    // sights grip while aiming in first-person. Drives both the live seat (UpdateActiveGrip) and which
+    // grip the placement tool edits (it reads this), so HOLDING right click in FPS edits the AIM grip.
+    ActiveGripMode(){
+        if(this.cameraMode !== 'FPS'){ return 'TPS'; }
+        const aiming = !!(this.playerControls && this.playerControls.aiming);
+        return aiming ? 'FPS_AIM' : 'FPS';
+    }
+
+    // Re-seat the in-hand gun when the active grip mode changes (e.g. FPS hip <-> FPS ADS as you press
+    // / release aim) so the weapon comes up and centres down the sights. Cheap: only acts on a change.
+    UpdateActiveGrip(){
+        const mode = this.ActiveGripMode();
+        if(mode === this._activeGripMode){ return; }
+        this._activeGripMode = mode;
         this.ApplyWeaponGrip(mode);
+    }
+
+    // Per-camera-mode body proximity-dither thresholds (the head-dither shader's whole-body term).
+    // TPS: dissolve the body when a collision push-in jams the lens against it. FPS: pull the
+    // thresholds right in so the arms + hands holding the weapon stay SOLID and you can see your hands
+    // on the gun (the head is already culled by the near plane).
+    ApplyProxDitherForMode(mode){
+        if(mode === 'FPS'){
+            this.headProxNear.value = this.fpsHeadProxNear;
+            this.headProxFar.value  = this.fpsHeadProxFar;
+        }else{
+            this.headProxNear.value = this.tpsHeadProxNear;
+            this.headProxFar.value  = this.tpsHeadProxFar;
+        }
     }
 
     // Drop the active camera mode's grip transform onto the weapon pivot and re-sync the aim IK's
@@ -719,7 +817,9 @@ export default class PlayerBody extends Component{
             THREE.MathUtils.degToRad(rotDeg.y),
             THREE.MathUtils.degToRad(rotDeg.z),
         ));
-        if(mode === this.cameraMode){ this.ApplyWeaponGrip(mode); }
+        // Apply immediately if it's the seat currently shown (TPS / FPS hip / FPS ADS), so a nudge in
+        // the placement tool reads live — including the FPS_AIM grip while holding right click in FPS.
+        if(mode === this.ActiveGripMode()){ this.ApplyWeaponGrip(mode); }
     }
 
     // First-person eye anchor: the head bone's current world position. Returns false
@@ -1023,6 +1123,14 @@ export default class PlayerBody extends Component{
         const pc = this.playerControls;
         const speed = pc ? pc.HorizontalSpeed : 0;
         if(speed <= 0.5){ return 'idle'; }
+        // FREE-RUN (TPS, not aiming): the body turns to face its MOVEMENT direction (UpdateBodyYaw),
+        // so it's always moving straight forward relative to itself — play the forward jog. This is
+        // what kills the diagonal foot-slide: a single directional jog can't match a 45° travel, so
+        // running diagonally on the forward/strafe clips skated the feet. Orienting to the heading +
+        // running forward makes the stride match the actual travel in every direction.
+        if(this.cameraMode === 'TPS' && !this.IsAiming()){ return 'jogF'; }
+        // AIMING (or FPS): the body faces the camera/look and STRAFES, so pick the directional jog
+        // from the local velocity (W+D reads as a forward jog, A/D as a strafe, S as a backpedal).
         const vx = pc.speed.x, vz = pc.speed.z;
         if(Math.abs(vz) >= Math.abs(vx)){ return vz < 0 ? 'jogF' : 'jogB'; }
         return vx > 0 ? 'jogR' : 'jogL';
@@ -1108,11 +1216,19 @@ export default class PlayerBody extends Component{
             this.rootBone.scale.copy(this.rootRef.scale);
         }
 
+        // Ease the crouch blend toward the controls' effective crouch (grounded, not rolling). The body
+        // lowers by crouchModelDrop·_crouchEased in WORLD metres below; FootIK then re-plants the feet
+        // at the ground, bending the knees into the crouch (no crouch clip). Eased so it glides in/out.
+        const crouchWant = (this.playerControls && this.playerControls.crouching && !this.rolling) ? 1 : 0;
+        this._crouchEased += (crouchWant - this._crouchEased) * (1 - Math.exp(-this.crouchLerp * t));
+
         // Follow the capsule; the facing is eased (not snapped) so panning the camera
-        // doesn't instantly whip the body — see UpdateBodyYaw.
+        // doesn't instantly whip the body — see UpdateBodyYaw. The crouch drop lowers the whole avatar.
         const p = this.parent.Position;
-        this.modelRoot.position.set(p.x, p.y + this.feetOffset, p.z);
+        this.modelRoot.position.set(p.x, p.y + this.feetOffset - this.crouchModelDrop * this._crouchEased, p.z);
         this.UpdateBodyYaw(t);
+        // Re-seat the in-hand gun if the FPS aim state flipped (FPS hip <-> FPS ADS grip).
+        this.UpdateActiveGrip();
         if(this.rolling){
             // The roll owns the WHOLE body while it plays: no hip stabilization, no aim lean and no
             // locomotion graph (any of which would fight the roll). Just advance it and, when the
@@ -1124,6 +1240,9 @@ export default class PlayerBody extends Component{
             // front of the lens. Runs after the mixer/root-lock and BEFORE the spine aim lean, since the
             // lean reads the (now-stabilized) pelvis as its parent.
             this.StabilizeHips(t);
+            // Subtle crouch torso lean: a small forward spine pitch while crouched, for character. Runs
+            // before the aim lean so the two compose (additive world-space rotations on the spine chain).
+            this.ApplyCrouchLean();
             // Additive lean so the arms + gun aim at the right altitude while aiming (or hip-firing
             // close). Runs after the body yaw (it reads the facing) and before the head dither (it moves
             // the head). It edits the animated pose this frame, on top of the mixer.
@@ -1147,6 +1266,10 @@ export default class PlayerBody extends Component{
 
             this.UpdateLocomotion(t);
             this.UpdateLocoTimeScale();   // foot-sync the live directional-jog playback rate to ground speed
+            // Foot/terrain IK is the LAST pose write: it solves the legs with the FINAL hip position
+            // (after crouch + every spine/arm edit) and nothing downstream reads the legs. It refreshes
+            // world matrices itself. Runs after UpdateLocomotion so airState is current for the gating.
+            this.UpdateFootIK(t);
         }
         // Dissolve the head when the camera crowds it (TPS aim-from-cover).
         this.UpdateHeadDither(t);
@@ -1203,6 +1326,23 @@ export default class PlayerBody extends Component{
         b.quaternion.slerp(this._pelvisRefQuat, this._hipStab);
     }
 
+    // Subtle crouch torso lean: pitch the spine chain FORWARD by a small amount scaled by the eased
+    // crouch blend, for character (a crouched stance hunches a little). World-space additive on the same
+    // spine bones the aim lean uses, applied BEFORE it so the two compose. Rotation-only, so it's unit-
+    // scale-agnostic (unlike the pelvis-position drop, which is why the crouch DROP is done on modelRoot).
+    ApplyCrouchLean(){
+        if(this._crouchEased < 1e-3 || !this.aimBones.length){ return; }
+        const pitch = this.crouchSpineLean * this._crouchEased;        // + = lean forward (same sign as look-down)
+        this._aimRight.set(Math.cos(this._bodyYaw), 0, -Math.sin(this._bodyYaw));   // body-right axis (world)
+        for(const ab of this.aimBones){
+            this._crouchLeanR.setFromAxisAngle(this._aimRight, pitch * ab.weight);
+            ab.bone.parent.getWorldQuaternion(this._crouchLeanPW);
+            // newLocal = parentWorld^-1 * R * parentWorld * oldLocal
+            this._crouchLeanDelta.copy(this._crouchLeanPW).invert().multiply(this._crouchLeanR).multiply(this._crouchLeanPW);
+            ab.bone.quaternion.premultiply(this._crouchLeanDelta);
+        }
+    }
+
     // Additive look-pitch lean: lean the spine chain by the look pitch so the arms + gun
     // point at the right altitude, layered on top of the played animation. Each bone is
     // rotated in its PARENT's world space about the character's horizontal right axis, so
@@ -1211,6 +1351,10 @@ export default class PlayerBody extends Component{
     // per-bone shares correctly. Active whenever the TPS body is on screen (so the gun
     // tracks the camera all the time, not just while aiming), eased in/out and clamped.
     UpdateAimPose(t){
+        // FPS: tilt the held weapon up/down with the look pitch so it stays on screen — even when NOT
+        // aiming. Handled separately because it rotates the ARMS (not the spine), so the head bone and
+        // the FPS eye that rides it don't move. None of the TPS spine yaw twists below apply in FPS.
+        if(this.cameraMode === 'FPS'){ this.UpdateFpsWeaponPitch(t); return; }
         if(!this.aimBones.length){ return; }
         // Apply the additive gun lean when AIMING, or — the close-camera HIP-FIRE case — when the
         // camera is close (proximity) AND you're shooting: the collapsed close framing leaves the
@@ -1306,6 +1450,31 @@ export default class PlayerBody extends Component{
         }
     }
 
+    // FPS weapon look-pitch: tilt the held weapon up/down with the look altitude so it stays framed on
+    // screen even when NOT aiming (the FPS body only tracks yaw, so without this the gun points flat
+    // when you look up/down and slides out of view). Rotates BOTH upper arms — which carry the gun and
+    // the support hand — about the body-right axis by the look pitch, NOT the spine, so the head bone
+    // (and the FPS eye riding it) stays put. Same sign convention as the TPS spine lean (-angles.x =>
+    // look up tilts the gun up). Eased + clamped; the barrel IK still re-aims exactly while ADS.
+    UpdateFpsWeaponPitch(t){
+        const pc = this.playerControls;
+        if(!pc || !this.fpsArmBones.length){ return; }
+        const targetPitch = THREE.MathUtils.clamp(
+            -pc.angles.x * this.fpsLookPitchGain, -this.fpsLookPitchMax, this.fpsLookPitchMax);
+        this._fpsPitchValue += (targetPitch - this._fpsPitchValue) * (1 - Math.exp(-this.aimPitchLerp * t));
+        if(Math.abs(this._fpsPitchValue) < 1e-4){ return; }
+        // Body-right axis in world: local +X carried through the (yaw-only) facing.
+        this._aimRight.set(Math.cos(this._bodyYaw), 0, -Math.sin(this._bodyYaw));
+        for(const bone of this.fpsArmBones){
+            this._aimR.setFromAxisAngle(this._aimRight, this._fpsPitchValue);   // full pitch on each arm
+            bone.parent.getWorldQuaternion(this._aimPW);
+            this._aimPWInv.copy(this._aimPW).invert();
+            // newLocal = parentWorld^-1 * R * parentWorld * oldLocal
+            this._aimDelta.copy(this._aimPWInv).multiply(this._aimR).multiply(this._aimPW);
+            bone.quaternion.premultiply(this._aimDelta);
+        }
+    }
+
     // Aiming (right-click ADS, either camera mode) OR recently fired (full-auto re-arms _shootHold
     // each shot). This is the gate for the weapon alignment + two-hand IK — "point the gun at the
     // target while aiming or shooting", and leave plain locomotion alone otherwise.
@@ -1323,14 +1492,34 @@ export default class PlayerBody extends Component{
     UpdateWeaponAim(t){
         if(!this.weaponAimIK || !this.playerControls){ return; }
         const pc = this.playerControls;
-        const active = this.IsAimingOrShooting() && this.oneShot !== 'reload';
+        // Suppress the IK while the placement tool owns the camera (cameraOverride) so the gun sits
+        // stable at the raw grip while you nudge the FPS_AIM seat, instead of re-aiming at the fly-cam.
+        const active = this.IsAimingOrShooting() && this.oneShot !== 'reload' && !pc.cameraOverride;
+        // ALWAYS-ON GRIP: the support hand stays glued to the gun whenever a weapon is held — NOT only
+        // while aiming. This is what kills the aim<->idle<->shoot hand snap (the hand never releases the
+        // foregrip and re-grabs). Dropped only during a reload (the off-hand works the mag) and under the
+        // placement-tool camera. The barrel still only swings while `active` (aiming/shooting).
+        const gripActive = this.oneShot !== 'reload' && !pc.cameraOverride;
         this._weaponAimActive = active;
         this.weaponAimIK.Update(t, {
             active,
+            gripActive,
             aimTarget: pc.aimTarget,
             aimValid: pc.aimTargetValid,
             cameraForward: pc.aimDir,
         });
+    }
+
+    // Drive the foot/terrain IK (legs). Gated to grounded, non-rolling, non-airborne so the legs follow
+    // the jump/fall/roll clip in the air; FootIK itself fades out with ground speed so the foot-synced
+    // jog isn't fought. Reads the live ground speed + the body facing (knee pole). Last pose write.
+    UpdateFootIK(t){
+        if(!this.footIK || !this.playerControls){ return; }
+        const pc = this.playerControls;
+        const enabled = pc.IsGrounded && this.airState === null && !this.rolling;
+        // Floor the weight at the crouch amount: a crouched body is lowered, so the feet must stay
+        // planted (knees bent) even while crouch-walking, not fade out and sink through the floor.
+        this.footIK.Update(t, { enabled, speed: pc.HorizontalSpeed, bodyYaw: this._bodyYaw, floor: this._crouchEased });
     }
 
     // Orient the head to look along the crosshair direction, so the character visibly looks where the
@@ -1421,17 +1610,31 @@ export default class PlayerBody extends Component{
             return;
         }
 
-        const responsive = this.playerControls.HorizontalSpeed > 0.5 || this.IsAiming();
-        let goal = target;
-        if(!responsive){
-            // Idle: hold inside the deadzone; past it, trail the camera by exactly the
-            // deadzone so the body follows gently rather than chasing every micro-pan.
+        const aiming = this.IsAiming();
+        const moving = this.playerControls.HorizontalSpeed > 0.5;
+        let goal, rate;
+        if(aiming){
+            // ADS: square the body to the camera/look and STRAFE (directional jogs) so the gun stays
+            // trained on the reticle while you sidestep.
+            goal = target;
+            rate = this.bodyTurnMoveLerp;
+        }else if(moving){
+            // Free-run: face the actual WORLD MOVEMENT heading and run forward (DesiredLocoState plays
+            // jogF), so a diagonal run doesn't foot-slide a single directional clip across a 45° travel.
+            // Heading = look yaw + the local velocity's heading offset (atan2(0,-1)=π folds in yawOffset,
+            // so pure-forward W lands exactly on `target`).
+            goal = this.playerControls.angles.y
+                + Math.atan2(this.playerControls.speed.x, this.playerControls.speed.z);
+            rate = this.bodyTurnMoveLerp;
+        }else{
+            // Idle: hold inside the deadzone; past it, trail the camera by exactly the deadzone so the
+            // body follows gently rather than chasing every micro-pan.
             const diff = Math.atan2(Math.sin(target - this._bodyYaw), Math.cos(target - this._bodyYaw));
             goal = Math.abs(diff) <= this.bodyTurnDeadzone
                 ? this._bodyYaw
                 : this._bodyYaw + Math.sign(diff) * (Math.abs(diff) - this.bodyTurnDeadzone);
+            rate = this.bodyTurnIdleLerp;
         }
-        const rate = responsive ? this.bodyTurnMoveLerp : this.bodyTurnIdleLerp;
         const d = Math.atan2(Math.sin(goal - this._bodyYaw), Math.cos(goal - this._bodyYaw));
         this._bodyYaw += d * (1 - Math.exp(-rate * t));
         this._bodyYaw = Math.atan2(Math.sin(this._bodyYaw), Math.cos(this._bodyYaw));

@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { IKChainSolver } from '../Common/IKUtils.js'
 
 
 // Weapon aim-alignment + two-hand IK solver (reusable; the player wires one of these in PlayerBody).
@@ -55,7 +56,12 @@ export default class WeaponAimIK{
         this.MuzzleForwardAxis      = opts.MuzzleForwardAxis ? opts.MuzzleForwardAxis.clone() : null; // local barrel axis (auto-detected if null)
         this.RightHandOffset        = opts.RightHandOffset ? opts.RightHandOffset.clone() : new THREE.Vector3(); // dominant grip socket nudge (pivot-local)
         this.LeftHandOffset         = opts.LeftHandOffset  ? opts.LeftHandOffset.clone()  : new THREE.Vector3(); // support grip socket nudge (pivot-local)
-        this.twoHanded              = opts.twoHanded ?? true;              // false => one-handed (skip support-hand IK)
+        this.twoHanded              = opts.twoHanded ?? true;              // false => one-handed (skip support-hand foregrip IK)
+        // One-handed off-hand relax: for a single-handed weapon (twoHanded:false) the support hand has no
+        // foregrip to grab, so instead of leaving it reaching for a phantom grip (the rifle clips pose it
+        // there), ease the support arm toward HANGING DOWN. Rig-agnostic (blends the shoulder->elbow
+        // direction toward world-down), weighted by the grip blend. 0 = leave on the animation.
+        this.offHandRelax           = opts.offHandRelax ?? 0.6;
         this.minAimDistance         = opts.minAimDistance ?? 0.9;         // target closer than this to the muzzle => aim down camera-forward instead
         this.refineIterations       = opts.refineIterations ?? 1;         // muzzle-move refine passes for exact convergence
 
@@ -93,7 +99,20 @@ export default class WeaponAimIK{
         this._baseCaptured = false;
 
         // ---- Eased state ----
-        this._alpha = 0;                              // 0..1 blend of the whole correction (eased toward active)
+        // TWO independent blends (the split that kills the idle<->aim<->shoot hand SNAP). Previously a
+        // single `_alpha` gated BOTH the barrel alignment AND the support-hand grip together, eased in
+        // only while aiming/shooting — so leaving aim RELEASED the support hand from the foregrip back
+        // to the raw clip pose (the visible snap). Now:
+        //   * _gripAlpha — eases toward 1 whenever a two-handed weapon is HELD (independent of aim).
+        //     Drives the support-hand two-bone IK + wrist-lock, so the hands are ALWAYS glued to the
+        //     gun and never release. At rest the captured socket == the animated hand, so it's a no-op
+        //     until the gun actually moves (aim/lean/locomotion). The clip becomes elbow-pose influence.
+        //   * _aimAlpha — eases in/out with aiming/shooting exactly as the old `_alpha` did. Drives ONLY
+        //     the hand_r barrel rotation (the gun's aim DIRECTION). So engaging aim only swings the
+        //     barrel; the hands stay put and the support arm re-solves onto the moved foregrip smoothly.
+        this._gripAlpha = 0;                          // 0..1 support-hand grip blend (always-on for 2-handed)
+        this._aimAlpha = 0;                           // 0..1 barrel-alignment blend (aim/shoot only)
+        this.GripBlendSpeed = opts.GripBlendSpeed ?? 8; // grip ease rate (1/s) — a touch slower so the hand GLIDES onto the gun on spawn
         this._aimDir = new THREE.Vector3(0, 0, -1);  // low-passed world aim direction
         this._aimDirSeeded = false;
 
@@ -117,6 +136,10 @@ export default class WeaponAimIK{
         this._tmpV2 = new THREE.Vector3();
         this._leftTarget = new THREE.Vector3();
         this._ikE = new THREE.Vector3();
+        // Off-hand relax scratch (one-handed weapons).
+        this._offA = new THREE.Vector3(); this._offB = new THREE.Vector3();
+        this._offCur = new THREE.Vector3(); this._offDes = new THREE.Vector3();
+        this._offDown = new THREE.Vector3(0, -1, 0); this._offQ = new THREE.Quaternion();
         // Two-bone IK scratch.
         this._R = new THREE.Vector3(); this._M = new THREE.Vector3(); this._E = new THREE.Vector3();
         this._v1 = new THREE.Vector3();
@@ -138,9 +161,15 @@ export default class WeaponAimIK{
         // reading natural for a rifle grip.
         this.supportElbowStabilize = 0.7;
 
+        // Shared two-bone IK solver (analytic, sign-safe). Owns its own scratch pool so the support-arm
+        // solve never clobbers the leg solves' intermediates. The two-bone scratch declared above is now
+        // unused (the solver owns it) but left in place to keep this refactor behaviour-neutral; _pW/
+        // _pWInv/_poleDown/_idQ/_scaleQ ARE still used directly below (wrist-lock, clamp, pole hint).
+        this.ik = new IKChainSolver();
+
         // Debug snapshot for WeaponAimDebug (filled each frame; read-only for consumers).
         this._debug = {
-            active: false, alpha: 0, valid: false, distance: 0,
+            active: false, alpha: 0, gripAlpha: 0, valid: false, distance: 0,
             aimTarget: new THREE.Vector3(),
             muzzle: new THREE.Vector3(),
             barrelFwd: new THREE.Vector3(),     // where the barrel actually points after correction
@@ -262,6 +291,7 @@ export default class WeaponAimIK{
         if(cfg.LeftHandRotationOffset){ this.LeftHandRotationOffset.copy(cfg.LeftHandRotationOffset); }
         if(cfg.matchHandToGrip !== undefined){ this.matchHandToGrip = cfg.matchHandToGrip; }
         if(cfg.twoHanded !== undefined){ this.twoHanded = cfg.twoHanded; }
+        if(cfg.offHandRelax !== undefined){ this.offHandRelax = cfg.offHandRelax; }
         if(cfg.AimCorrectionStrength !== undefined){ this.AimCorrectionStrength = cfg.AimCorrectionStrength; }
         if(cfg.MaxAimCorrectionAngle !== undefined){ this.MaxAimCorrectionAngle = cfg.MaxAimCorrectionAngle; }
         if(cfg.AimSmoothingSpeed !== undefined){ this.AimSmoothingSpeed = cfg.AimSmoothingSpeed; }
@@ -284,41 +314,51 @@ export default class WeaponAimIK{
     // support-hand correction in a single frame at roll recovery — a one-frame pop. Reset to 0 so it
     // eases back in from nothing (and reseed the aim low-pass so it doesn't swing in from a stale dir).
     Reset(){
-        this._alpha = 0;
+        this._gripAlpha = 0;
+        this._aimAlpha = 0;
         this._aimDirSeeded = false;
     }
 
     // Main solve. Call AFTER the mixer + spine lean each frame.
-    //   active        : aim/shoot is engaged (else the correction eases out)
+    //   active        : aim/shoot is engaged (drives the BARREL alignment; eases out otherwise)
+    //   gripActive    : a weapon is held and the hands should be glued to it (drives the SUPPORT-hand
+    //                   grip; on for a held weapon except during a reload). Defaults to `active` so a
+    //                   caller that doesn't opt into the always-on grip behaves exactly as before.
     //   aimTarget     : world point under the crosshair (PlayerControls.aimTarget)
     //   aimValid      : the crosshair ray hit geometry (else aimTarget is a far fallback)
     //   cameraForward : unit camera-forward (fallback aim direction for too-close / behind targets)
     //   t             : delta seconds
-    Update(t, { active, aimTarget, aimValid = true, cameraForward = null }){
+    Update(t, { active, gripActive = active, aimTarget, aimValid = true, cameraForward = null }){
         const pivot = this.weaponPivot;
         if(!pivot || !this.handBoneR){ return; }
 
-        // Ease the master blend toward the active state.
-        const target = active ? 1 : 0;
-        this._alpha += (target - this._alpha) * (1 - Math.exp(-this.AimAlignmentBlendSpeed * t));
+        // Ease the TWO blends independently (the split that kills the hand snap). Grip is always-on for
+        // a held weapon (so the hands never release the gun); aim eases in/out with aiming/shooting.
+        const targetGrip = gripActive ? 1 : 0;
+        const targetAim  = active ? 1 : 0;
+        this._gripAlpha += (targetGrip - this._gripAlpha) * (1 - Math.exp(-this.GripBlendSpeed * t));
+        this._aimAlpha  += (targetAim  - this._aimAlpha)  * (1 - Math.exp(-this.AimAlignmentBlendSpeed * t));
+        // Keep the aim direction unseeded while aim is released, so re-aiming seeds straight to the live
+        // target with no swing-in (the grip path may still run below, but the barrel apply is ~identity).
+        if(this._aimAlpha < 1e-3){ this._aimDirSeeded = false; }
 
-        // One-time lazy resolves. These run on the FIRST update — before any aim correction is applied
-        // (the alpha<eps early-return below sits right after), so the gun is at its base transform and
-        // the hands are in the rest/idle pose: the grip-socket capture is valid. They are NOT re-run on
-        // a weapon switch (see OnWeaponChanged): re-capturing the foregrip from the posed hand WHILE
-        // aiming would read the hand at the IK-rotated grip and record a wrong socket. Per-weapon sockets
-        // for a genuinely different mesh come from ikConfig (SetWeaponConfig), not a mid-aim re-capture.
+        // One-time lazy resolves on the FIRST update. The grip-socket capture reads where the rifle clip
+        // poses hand_l ON the gun, so the FIRST update MUST land on a CLIP-posed frame, not the bind/
+        // T-pose — else the always-on support IK plants the hand at the bind-pose socket (the "support
+        // arm flung in the air" NPC bug). The owner guarantees this by playing an idle rifle action in its
+        // Initialize BEFORE the first Update (PlayerBody + UeSoldierController both do), so frame 1 is
+        // posed with the hand on the gun. NOT re-run on a weapon switch (OnWeaponChanged).
         if(!this._baseCaptured){ this.CaptureBase(); }
         if(!this._barrelResolved){ this.ResolveBarrel(); }
         if(!this._socketsCaptured){ this.CaptureGripSockets(); }
 
-        // Fully released: leave the weapon + arm entirely to the animation (so locomotion/idle read
-        // exactly as authored). The mixer rewrites the arm each frame, so nothing lingers. Mark the
-        // direction low-pass unseeded so the NEXT time aim engages it seeds straight to the current
-        // target (no swing in from a stale direction); the alpha ease still blends the pose in smoothly.
-        if(this._alpha < 1e-3){
+        // Both blends fully released: leave the weapon + arm entirely to the animation (so idle reads
+        // exactly as authored). The mixer rewrites the arm each frame, so nothing lingers. With the
+        // always-on grip this is rare while a two-handed weapon is held (grip stays engaged) — it mainly
+        // fires during a reload (grip eased out so the hands work the mag) or with no weapon.
+        if(this._gripAlpha < 1e-3 && this._aimAlpha < 1e-3){
             this._debug.active = false;
-            this._debug.alpha = this._alpha;
+            this._debug.alpha = 0;
             this._aimDirSeeded = false;
             return;
         }
@@ -369,10 +409,12 @@ export default class WeaponAimIK{
             this._qA.copy(this._qB);
         }
 
-        // Clamp the total correction angle, scale by strength, then ease by the master blend.
+        // Clamp the total correction angle, scale by strength, then ease by the AIM blend (so the barrel
+        // only swings while aiming/shooting — at rest _aimAlpha≈0 and this is ~identity, leaving the gun
+        // at its base while the support hand still grips it via _gripAlpha below).
         this._clampQuatAngle(this._qFull, this.MaxAimCorrectionAngle);
         if(this.AimCorrectionStrength < 0.999){ this._scaleQuatAngle(this._qFull, this.AimCorrectionStrength); }
-        this._qApplied.copy(this._idQ).slerp(this._qFull, this._alpha);
+        this._qApplied.copy(this._idQ).slerp(this._qFull, this._aimAlpha);
 
         // Apply the aim correction to the WRIST BONE (hand_r) about its origin, NOT to the gun pivot.
         // The gun is a child of hand_r, so rotating the wrist lands the barrel in the SAME world pose a
@@ -388,11 +430,13 @@ export default class WeaponAimIK{
         this._applyWorldQuat(this.handBoneR, this._qApplied);
         this.handBoneR.updateWorldMatrix(false, true);   // refresh the gun (child) world for the IK + debug reads
 
-        // --- Support-hand IK: plant hand_l on the (now-rotated) foregrip socket. ---
-        const ikW = this._alpha * this.WeaponIKBlendAlpha;
+        // --- Support-hand IK: plant hand_l on the (now-rotated) foregrip socket. Weighted by the GRIP
+        // blend (always-on for a held two-handed weapon), NOT the aim blend — so the support hand stays
+        // glued to the gun at idle and through aim/shoot transitions (no release/re-grab snap). ---
+        const ikW = this._gripAlpha * this.WeaponIKBlendAlpha;
         this._tmpV.copy(this.leftGripLocal).add(this.LeftHandOffset);
         this._leftTarget.copy(this._tmpV).applyMatrix4(pivot.matrixWorld);   // foregrip world (post-rotation)
-        if(this.twoHanded && this.bones.upperarm_l && this.bones.lowerarm_l && this.bones.hand_l){
+        if(this.twoHanded && this._socketsCaptured && this.bones.upperarm_l && this.bones.lowerarm_l && this.bones.hand_l){
             this.bones.hand_l.getWorldPosition(this._ikE);
             // Blend the effector target from the animated hand to the foregrip by the IK weight, so the
             // support hand eases on/off with the aim and never snaps.
@@ -419,11 +463,15 @@ export default class WeaponAimIK{
                 hand.parent.getWorldQuaternion(this._pW);
                 hand.quaternion.copy(this._pWInv.copy(this._pW).invert()).multiply(this._hq2);
             }
+        }else if(!this.twoHanded && this.offHandRelax > 0 && this.bones.upperarm_l && this.bones.lowerarm_l){
+            // ONE-HANDED weapon: no foregrip to grab — relax the support arm toward hanging down instead
+            // of leaving it reaching for a phantom grip. Eased by the grip blend (ikW).
+            this._applyOffHandRest(ikW);
         }
 
         // --- Debug snapshot ---
         const d = this._debug;
-        d.active = true; d.alpha = this._alpha; d.valid = aimValid; d.distance = dist;
+        d.active = true; d.alpha = this._aimAlpha; d.gripAlpha = this._gripAlpha; d.valid = aimValid; d.distance = dist;
         d.aimTarget.copy(aimTarget);
         d.muzzle.copy(this.muzzleLocal).applyMatrix4(pivot.matrixWorld);
         d.barrelFwd.copy(this.forwardLocal).applyQuaternion(pivot.getWorldQuaternion(this._weaponWQ)).normalize();
@@ -433,92 +481,35 @@ export default class WeaponAimIK{
         d.handTarget.copy(this._leftTarget);
     }
 
-    // Analytic two-bone IK (direction-matching, sign-safe). Orient (root, mid) so `end` reaches
-    // targetWorld while keeping the animation's elbow side (the bend can never flip). Solve the
-    // triangle (R, M', E') for the exact elbow + end positions, then rotate the upper bone so its
-    // segment points at M' and the lower bone so its segment points at E' — matching DIRECTIONS, so
-    // there is no angle-sign ambiguity and the end lands exactly on the target. Reads live world
-    // positions and applies world-space delta rotations (converted to each bone's local frame), so it
-    // composes on top of the animated pose with no drift.
-    _solveTwoBone(root, mid, end, targetWorld, poleHint = null, poleStabilize = 0){
-        root.getWorldPosition(this._R);
-        mid.getWorldPosition(this._M);
-        end.getWorldPosition(this._E);
-        const a = this._R.distanceTo(this._M);   // upper arm length
-        const b = this._M.distanceTo(this._E);   // forearm length
-        if(a < 1e-5 || b < 1e-5){ return; }
-
-        // n = unit root->target; d = reach, clamped so the triangle is always solvable.
-        this._rt.copy(targetWorld).sub(this._R);
-        const rawLen = this._rt.length();
-        if(rawLen < 1e-5){ return; }
-        this._n.copy(this._rt).multiplyScalar(1 / rawLen);
-        const d = THREE.MathUtils.clamp(rawLen, Math.abs(a - b) + 1e-3, a + b - 1e-3);
-
-        // u = unit perpendicular to n, pointing to the elbow side. Start from the CURRENT animated bend
-        // so a good pose is preserved as-is. But on extreme cross-body aim the animated elbow can line
-        // up with n (degenerate) or sit on the WRONG side, flipping the forearm into an impossible
-        // reverse/twisted bend. So we also build a stable anatomical reference from poleHint (the elbow
-        // should bend roughly that way — e.g. DOWN for the support arm), projected into the bend plane,
-        // and (a) use it when the animated pole is degenerate, (b) blend toward it ONLY when the
-        // animated pole points the wrong way (negative alignment). Aligned poses are left untouched.
-        this._u.copy(this._M).sub(this._R);
-        this._u.addScaledVector(this._n, -this._u.dot(this._n));   // animated pole, perpendicular to n
-        const uLenSq = this._u.lengthSq();
-
-        this._poleRef.copy((poleHint && poleHint.lengthSq() > 1e-8) ? poleHint : this._poleDown);
-        this._poleRef.addScaledVector(this._n, -this._poleRef.dot(this._n));   // reference, into bend plane
-        const refValid = this._poleRef.lengthSq() > 1e-6;
-        if(refValid){ this._poleRef.normalize(); }
-
-        if(uLenSq < 1e-6){
-            // Degenerate animated pole (elbow colinear with root->target): use the reference, else any
-            // perpendicular as a last resort.
-            if(refValid){ this._u.copy(this._poleRef); }
-            else{
-                this._u.copy(this._n).cross(this._perp.set(0, 1, 0));
-                if(this._u.lengthSq() < 1e-8){ this._u.copy(this._n).cross(this._perp.set(1, 0, 0)); }
-                this._u.normalize();
-            }
-        }else{
-            this._u.multiplyScalar(1 / Math.sqrt(uLenSq));
-            if(refValid){
-                // Stabilize: bias the animated pole toward the fixed reference so the elbow doesn't
-                // swivel/gimbal as the animated arm (and the aim) move — it stays in a consistent plane.
-                if(poleStabilize > 0){ this._u.lerp(this._poleRef, poleStabilize).normalize(); }
-                // Flip-guard: if it still points to the wrong side, correct fully.
-                const align = this._u.dot(this._poleRef);             // <0 => elbow on the wrong side
-                if(align < 0){ this._u.lerp(this._poleRef, Math.min(1, -align)).normalize(); }
-            }
-        }
-
-        // Desired elbow M' (a from R, at the law-of-cosines angle off n) and end E' (on n at distance d).
-        const cosA = THREE.MathUtils.clamp((a * a + d * d - b * b) / (2 * a * d), -1, 1);
-        const sinA = Math.sqrt(Math.max(0, 1 - cosA * cosA));
-        this._Mp.copy(this._R).addScaledVector(this._n, a * cosA).addScaledVector(this._u, a * sinA);
-        this._Ep.copy(this._R).addScaledVector(this._n, d);
-
-        // 1) Upper bone: rotate (M-R) onto (M'-R).
-        this._re.copy(this._M).sub(this._R).normalize();
-        this._rt2.copy(this._Mp).sub(this._R).normalize();
-        this._qWorld.setFromUnitVectors(this._re, this._rt2);
-        this._applyWorldQuat(root, this._qWorld);
-        mid.getWorldPosition(this._M);   // refresh after the upper rotation
-        end.getWorldPosition(this._E);
-
-        // 2) Lower bone: rotate (E-M) onto (E'-M).
-        this._re.copy(this._E).sub(this._M).normalize();
-        this._rt2.copy(this._Ep).sub(this._M).normalize();
-        this._qWorld.setFromUnitVectors(this._re, this._rt2);
-        this._applyWorldQuat(mid, this._qWorld);
+    // One-handed off-hand relax: rotate the support upper arm so its shoulder->elbow direction eases
+    // toward world-DOWN by offHandRelax*w, so the off-hand hangs naturally rather than reaching for a
+    // foregrip that a one-handed weapon doesn't have. Rig-agnostic (works in world directions); the
+    // forearm/hand follow as children. Applied about the shoulder so the arm just lowers.
+    _applyOffHandRest(w){
+        const up = this.bones.upperarm_l, lo = this.bones.lowerarm_l;
+        up.getWorldPosition(this._offA);
+        lo.getWorldPosition(this._offB);
+        this._offCur.copy(this._offB).sub(this._offA);
+        if(this._offCur.lengthSq() < 1e-8){ return; }
+        this._offCur.normalize();
+        this._offDes.copy(this._offCur).lerp(this._offDown, this.offHandRelax * w);
+        if(this._offDes.lengthSq() < 1e-8){ return; }
+        this._offDes.normalize();
+        this._offQ.setFromUnitVectors(this._offCur, this._offDes);
+        this._applyWorldQuat(up, this._offQ);
     }
 
-    // Apply a world-space rotation qW to a bone about its origin: newLocal = parentW^-1 * qW * parentW * oldLocal.
+    // Analytic two-bone IK — now delegated to the shared IKChainSolver (see IKUtils.js). The maths are
+    // identical to the version this class used to own; extracting it lets FootIK reuse the exact same
+    // sign-safe, pole-stabilized solver. Kept as a thin wrapper so the callsites below are unchanged.
+    _solveTwoBone(root, mid, end, targetWorld, poleHint = null, poleStabilize = 0){
+        this.ik.solveTwoBone(root, mid, end, targetWorld, poleHint, poleStabilize);
+    }
+
+    // Apply a world-space rotation qW to a bone about its origin (delegated to the shared solver):
+    // newLocal = parentW^-1 * qW * parentW * oldLocal.
     _applyWorldQuat(bone, qW){
-        bone.parent.getWorldQuaternion(this._pW);
-        this._pWInv.copy(this._pW).invert();
-        this._qDelta.copy(this._pWInv).multiply(qW).multiply(this._pW);
-        bone.quaternion.premultiply(this._qDelta);
+        this.ik.applyWorldQuat(bone, qW);
     }
 
     // Clamp a quaternion's rotation angle to maxAngle (radians), in place.

@@ -107,8 +107,10 @@ class ChaseState extends State{
     constructor(parent){
         super(parent);
         // Re-acquire the player's position often so the beast tracks you tightly and stays
-        // dangerous instead of running to where you *were* half a second ago.
-        this.updateFrequency = 0.2;
+        // dangerous instead of running to where you *were* half a second ago. Tightened (was 0.2)
+        // so the chase path follows the moving player closely and the beast stops over-running
+        // stale routes into corners.
+        this.updateFrequency = 0.12;
         this.updateTimer = 0.0;
         this.attackDistance = 2.0;
         this.shouldRotate = false;

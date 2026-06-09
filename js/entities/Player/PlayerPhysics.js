@@ -1,5 +1,5 @@
 import Component from '../../Component.js'
-import {Ammo} from '../../AmmoLib.js'
+import {Ammo, AmmoHelper, CollisionFilterGroups} from '../../AmmoLib.js'
 
 //Bullet enums
 const CF_KINEMATIC_OBJECT = 2;
@@ -14,12 +14,25 @@ export default class PlayerPhysics extends Component{
         this.canJump = false;
         this.up = new Ammo.btVector3(0,1,0);
         this.tempVec = new Ammo.btVector3();
+
+        // Capsule dimensions (cylinder height between the hemisphere centres; total = height + 2*radius).
+        // Crouch swaps to the SHORTER shape so the player fits under low cover and presents a smaller
+        // target. The two shapes share the radius; the crouched one drops the body origin by centerDrop
+        // so the FEET stay on the floor (the top comes down, the bottom doesn't). PlayerControls keeps the
+        // tracked eye stable across the swap (it adds centerDrop back while crouched), so the resize is a
+        // pure collision-volume change — the visible crouch (lowered pelvis + bent knees) is the body's job.
+        this.radius = 0.3;
+        this.standHeight = 1.3;                 // standing cylinder height (total 1.9 m)
+        this.crouchHeight = 0.7;                // crouched cylinder height (total 1.3 m)
+        this.centerDrop = (this.standHeight - this.crouchHeight) * 0.5;   // 0.30 m the centre drops when crouched
+        this.crouched = false;
+        this._standShape = null;
+        this._crouchShape = null;
+        this._sweepRes = { fraction: 1 };       // reused CanStandUp sweep result
     }
 
     Initialize(){
-        const height = 1.3,
-              radius = 0.3,
-              mass = 5;
+        const mass = 5;
 
         const transform = new Ammo.btTransform();
         transform.setIdentity();
@@ -27,16 +40,55 @@ export default class PlayerPhysics extends Component{
         transform.setOrigin(new Ammo.btVector3(pos.x,pos.y,pos.z));
         const motionState = new Ammo.btDefaultMotionState(transform);
 
-        const shape = new Ammo.btCapsuleShape(radius, height);
+        this._standShape  = new Ammo.btCapsuleShape(this.radius, this.standHeight);
+        this._crouchShape = new Ammo.btCapsuleShape(this.radius, this.crouchHeight);
         const localInertia = new Ammo.btVector3(0,0,0);
-        const bodyInfo = new Ammo.btRigidBodyConstructionInfo(mass, motionState, shape, localInertia);
+        const bodyInfo = new Ammo.btRigidBodyConstructionInfo(mass, motionState, this._standShape, localInertia);
         this.body = new Ammo.btRigidBody(bodyInfo);
         this.body.setFriction(0);
-        
+
         //this.body.setCollisionFlags(this.body.getCollisionFlags() | CF_KINEMATIC_OBJECT);
         this.body.setActivationState(DISABLE_DEACTIVATION);
 
         this.world.addRigidBody(this.body);
+    }
+
+    // Swap the collision capsule for the crouch state. Shifts the body origin by centerDrop in the
+    // direction that keeps the FEET on the floor (down on crouch, up on stand) and swaps the shape on
+    // the same step, so the bottom never moves (no fall, no penetration) and grounded detection holds.
+    // Standing up is BLOCKED when there's no head clearance (CanStandUp) — the caller stays crouched.
+    // Returns true if the state changed (or already matched), false if a requested stand was blocked.
+    SetCrouched(want){
+        if(want === this.crouched){ return true; }
+        if(!want && !this.CanStandUp()){ return false; }   // no headroom: stay crouched
+
+        const tr = this.body.getWorldTransform();
+        const o = tr.getOrigin();
+        const dy = want ? -this.centerDrop : this.centerDrop;
+        o.setValue(o.x(), o.y() + dy, o.z());               // shift the body so the bottom stays put
+        const ms = this.body.getMotionState();
+        if(ms){ ms.setWorldTransform(tr); }                 // keep the interpolated transform in sync
+        this.body.setCollisionShape(want ? this._crouchShape : this._standShape);
+        if(this.world.updateSingleAabb){ this.world.updateSingleAabb(this.body); }
+
+        const v = this.body.getLinearVelocity();
+        v.setY(0);                                          // kill vertical velocity so the swap can't bounce/launch
+        this.body.setLinearVelocity(v);
+        this.body.activate(true);
+        this.crouched = want;
+        return true;
+    }
+
+    // Is there room to stand back up? Thick upward sphere-sweep (so it can't slip past a thin ledge)
+    // from the crouched centre through the height the head reclaims, against STATIC geometry only.
+    CanStandUp(){
+        const o = this.body.getWorldTransform().getOrigin();
+        const from = { x: o.x(), y: o.y(), z: o.z() };
+        const to   = { x: o.x(), y: o.y() + this.centerDrop + this.radius, z: o.z() };
+        // Slightly under-sized sphere so brushing a wall we're crouched against doesn't trap us.
+        const blocked = AmmoHelper.SphereSweep(
+            this.world, this.radius * 0.9, from, to, this._sweepRes, CollisionFilterGroups.StaticFilter);
+        return !blocked;
     }
 
     QueryJump(){
