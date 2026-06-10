@@ -57,7 +57,7 @@ export default class PlayerBody extends Component{
         super();
         this.name = 'PlayerBody';
         this.model = model;            // GLB scene (SkeletonUtils.clone)
-        this.clips = clips;            // { idle, jogF, jogB, jogL, jogR, jumpStart, jumpFall, reload, shoot }
+        this.clips = clips;            // { idle, aim, jogF, jogB, jogL, jogR, jumpStart, jumpFall, reload, shoot }
         this.scene = scene;
         this.camera = camera;
         this.textures = textures;      // { bodyColor, bodyNormal, logoColor, logoNormal } (legacy only)
@@ -136,11 +136,15 @@ export default class PlayerBody extends Component{
         // makes the feet track the ground with no skate (~1.19x at the 7 m/s jog, ~1.90x at sprint).
         this.authoredJogSpeed = 5.884628;                     // m/s baked into the jog at timeScale 1.0
         this.invAuthoredJogSpeed = 1 / this.authoredJogSpeed; // per-(m/s) timeScale factor
-        // Keep cadence sane: no slow-mo crawl at low speed, no flutter at the top. The normal
-        // jog (1.19x) and sprint (1.90x) both sit inside this band so neither is clamped; the
-        // bounds only catch brief sub-jog speeds during accel/decel and act as a safety net
-        // (HorizontalSpeed is hard-clamped to maxSpeed, so 1.90x is the real max — 2.2 is insurance).
-        this.locoTimeScaleMin = 0.7;
+        // Foot-sync clamp band. The floor MUST sit below the slowest SUSTAINED move speed or the feet
+        // skate: the foot-sync rate = groundSpeed / authoredJogSpeed, so at the ~2.2 m/s crouch-walk AND
+        // ADS-walk speeds the jog wants ~0.374x — the OLD 0.7 floor clamped that to 0.7, cycling the feet
+        // at 4.1 m/s over 2.2 m/s ground = a ~1.9x foot SKATE (measured skateRatio 0.6/0.65 vs a synced
+        // 0.41; crouch_probe). Dropping the floor to 0.33 lets crouch/aim-walk foot-sync cleanly (planted
+        // feet stay planted) — the trade is a slightly slower, more deliberate leg cadence at those low
+        // speeds, which reads as a careful creep rather than skating feet. The top is unchanged (sprint
+        // ~1.26x sits well inside it; 2.2 is insurance). Only the player uses this (the soldier is separate).
+        this.locoTimeScaleMin = 0.33;
         this.locoTimeScaleMax = 2.2;
         this.locoSpeedDeadzone = 0.5;                         // below this, idle owns the pose (matches UpdateLocomotion)
 
@@ -370,6 +374,23 @@ export default class PlayerBody extends Component{
         this._hipRefSeeded = false;
         this._hipStab = 0;                                // eased current stabilization 0..1
         this.hipStabMax = 0.9;                            // cap (1 = frozen hips); leaves a subtle wobble
+        // FIRST-PERSON idle/crouch-idle is the worst camera-shake offender: the camera RIDES the head
+        // bone, so the idle clip's weight-shift sway TRANSLATES the lens. The TPS caps (0.9/0.85) leave
+        // ~10-15% of that sway = the visible lateral wobble in first-person (measured ~57 mm lateral
+        // range, jitter_probe). So while FPS-steady (standing / crouch-idle, NOT aiming) clamp the hips
+        // AND the spine far harder — a near-freeze that leaves only a barely-there breath, holding the
+        // first-person view steady. Distinct from the aim caps so ADS keeps its own (subtler) settle.
+        this.fpsSteadyHipStab = 0.985;                    // near-freeze the hips in FPS idle/crouch-idle
+        this.fpsSteadyAimStab = 0.97;                     // ...and the spine/arms (the head + eye ride them)
+        // FPS WALKING bob. The UE jog clips bake a big full-body bob (authored for a third-person run),
+        // which the head-mounted lens rides 1:1 — a strong, jittery walk shake in first-person (measured
+        // cam.y curvature ~1000x the idle). We can't low-pass the eye POSITION (the gun rides the same
+        // body, so the eye would lag it and the weapon would swim on turns); instead damp the bob at the
+        // SOURCE — partially stabilize the hips + spine while FPS-walking so BOTH the eye and the gun see
+        // the same calmed motion. Partial (not a freeze) so a controlled walk bob still reads. Off while
+        // aiming (ADS uses its own steadier path) and in TPS (the boom doesn't ride the body).
+        this.fpsMoveHipStab = 0.6;                        // damp ~60% of the hip walk-bob in FPS
+        this.fpsMoveAimStab = 0.55;                       // ...and ~55% of the spine sway
         // While AIMING, damp the hips harder than for a plain collision push-in: a near-frozen pelvis
         // keeps the strafing legs from swinging the torso/gun off the aim target (the look-facing body
         // + steady idle aim pose then point the gun right at the reticle while you strafe).
@@ -465,6 +486,18 @@ export default class PlayerBody extends Component{
             this.lowerActions[name] = this.mixer.clipAction(lower);
             this.upperActions[name] = this.mixer.clipAction(upper);
         });
+
+        // Dedicated AIM pose (down-the-sights): an UPPER-body overlay that drives the torso + arms
+        // while ADS, replacing the old idle-upper placeholder. The legs keep their own locomotion on
+        // the lower layer underneath (so you can aim while strafing), exactly like the idle-upper it
+        // replaces — so only the UPPER half is built. Looping so the held aim still breathes subtly;
+        // StabilizeAimIdle then damps that sway to a steady hold and UpdateLocoTimeScale slows the
+        // breath tempo. DesiredUpperState falls back to 'idle' if this clip didn't bake.
+        const aimClip = this.clips['aim'];
+        if(aimClip){
+            const { upper } = splitClipByBones(aimClip, upperBones);
+            this.upperActions['aim'] = this.mixer.clipAction(upper);
+        }
 
         // Jump sub-graph (full-body, both layers): jumpStart is a one-shot launch that CLAMPS on
         // its last frame, then hands off to the looping jumpFall (which is also the fall pose).
@@ -1070,9 +1103,9 @@ export default class PlayerBody extends Component{
         this.PlayUpperLocomotion(name, 0.2);
     }
 
-    // Holding precise-aim in third-person? While aiming the torso holds a steady aim
-    // pose instead of mirroring the legs. For now that pose is the upper half of the
-    // idle clip (a placeholder); a dedicated aim clip / blend space replaces it later.
+    // Holding precise-aim in third-person? While aiming the torso holds a steady aim pose (the upper
+    // half of the dedicated A_Rifle_Aim clip; see DesiredUpperState / SetupAnimations) instead of
+    // mirroring the legs, and StabilizeAimIdle + the additive spine lean steady it on the crosshair.
     IsAiming(){
         return !!(this.playerControls && this.playerControls.aiming && this.cameraMode === 'TPS');
     }
@@ -1089,7 +1122,11 @@ export default class PlayerBody extends Component{
     // aim pose (idle upper) while aiming on the ground, otherwise mirror whatever the legs do
     // (including the jump sub-states — the torso jumps/falls with the body).
     DesiredUpperState(legs){
-        if(this.IsAiming() && legs !== 'jumpStart' && legs !== 'jumpFall'){ return 'idle'; }
+        if(this.IsAiming() && legs !== 'jumpStart' && legs !== 'jumpFall'){
+            // Drive the torso with the dedicated down-the-sights aim pose; fall back to the idle-upper
+            // (the old placeholder) if the aim clip didn't bake. The legs keep their own locomotion.
+            return this.upperActions['aim'] ? 'aim' : 'idle';
+        }
         return legs;
     }
 
@@ -1316,6 +1353,9 @@ export default class PlayerBody extends Component{
         const idleTs = aiming ? this.aimIdleTimeScale : 1.0;
         if(this.lowerState === 'idle' && this.lowerActions.idle){ this.lowerActions.idle.setEffectiveTimeScale(idleTs); }
         if(!this.oneShot && this.upperState === 'idle' && this.upperActions.idle){ this.upperActions.idle.setEffectiveTimeScale(idleTs); }
+        // The dedicated aim pose only plays while aiming, so run its breath at the same calm tempo as the
+        // aimed idle (StabilizeAimIdle also damps the sway), keeping a held ADS slow and steady.
+        if(!this.oneShot && this.upperState === 'aim' && this.upperActions.aim){ this.upperActions.aim.setEffectiveTimeScale(this.aimIdleTimeScale); }
 
         if(!this.IsJogState(this.lowerState)){ return; }
         const ts = this.LocoTimeScale(this.lowerState);
@@ -1461,7 +1501,9 @@ export default class PlayerBody extends Component{
         // viewmodel strobing against the view when turning. Position only; orientation/shake stay as
         // PlayerControls set them.
         if(this.cameraMode === 'FPS' && this.playerControls && !this.playerControls.cameraOverride){
-            this.playerControls.PlaceFpsEyePosition(this.parent.Position);
+            // smooth=true + the frame dt: this authoritative re-call advances the eye-height low-pass
+            // (the Controls start-of-frame call places raw and is overwritten here this same frame).
+            this.playerControls.PlaceFpsEyePosition(this.parent.Position, t, true);
         }
     }
 
@@ -1487,11 +1529,17 @@ export default class PlayerBody extends Component{
         // first-person AND stationary (not jogging), freeze the hips like an aim — the head, and the camera
         // riding it, hold still. The natural head bob is kept while MOVING (a jog still bobs the view).
         const fpsSteady = (this.cameraMode === 'FPS') && !moving;
+        // FPS + walking (not aiming): partially damp the bob (fpsMoveHipStab) so the head-mounted lens
+        // gets a calmer walk shake while still reading as a walk. TPS isn't affected (the boom doesn't
+        // ride the body); aiming uses its own (steadier) path below.
+        const fpsMoving = (this.cameraMode === 'FPS') && moving && !fpsAiming;
         const close = (this.cameraMode === 'TPS')
             ? Math.max(tpsAiming ? 1 : 0, pc ? pc.CameraProximity : 0)
-            : ((fpsAiming || fpsSteady) ? 1 : 0);
-        // Aiming damps harder (steady gun while strafing) than a plain collision push-in.
-        const cap = aiming ? this.aimHipStab : this.hipStabMax;
+            : ((fpsAiming || fpsSteady) ? 1 : (fpsMoving ? this.fpsMoveHipStab : 0));
+        // Aiming damps harder (steady gun while strafing) than a plain collision push-in; FPS-steady
+        // (first-person idle/crouch-idle, not aiming) damps hardest of all — the lens rides the head, so
+        // a near-freeze is what holds the first-person view still (see fpsSteadyHipStab).
+        const cap = aiming ? this.aimHipStab : (fpsSteady ? this.fpsSteadyHipStab : this.hipStabMax);
         // Engage while MOVING (kill the run bob in front of the lens) OR whenever AIMING OR when FPS-steady
         // (kill the first-person idle/crouch camera jitter) — even standing still, the idle's pelvis bob
         // rides up the whole chain and floats the gun / shakes the FP camera, so it needs the hips frozen.
@@ -1534,7 +1582,13 @@ export default class PlayerBody extends Component{
         // first-person camera steady in standing idle / crouch-idle (the reported jitter). Kept off while
         // moving so the jog still reads. (StabilizeHips covers the pelvis; this covers the spine + neck.)
         const fpsSteady = (this.cameraMode === 'FPS') && !this.IsJogState(this.lowerState);
-        const target = (aiming || fpsSteady) ? this.aimIdleStabMax : 0;
+        // FPS + walking (not aiming): partially damp the spine sway too (companion to the hip damp in
+        // StabilizeHips) so the first-person walk bob is calmer in BOTH the eye and the gun it holds.
+        const fpsMoving = (this.cameraMode === 'FPS') && this.IsJogState(this.lowerState) && !aiming;
+        // FPS-steady (not aiming) near-freezes the spine/arms (head + eye ride them); ADS keeps its own
+        // subtler settle (aimIdleStabMax). FPS-walking gets the partial fpsMoveAimStab.
+        const cap = (fpsSteady && !aiming) ? this.fpsSteadyAimStab : this.aimIdleStabMax;
+        const target = (aiming || fpsSteady) ? cap : (fpsMoving ? this.fpsMoveAimStab : 0);
         this._aimIdleStab += (target - this._aimIdleStab) * (1 - Math.exp(-this.aimIdleStabLerp * t));
 
         const k = 1 - Math.exp(-this.aimIdleRefLerp * t);

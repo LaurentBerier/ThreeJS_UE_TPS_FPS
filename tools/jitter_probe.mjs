@@ -64,6 +64,8 @@ try {
     // Expose a Vector3 ctor for the sampler (three is module-scoped); grab it off an existing object.
     window.THREE_V3 = window.__body().modelRoot.position.constructor;
     window.__toggleCam = () => window.__pc().ToggleCamera();
+    window.__press = (code) => document.dispatchEvent(new KeyboardEvent('keydown', { code }));
+    window.__release = (code) => document.dispatchEvent(new KeyboardEvent('keyup', { code }));
     window.__setCrouch = (on) => { window.__pc()._crouchToggle = on; };
     window.__setAim = (on) => { const pc = window.__pc(); pc.aiming = on; pc._aimHeld = on; };
     window.__mode = () => window.__pc().cameraMode;
@@ -124,9 +126,10 @@ try {
   let s = await collect(90);
   log('TPS idle     cam.y jitter(µm):', JSON.stringify(jitter(s, 'cy')), ' head.y:', JSON.stringify(jitter(s, 'hy')), ' modelRoot.y:', JSON.stringify(jitter(s, 'mry')));
 
-  // --- FPS idle ---
+  // --- FPS idle --- (settle long enough for the hip/spine freeze references to converge, matching the
+  // in-game "stand still for ~1s and the view settles" — too short a settle catches the refs mid-converge)
   await page.evaluate(() => window.__toggleCam());
-  await step(30);
+  await step(120);
   log('mode:', await page.evaluate(() => window.__mode()));
   s = await collect(90);
   log('FPS idle     cam.y jitter(µm):', JSON.stringify(jitter(s, 'cy')), ' cam.x:', JSON.stringify(jitter(s, 'cx')), ' head.y:', JSON.stringify(jitter(s, 'hy')), ' modelRoot.y:', JSON.stringify(jitter(s, 'mry')));
@@ -151,6 +154,16 @@ try {
   log('FPS crouch   cam.y jitter(µm):', JSON.stringify(jitter(s, 'cy')), ' cam.x:', JSON.stringify(jitter(s, 'cx')), ' head.y:', JSON.stringify(jitter(s, 'hy')), ' modelRoot.y:', JSON.stringify(jitter(s, 'mry')));
   await page.evaluate(() => window.__setCrouch(false));
   await step(45);
+
+  // --- FPS walking (head-bob ridden by the lens) — LAST, since it moves the player onto varied
+  // terrain (would otherwise confound the stationary idle/aim/crouch jitter above). cam.x/cy RANGE
+  // here includes the world translation of walking; read the mean2/max2 CURVATURE for the bob jitter.
+  await page.evaluate(() => window.__press('KeyW'));
+  await step(45); // reach jog speed + let the FPS-walk hip/spine damp settle
+  s = await collect(90);
+  log('FPS walk     cam.y jitter(µm):', JSON.stringify(jitter(s, 'cy')), ' cam.x:', JSON.stringify(jitter(s, 'cx')), ' modelRoot.y:', JSON.stringify(jitter(s, 'mry')));
+  await page.evaluate(() => window.__release('KeyW'));
+  await step(35);
 
   if (errors.length) { log('\n=== RUNTIME ERRORS (' + errors.length + ') ==='); errors.slice(0, 40).forEach((e) => log(e)); }
   else { log('\n✅ no runtime errors'); }

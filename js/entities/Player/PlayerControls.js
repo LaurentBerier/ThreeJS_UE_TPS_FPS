@@ -180,6 +180,18 @@ export default class PlayerControls extends Component{
         this.tpsNear = 0.01;            // crisp near for the third-person boom (set in Initialize)
         this._headPos = new THREE.Vector3();
 
+        // --- FPS vertical view smoothing. The first-person eye rides the body's head bone, so while
+        // walking the head's vertical bob — and, more so, the physics capsule riding the FACETED terrain
+        // collider (the bulk of the measured FPS walk shake: modelRoot.y curvature ≈ the whole head bob)
+        // — jolts the view. We low-pass ONLY the eye HEIGHT here: the horizon steadies while the (un-
+        // smoothed) body gun keeps its full bob, so the weapon reads a subtle bob against a calm view —
+        // the AAA first-person feel. Horizontal x/z is left exact so turning stays crisp, and the filter
+        // is SNAPPED (not smoothed) while airborne/rolling so a jump/fall/land tracks the capsule 1:1.
+        // Only the camera height is touched — the body, feet and gun are untouched (no swim, no foot drift).
+        this.fpsEyeYLerp = 8;           // eye-height low-pass rate (1/s); higher = snappier, less steady
+        this._fpsEyeY = 0;              // smoothed eye height
+        this._fpsEyeYSeeded = false;
+
         // --- TPS spring-arm "spline" collision (simple & glitch-free). The camera rides a
         // straight SPLINE from the centred pivot (above the head) out to the over-the-shoulder
         // REST point. Collision only ever slides the camera ALONG that line — closer to the
@@ -522,7 +534,7 @@ export default class PlayerControls extends Component{
     // re-calls this at the END of its Update (after it has posed the body), so the eye and the gun it
     // holds are locked to the same frame. Reading the head bone (animation), not the camera, so there
     // is no feedback loop. capPos is the capsule eye position (Player.Position).
-    PlaceFpsEyePosition(capPos){
+    PlaceFpsEyePosition(capPos, t = 0, smooth = false){
         if(this.cameraMode !== 'FPS' || !this.camera){ return; }
         this._fwd.copy(this._fwdBase).applyQuaternion(this.parent.Rotation);
         if(this.body && this.body.GetHeadWorldPosition(this._headPos)){
@@ -556,6 +568,17 @@ export default class PlayerControls extends Component{
         }
         if(this.rolling){
             this._camTarget.y = Math.max(this._camTarget.y, capPos.y - 0.45);
+        }
+        // Low-pass the eye HEIGHT only (see fpsEyeYLerp): steadies the walk/terrain vertical bob while
+        // turning (x/z) stays exact and the body gun keeps its bob. Only the authoritative end-of-frame
+        // re-call (PlayerBody, smooth=true with a real dt) advances the filter; the start-of-frame call
+        // (Controls, smooth=false) places raw and is overwritten this same frame. Snap while airborne/
+        // rolling so a jump/fall/landing tracks the capsule 1:1 (then the smoothing re-seeds on landing).
+        if(smooth && t > 0){
+            const grounded = this.IsGrounded && !this.rolling;
+            if(!this._fpsEyeYSeeded || !grounded){ this._fpsEyeY = this._camTarget.y; this._fpsEyeYSeeded = true; }
+            else { this._fpsEyeY += (this._camTarget.y - this._fpsEyeY) * (1 - Math.exp(-this.fpsEyeYLerp * t)); }
+            this._camTarget.y = this._fpsEyeY;
         }
         this.camera.position.copy(this._camTarget);
     }

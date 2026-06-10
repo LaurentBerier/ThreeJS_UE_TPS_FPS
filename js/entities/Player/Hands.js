@@ -196,15 +196,15 @@ export default class Hands extends Component{
     }
 
     Update(t){
+        // The arms viewmodel is permanently invisible (first-person renders the full-body avatar and the
+        // camera rides its head bone), so only the animation FSM still matters — it advances the
+        // shoot/reload state WeaponManager polls. The old FP-only block (ADS FOV zoom, idle steady, weapon
+        // bob) is intentionally gone: PlayerControls now owns the camera FOV in BOTH modes (fpsFov /
+        // fpsAimFov), and Hands writing camera.fov every frame FOUGHT that — two easers dragging the FOV to
+        // a wrong compromise (~46° instead of the intended 72° ADS) and wobbling it through aim transitions
+        // (a first-person "FOV breathing" that read as camera shake). Aim/SteadyAim/WeaponBob only ever
+        // moved the invisible model or that contested FOV, so dropping them is purely corrective.
         this.mixer.update(t);
         this.stateMachine.Update(t);
-        // FP-only behaviours (ADS zoom, idle steadying, weapon bob) are skipped in
-        // third-person so they never touch the shared camera FOV while hidden.
-        if(this.cameraMode !== 'FPS'){
-            return;
-        }
-        this.Aim(t);
-        this.SteadyAim(t);
-        this.WeaponBob(t);
     }
 }

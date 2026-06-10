@@ -8,7 +8,7 @@
       skeleton) + the A_Rifle animation FBX files with a MODERN three.js FBXLoader
       (r160, which parses these UE 2020 anim exports that r127 cannot), names the clips,
       and exports ONE small binary GLB carrying the SKELETON + clips (NO mesh geometry):
-        assets/characters/ue/SK_Mannequin.glb  (skeleton + idle/walk/jogs/jump/reload/shoot)
+        assets/characters/ue/SK_Mannequin.glb  (skeleton + idle/aim/walk/jogs/jump/reload/shoot)
       The runtime loads it with its own (r127) GLTFLoader and uses ONLY its `.animations`
       — the rendered body comes from the pre-oriented SK_Mannequin_new.glb, and the clips
       drive that rig by bone name. So this GLB needs no mesh; exporting skeleton-only keeps
@@ -48,7 +48,8 @@
         mesh.name = 'SK_Mannequin';
 
         const animFiles = {
-          idle: 'A_Rifle_Idle_.FBX',
+          idle: 'A_Rifle_Idle.fbx',           // updated rifle idle (was A_Rifle_Idle_.FBX)
+          aim: 'A_Rifle_Aim.fbx',             // down-the-sights aim pose (drives the torso while ADS)
           walk: 'A_Rifle_Jog_Fwd.FBX',        // forward jog (name 'walk' kept for soldier back-compat)
           jog_bwd: 'A_Rifle_Jog_Bwd.fbx',     // strafe/directional locomotion (player anim graph)
           jog_left: 'A_Rifle_Jog_Left.fbx',

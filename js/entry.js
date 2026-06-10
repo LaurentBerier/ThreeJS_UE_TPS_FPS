@@ -341,6 +341,10 @@ class FPSGameApp{
     // bind (T) pose for a few frames. Cloning gives 'run' its own bindings.
     this.ueAnims = {
       idle: byName('idle'),
+      // Dedicated down-the-sights aim pose (drives the torso while ADS — replaces the old
+      // idle-upper placeholder). Player-only; the soldier ignores unknown clips. Falls back
+      // to the idle-upper pose in PlayerBody if this clip didn't bake.
+      aim: byName('aim'),
       walk: walkClip,                          // forward jog (soldier 'walk' / player 'jogF')
       run: walkClip ? walkClip.clone() : undefined,   // soldier chase (separate instance)
       reload: byName('reload'),
