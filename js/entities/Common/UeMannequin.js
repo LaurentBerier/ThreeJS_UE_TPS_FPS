@@ -81,11 +81,11 @@ const WEAPON_GRIP_FPS = {
 // want it down the sights, then paste the snippet back here. Starts as a COPY of the FPS hip grip so
 // ADS reads identically until you tune it. Hand-local cm / degrees, same as above.
 const WEAPON_GRIP_FPS_AIM = {
-    position: new THREE.Vector3(-29.5, -27.4, 0.6),
+    position: new THREE.Vector3(-51.5, -14.9, 16),
     rotationEuler: new THREE.Euler(
         THREE.MathUtils.degToRad(0),
-        THREE.MathUtils.degToRad(1),
-        THREE.MathUtils.degToRad(280),
+        THREE.MathUtils.degToRad(-4),
+        THREE.MathUtils.degToRad(271),
     ),
 };
 

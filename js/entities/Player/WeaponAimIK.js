@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { IKChainSolver } from '../Common/IKUtils.js'
+import { AmmoHelper, CollisionFilterGroups } from '../../AmmoLib.js'
 
 
 // Weapon aim-alignment + two-hand IK solver (reusable; the player wires one of these in PlayerBody).
@@ -160,6 +161,26 @@ export default class WeaponAimIK{
         // 1 = always straight down). High enough to kill the swivel/gimbal as the aim sweeps while still
         // reading natural for a rifle grip.
         this.supportElbowStabilize = 0.7;
+
+        // --- Muzzle wall-clearance (stops the barrel poking THROUGH walls — the reported bug). After the
+        // barrel is aimed, a small sphere is swept from the wrist to the muzzle tip against the STATIC
+        // level; if it hits (the barrel would cross a wall) the gun is pitched UP about its horizontal
+        // right axis so the muzzle lifts out of the wall — the shooter "ports" the weapon up against
+        // cover. Eased in/out so it never pops; a pure no-op in the open (no hit => lift eases to 0). The
+        // physics world is fed in per-frame by the owner (PlayerBody.UpdateWeaponAim). Runs whenever the
+        // gun is held (gripActive), in TPS and FPS alike, so the barrel never clips regardless of aim.
+        this.muzzleClearRadius = 0.05;      // wrist->muzzle sweep sphere radius (m)
+        this.muzzleClearGain = 2.4;         // lift (rad) per unit blocked fraction of the wrist->muzzle span
+        this.muzzleClearMax = THREE.MathUtils.degToRad(55);  // clamp on the lift
+        this.muzzleClearLerp = 14;          // ease rate (1/s) for the lift in/out
+        this._muzzleLift = 0;               // eased current lift (rad)
+        this._clrFrom = new THREE.Vector3();
+        this._clrTo = new THREE.Vector3();
+        this._clrFwd = new THREE.Vector3();
+        this._clrAxis = new THREE.Vector3();
+        this._clrUp = new THREE.Vector3(0, 1, 0);
+        this._clrQ = new THREE.Quaternion();
+        this._clrRes = { point: new THREE.Vector3(), normal: new THREE.Vector3(), fraction: 1 };
 
         // Shared two-bone IK solver (analytic, sign-safe). Owns its own scratch pool so the support-arm
         // solve never clobbers the leg solves' intermediates. The two-bone scratch declared above is now
@@ -327,8 +348,9 @@ export default class WeaponAimIK{
     //   aimTarget     : world point under the crosshair (PlayerControls.aimTarget)
     //   aimValid      : the crosshair ray hit geometry (else aimTarget is a far fallback)
     //   cameraForward : unit camera-forward (fallback aim direction for too-close / behind targets)
+    //   world         : the Ammo physics world (for the muzzle wall-clearance sweep; optional)
     //   t             : delta seconds
-    Update(t, { active, gripActive = active, aimTarget, aimValid = true, cameraForward = null }){
+    Update(t, { active, gripActive = active, aimTarget, aimValid = true, cameraForward = null, world = null }){
         const pivot = this.weaponPivot;
         if(!pivot || !this.handBoneR){ return; }
 
@@ -430,6 +452,10 @@ export default class WeaponAimIK{
         this._applyWorldQuat(this.handBoneR, this._qApplied);
         this.handBoneR.updateWorldMatrix(false, true);   // refresh the gun (child) world for the IK + debug reads
 
+        // Muzzle wall-clearance: lift the gun out of any wall the barrel would cross, BEFORE the support
+        // hand re-plants on the (now-lifted) foregrip so both hands follow the ported weapon. No-op in the open.
+        this._applyMuzzleClearance(world, gripActive, t);
+
         // --- Support-hand IK: plant hand_l on the (now-rotated) foregrip socket. Weighted by the GRIP
         // blend (always-on for a held two-handed weapon), NOT the aim blend — so the support hand stays
         // glued to the gun at idle and through aim/shoot transitions (no release/re-grab snap). ---
@@ -479,6 +505,40 @@ export default class WeaponAimIK{
         d.rightGrip.copy(this.rightGripLocal).add(this.RightHandOffset).applyMatrix4(pivot.matrixWorld);
         d.leftGrip.copy(this._leftTarget);
         d.handTarget.copy(this._leftTarget);
+    }
+
+    // Muzzle wall-clearance. Sweep a small sphere from the wrist (the gun's rotation pivot) to the muzzle
+    // tip against the STATIC level; if the barrel would cross a wall, pitch the gun UP about its
+    // horizontal-right axis so the muzzle lifts out of the wall (a natural "weapon up against cover"
+    // port). The lift is eased so it never pops, and is a pure no-op in the open (no hit => eases to 0).
+    // Applied to the WRIST bone (hand_r) about its origin, like the aim correction, so the gun + dominant
+    // hand stay together; the support hand re-plants on the lifted foregrip in the IK that follows.
+    _applyMuzzleClearance(world, gripActive, t){
+        const pivot = this.weaponPivot;
+        let target = 0;
+        if(world && gripActive && pivot && this.handBoneR){
+            pivot.updateWorldMatrix(false, false);
+            this._clrTo.copy(this.muzzleLocal).applyMatrix4(pivot.matrixWorld);   // muzzle tip (world)
+            this._clrFrom.copy(this._P);                                          // wrist (world) — sweep start
+            if(AmmoHelper.SphereSweep(world, this.muzzleClearRadius, this._clrFrom, this._clrTo,
+                this._clrRes, CollisionFilterGroups.StaticFilter) && this._clrRes.fraction < 1){
+                // Blocked: lift in proportion to how early the barrel hits the wall (deeper => bigger lift).
+                target = THREE.MathUtils.clamp(
+                    this.muzzleClearGain * (1 - this._clrRes.fraction), 0, this.muzzleClearMax);
+            }
+        }
+        this._muzzleLift += (target - this._muzzleLift) * (1 - Math.exp(-this.muzzleClearLerp * t));
+        if(this._muzzleLift < 1e-3){ return; }
+        // Lift axis = barrelForward × worldUp (rotating the forward about it by +angle tilts it toward up,
+        // raising the muzzle). Degenerate only when the barrel is near-vertical — then skip (no clean "up").
+        pivot.getWorldQuaternion(this._weaponWQ);
+        this._clrFwd.copy(this.forwardLocal).applyQuaternion(this._weaponWQ).normalize();
+        this._clrAxis.copy(this._clrFwd).cross(this._clrUp);
+        if(this._clrAxis.lengthSq() < 1e-6){ return; }
+        this._clrAxis.normalize();
+        this._clrQ.setFromAxisAngle(this._clrAxis, this._muzzleLift);
+        this._applyWorldQuat(this.handBoneR, this._clrQ);
+        this.handBoneR.updateWorldMatrix(false, true);   // refresh the lifted gun for the support-hand IK
     }
 
     // One-handed off-hand relax: rotate the support upper arm so its shoulder->elbow direction eases

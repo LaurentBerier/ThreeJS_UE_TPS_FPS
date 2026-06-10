@@ -86,6 +86,17 @@ export default class Ragdoll{
         // upright. Constant (no time-varying scripted stiffening).
         this.braceStiffness = 0.20;    // grandparent braces resist bending
 
+        // ---- Leg-specific stiffening (the "legs don't twist 180°" fix) ----
+        // The legs fold/twist the worst on a verlet corpse — the long thigh→calf→foot chain has the most
+        // leverage, so it can wring ~180° or fold the shin back through the thigh. We stiffen the LEG
+        // chains specifically: stronger braces + a TIGHTER (less-folding) joint limit + a firmer T-pose
+        // pull than the rest of the body, so the legs keep a believable bend instead of pretzeling. Matched
+        // by bone name (rig-agnostic: any bone reading as a leg joint), so it works on both enemy rigs.
+        this.legBoneRe = /thigh|calf|shin|knee|leg|foot|ankle/i;   // UE (thigh/calf/foot) + Mixamo (UpLeg/Leg/Foot)
+        this.legBraceStiffness = 0.55;   // grandparent brace k for leg chains (vs braceStiffness elsewhere)
+        this.legFoldFrac = 0.70;         // |A-C| min for leg joints — tighter than jointFoldFrac (no over-fold)
+        this.legRestStiffness = 0.16;    // firmer T-pose pull on leg joints (more "muscle tone" in the legs)
+
         // ---- Joint angle limits (AAA "no impossible poses") ----
         // The distance + brace sticks alone let a verlet skeleton fold into anatomically impossible
         // poses (a forearm bent backward through the upper arm, a shin folding through the thigh). We
@@ -185,10 +196,11 @@ export default class Ragdoll{
         this.secondHitFreeze = 0.5;         // freeze this long after the 2nd hit (the requested quick kill)
         // 1st-hit upward velocity GAIN (>1). The floor contact already reflects each particle up by
         // `restitution`; on the first counted ground impact we further multiply that REBOUND (upward)
-        // velocity so the corpse springs back off the floor with a clearly visible bounce before it
-        // comes down again and settles. Only upward motion is scaled, so parts still falling aren't
-        // driven harder into the ground. (The user wanted a visible bounce when the body lands.)
-        this.landingBounce = 20.2;
+        // velocity so the corpse gives a small, believable settle-bounce before it comes down again and
+        // rests. Only upward motion is scaled, so parts still falling aren't driven harder into the
+        // ground. Kept MODEST (a realistic body doesn't trampoline off the floor) — paired with the
+        // reduced death impulse, deaths read as a body crumpling, not getting launched.
+        this.landingBounce = 2.5;
 
         skinnedMesh.skeleton.bones.forEach(b => b.updateWorldMatrix(true, false));
 
@@ -235,14 +247,18 @@ export default class Ragdoll{
         // The graph root = the kept bone with no kept ancestor (pelvis / hips).
         this.root = this.nodes.find(n => !n.parent) || this.nodes[0];
 
-        // Distance sticks: limb (parent) + brace (grandparent, for bending stiffness).
+        // Distance sticks: limb (parent) + brace (grandparent, for bending stiffness). Leg chains get a
+        // STIFFER brace (legBraceStiffness) so the legs resist folding/twisting into impossible poses.
+        const isLeg = node => node && node.bone && this.legBoneRe.test(node.bone.name);
         this.sticks = [];
         for(const node of this.nodes){
             if(node.parent){
                 this.sticks.push({ a: node, b: node.parent, len: node.p.distanceTo(node.parent.p), k: this.boneStiffness });
             }
             if(node.grand){
-                this.sticks.push({ a: node, b: node.grand, len: node.p.distanceTo(node.grand.p), k: this.braceStiffness });
+                const leg = isLeg(node) || isLeg(node.grand);
+                this.sticks.push({ a: node, b: node.grand, len: node.p.distanceTo(node.grand.p),
+                    k: leg ? this.legBraceStiffness : this.braceStiffness });
             }
         }
 
@@ -294,13 +310,16 @@ export default class Ragdoll{
             const bc = B.p.distanceTo(A.p);
             const straight = ab + bc;
             if(straight < 1e-5){ continue; }
+            // Leg joints fold less + spring toward their T-pose angle harder, so a knee/hip can't wring
+            // 180° or fold the shin back through the thigh.
+            const leg = isLeg(node) || isLeg(B) || isLeg(A);
             const stick = {
                 a: node, b: A,
-                min: straight * this.jointFoldFrac,
+                min: straight * (leg ? this.legFoldFrac : this.jointFoldFrac),
                 max: straight * this.jointStraightFrac,
                 k: this.limitStiffness,
                 rest: null,                                  // T-pose target span (set below if available)
-                restK: this.jointRestStiffness,
+                restK: leg ? this.legRestStiffness : this.jointRestStiffness,
             };
             // T-pose span for this chain, clamped into the joint's own [min,max] so the soft rest pull
             // can never fight the hard limits.
@@ -383,7 +402,7 @@ export default class Ragdoll{
         if(dir.lengthSq() < 1e-6){ dir.set(0, 1, 0); }
         dir.normalize();
 
-        const strength = 3.7 * (0.7 + Math.random() * 0.9);   // ~2.6 .. 5.9 m/s at the impact joint (punchy)
+        const strength = 1.6 * (0.7 + Math.random() * 0.9);   // ~1.1 .. 2.6 m/s at the impact joint (restrained)
 
         const push = (node, scale) => {
             if(!node){ return; }

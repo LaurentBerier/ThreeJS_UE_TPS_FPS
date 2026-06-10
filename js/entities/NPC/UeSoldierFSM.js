@@ -116,6 +116,15 @@ class ChaseState extends State{
         this.parent.proxy.combatFacing = false;
     }
 
+    // Provoked by a hit while ALREADY chasing (UeSoldierController.TakeHit): clear the "losing sight"
+    // patience and force an immediate repath, so a soldier shot while pursuing a stale last-seen spot —
+    // or one about to give up and fall back to patrol — turns and presses toward where the shot just
+    // came from (TakeHit refreshed lastSeenPos to the attacker). Stops a hit from ever being ignored.
+    OnProvoked(){
+        this.lostTimer = 0.0;
+        this.updateTimer = 0.0;
+    }
+
     Update(t){
         const proxy = this.parent.proxy;
 

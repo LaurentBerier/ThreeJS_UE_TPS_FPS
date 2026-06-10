@@ -3,20 +3,40 @@ import * as THREE from 'three'
 import {Ammo, createConvexHullShape} from '../../AmmoLib.js'
 
 export default class LevelSetup extends Component{
-    constructor(mesh, scene, physicsWorld){
+    constructor(mesh, scene, physicsWorld, terrain = null){
         super();
         this.scene = scene;
         this.physicsWorld = physicsWorld;
         this.name = 'LevelSetup';
         this.mesh = mesh;
+        // Optional uneven terrain (Terrain component). When present the old flat ground (the 'Cube' node)
+        // is HIDDEN + given no collider — the terrain replaces it — and every shipping container is snapped
+        // vertically onto the terrain at its (x,z), so the depot sits on the hills instead of a flat plane.
+        this.terrain = terrain;
     }
 
     LoadScene(){
-        
+        // First pass: snap the level onto the terrain + retire the old flat ground, BEFORE colliders are
+        // built (so the static hulls land at the snapped positions). Vertical-only snap => the navmesh's
+        // x/z footprint stays valid. The container nodes are top-level children of the GLB root, so their
+        // local position is their world position.
+        if(this.terrain){
+            this.mesh.traverse((node) => {
+                if(node === this.mesh){ return; }
+                if(node.name === 'Cube'){ node.visible = false; return; }   // flat ground -> hidden (replaced)
+                if(node.parent === this.mesh && /Container/i.test(node.name)){
+                    node.position.y += this.terrain.HeightAt(node.position.x, node.position.z);
+                }
+            });
+            this.mesh.updateMatrixWorld(true);   // so the convex-hull colliders below read the snapped world transforms
+        }
+
         this.mesh.traverse( ( node ) => {
+            // The old flat ground is gone (terrain replaces it): no shadow/collider for it.
+            if(this.terrain && node.name === 'Cube'){ return; }
             if ( node.isMesh || node.isLight ) { node.castShadow = true; }
-            if(node.isMesh){ 
-                node.receiveShadow = true; 
+            if(node.isMesh){
+                node.receiveShadow = true;
                 //node.material.wireframe = true;
                 this.SetStaticCollider(node);
             }

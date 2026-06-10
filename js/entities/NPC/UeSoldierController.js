@@ -235,6 +235,9 @@ export default class UeSoldierController extends Component{
 
     Initialize(){
         this.navmesh = this.FindEntity('Level').GetComponent('Navmesh');
+        // Uneven terrain (optional): the soldier rides it — Y follows the terrain height under its (x,z)
+        // each step (the navmesh only constrains x/z), so it walks the hills instead of floating on a plane.
+        this.terrain = this.FindEntity('Level').GetComponent('Terrain') || null;
         this.hitbox = this.GetComponent('AttackTrigger');
         this.collision = this.GetComponent('UeSoldierCollision');
         this.player = this.FindEntity('Player');
@@ -263,6 +266,8 @@ export default class UeSoldierController extends Component{
         // A spawn that's already valid is left untouched.
         this.position = this.parent.Position.clone();
         this.navmesh.FindClearSpawn(this.position, this.physicsWorld, this.position);
+        // Re-seat on the terrain at the (possibly relocated) clear spawn so the feet start on the ground.
+        if(this.terrain){ this.position.y = this.terrain.HeightAt(this.position.x, this.position.z); }
         this.parent.SetPosition(this.position);   // keep entity targeting consistent with the snap
         this.modelRoot.position.copy(this.position);
         this.stuckSamplePos.copy(this.position);
@@ -804,12 +809,12 @@ export default class UeSoldierController extends Component{
             dir.normalize();
             const yaw = (Math.random() - 0.5) * 1.0;            // spread the shove ±~29°
             const cy = Math.cos(yaw), sy = Math.sin(yaw);
-            const mag = 3.1 * (0.7 + Math.random() * 0.7);      // ~2.2 .. 4.2 m/s horizontal (punchy knockback)
+            const mag = 1.5 * (0.7 + Math.random() * 0.7);      // ~1.0 .. 2.0 m/s horizontal (gentle, realistic knockback)
             const impulse = new THREE.Vector3(
                 (dir.x * cy - dir.z * sy) * mag,
-                1.9 * (0.8 + Math.random() * 0.7),              // lift ~1.5 .. 2.85 m/s (the body kicks up)
+                1.0 * (0.8 + Math.random() * 0.7),              // lift ~0.8 .. 1.5 m/s (a small kick, not a launch)
                 (dir.x * sy + dir.z * cy) * mag);
-            const twist = (Math.random() - 0.5) * 7.5;          // ±3.75 rad/s spin while falling
+            const twist = (Math.random() - 0.5) * 3.5;          // ±1.75 rad/s spin while falling (calmer)
             this.ragdoll = new Ragdoll(this.skinnedmesh, {
                 groundY: this.position.y,
                 impulse,
@@ -965,8 +970,13 @@ export default class UeSoldierController extends Component{
                     this.navNode = this.navmesh.ClampStep(
                         this.position, this.desiredPos, this.navNode, this.navGroup, this.clampTarget
                     );
-                    this.clampTarget.y = this.position.y;
-                    moved = this.position.distanceTo(this.clampTarget);
+                    // Ride the terrain: take Y from the terrain height under the clamped (x,z) so the
+                    // soldier walks up/down the hills (the navmesh constrains x/z only). Flat ground / no
+                    // terrain => holds its current Y, exactly as before. Horizontal distance only, so the
+                    // measured speed (idle/jog choice) isn't inflated by the vertical step.
+                    this.clampTarget.y = this.terrain
+                        ? this.terrain.HeightAt(this.clampTarget.x, this.clampTarget.z) : this.position.y;
+                    moved = Math.hypot(this.clampTarget.x - this.position.x, this.clampTarget.z - this.position.z);
                     this.position.copy(this.clampTarget);
                 }else{
                     // Still off the mesh after re-acquiring: hold at the last on-mesh spot rather
@@ -1191,11 +1201,20 @@ export default class UeSoldierController extends Component{
         if(this.health === 0){
             this.stateMachine.SetState('dead');
         }else{
-            // React from any non-combat state; if already chasing/attacking the memory refresh above
-            // is enough (it keeps pressing the engagement).
-            const state = this.stateMachine.currentState && this.stateMachine.currentState.Name;
+            // Getting shot ALWAYS provokes an engagement — the soldier turns and pushes toward the
+            // shooter instead of ever shrugging off a hit. The memory refresh above already aimed
+            // lastSeenPos at the attacker; now force the FSM to act on it from ANY non-combat state:
+            //   * idle / patrol  -> snap into chase (the only case handled before),
+            //   * chase          -> refresh its patience + repath, so a soldier shot while closing on a
+            //                       stale last-seen spot (or about to give up) re-targets the shooter,
+            //   * combat         -> already a firefight; the memory refresh keeps it pressing.
+            // This closes the "shot from outside my view, didn't react" gap.
+            const cur = this.stateMachine.currentState;
+            const state = cur && cur.Name;
             if(state === 'idle' || state === 'patrol'){
                 this.stateMachine.SetState('chase');
+            }else if(state === 'chase' && cur.OnProvoked){
+                cur.OnProvoked();
             }
         }
     }

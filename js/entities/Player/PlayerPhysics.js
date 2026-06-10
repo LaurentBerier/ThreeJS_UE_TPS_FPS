@@ -28,6 +28,14 @@ export default class PlayerPhysics extends Component{
         this.crouched = false;
         this._standShape = null;
         this._crouchShape = null;
+        // FPS uses a WIDER collision capsule so the first-person body/arms don't clip/glitch when the player
+        // presses against a wall (the player centre is held further off the wall). The wide variants keep the
+        // SAME TOTAL height (cylinder height reduced by 2*(fpsRadius-radius)), so grounding, eye height and
+        // the crouch centerDrop are all unchanged — only the lateral footprint grows. Swapped on camera mode.
+        this.fpsRadius = 0.42;
+        this.wide = false;                      // true while in FPS (wider capsule active)
+        this._standShapeWide = null;
+        this._crouchShapeWide = null;
         this._sweepRes = { fraction: 1 };       // reused CanStandUp sweep result
     }
 
@@ -42,6 +50,11 @@ export default class PlayerPhysics extends Component{
 
         this._standShape  = new Ammo.btCapsuleShape(this.radius, this.standHeight);
         this._crouchShape = new Ammo.btCapsuleShape(this.radius, this.crouchHeight);
+        // Wider FPS variants: cylinder height reduced by 2*(fpsRadius-radius) so the TOTAL height (bottom/top,
+        // grounding, centerDrop) matches the normal shapes — only the radius (lateral clearance) grows.
+        const dwide = 2 * (this.fpsRadius - this.radius);
+        this._standShapeWide  = new Ammo.btCapsuleShape(this.fpsRadius, Math.max(0.05, this.standHeight  - dwide));
+        this._crouchShapeWide = new Ammo.btCapsuleShape(this.fpsRadius, Math.max(0.05, this.crouchHeight - dwide));
         const localInertia = new Ammo.btVector3(0,0,0);
         const bodyInfo = new Ammo.btRigidBodyConstructionInfo(mass, motionState, this._standShape, localInertia);
         this.body = new Ammo.btRigidBody(bodyInfo);
@@ -68,15 +81,33 @@ export default class PlayerPhysics extends Component{
         o.setValue(o.x(), o.y() + dy, o.z());               // shift the body so the bottom stays put
         const ms = this.body.getMotionState();
         if(ms){ ms.setWorldTransform(tr); }                 // keep the interpolated transform in sync
-        this.body.setCollisionShape(want ? this._crouchShape : this._standShape);
+        this.crouched = want;
+        this.body.setCollisionShape(this._currentShape());  // crouch shape (wide in FPS, normal in TPS)
         if(this.world.updateSingleAabb){ this.world.updateSingleAabb(this.body); }
 
         const v = this.body.getLinearVelocity();
         v.setY(0);                                          // kill vertical velocity so the swap can't bounce/launch
         this.body.setLinearVelocity(v);
         this.body.activate(true);
-        this.crouched = want;
         return true;
+    }
+
+    // The collision shape for the current (crouched, wide) state.
+    _currentShape(){
+        if(this.crouched){ return this.wide ? this._crouchShapeWide : this._crouchShape; }
+        return this.wide ? this._standShapeWide : this._standShape;
+    }
+
+    // Swap to the wider FPS capsule (or back to the normal one). Same TOTAL height, so there's no vertical
+    // shift — just re-seat the collision shape for the current crouch state and refresh the broadphase AABB.
+    // Called by PlayerControls on a TPS<->FPS camera switch.
+    SetWide(on){
+        on = !!on;
+        if(on === this.wide || !this.body){ return; }
+        this.wide = on;
+        this.body.setCollisionShape(this._currentShape());
+        if(this.world.updateSingleAabb){ this.world.updateSingleAabb(this.body); }
+        this.body.activate(true);
     }
 
     // Is there room to stand back up? Thick upward sphere-sweep (so it can't slip past a thin ledge)

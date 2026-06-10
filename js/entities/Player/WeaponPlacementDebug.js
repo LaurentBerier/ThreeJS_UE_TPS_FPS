@@ -181,12 +181,24 @@ export default class WeaponPlacementDebug extends Component{
 
     Toggle(){
         this.active = !this.active;
+        // FPS placement keeps the REAL first-person camera + aim pose intact (so the gun is placed in its
+        // true ADS framing); TPS placement uses the free-fly orbit cam. Decided from the camera mode at
+        // open time (mode is only swapped with the panel closed, so it can't change mid-edit).
+        const fps = !!(this.controls && this.controls.cameraMode === 'FPS');
         if(this.active){
             this.Apply();
-            this.SyncFlyCamFromCamera();
+            if(!fps){ this.SyncFlyCamFromCamera(); }
         }
-        // Hand the camera to (or back from) the free-fly cam.
-        if(this.controls){ this.controls.SetCameraOverride(this.active); }
+        if(this.controls){
+            if(fps){
+                // Hold the player + camera + aim steady; latch the CURRENT aim state so the seat being
+                // edited (FPS hip vs FPS_AIM) is whatever you opened the panel in (hold right-click on open
+                // for FPS_AIM) and can't flip while you nudge.
+                this.controls.SetPlacementHold(this.active, this.active ? !!this.controls.aiming : false);
+            }else{
+                this.controls.SetCameraOverride(this.active);   // TPS: free-fly orbit
+            }
+        }
         this.el.style.display = this.active ? 'block' : 'none';
         this.Render();
     }
@@ -205,6 +217,10 @@ export default class WeaponPlacementDebug extends Component{
     // PlayerControls (which is yielding the camera), so this write wins.
     Update(t){
         if(!this.active || !this.camera){ return; }
+        // Only drive the free-fly camera in TPS placement (cameraOverride). In FPS the panel keeps the
+        // gameplay first-person camera (placementHold) so the gun stays in its true ADS framing — leave
+        // the camera to PlayerControls.
+        if(!(this.controls && this.controls.cameraOverride)){ return; }
 
         this._e.set(this.camPitch, this.camYaw, 0, 'YXZ');
         this._q.setFromEuler(this._e);

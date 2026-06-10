@@ -14,6 +14,7 @@ import Entity from './Entity.js'
 import Sky from './entities/Sky/Sky2.js'
 import Clouds from './entities/Sky/Clouds.js'
 import LevelSetup from './entities/Level/LevelSetup.js'
+import Terrain from './entities/Level/Terrain.js'
 import PlayerControls from './entities/Player/PlayerControls.js'
 import PlayerPhysics from './entities/Player/PlayerPhysics.js'
 import Stats from 'three/examples/jsm/libs/stats.module.js'
@@ -103,6 +104,10 @@ const decalAlpha = 'assets/decals/decal_a.jpg'
 
 //Sky
 const skyTex = 'assets/sky.jpg'
+
+// Heightmap for the uneven terrain (gentle hills/slopes that replace the flat ground). Sampled at load
+// into a height grid + a static collider by the Terrain component; see entities/Level/Terrain.js.
+const heightmap = 'assets/World/heightmaps_20260609_150752_1584m.png'
 
 import DebugDrawer from './DebugDrawer.js'
 import Navmesh from './entities/Level/Navmesh.js'
@@ -297,6 +302,8 @@ class FPSGameApp{
     promises.push(this.AddAsset(decalAlpha, texLoader, "decalAlpha"));
 
     promises.push(this.AddAsset(skyTex, texLoader, "skyTex"));
+    //Heightmap (uneven terrain)
+    promises.push(this.AddAsset(heightmap, texLoader, "heightmap"));
 
     await this.PromiseProgress(promises, this.OnProgress);
 
@@ -412,7 +419,11 @@ class FPSGameApp{
 
     const levelEntity = new Entity();
     levelEntity.SetName('Level');
-    levelEntity.AddComponent(new LevelSetup(this.assets['level'], this.scene, this.physicsWorld));
+    // Build the uneven terrain FIRST: its collider + HeightAt must exist before the level + every spawn is
+    // snapped onto it. Added as a component so the NPC controllers can ride it (FindEntity('Level')).
+    const terrain = new Terrain(this.scene, this.physicsWorld, this.assets['heightmap'].image);
+    levelEntity.AddComponent(terrain);
+    levelEntity.AddComponent(new LevelSetup(this.assets['level'], this.scene, this.physicsWorld, terrain));
     levelEntity.AddComponent(new Navmesh(this.scene, this.assets['navmesh']));
     levelEntity.AddComponent(new LevelBulletDecals(this.scene, this.assets['decalColor'], this.assets['decalNormal'], this.assets['decalAlpha']));
     // Shared blood-splatter burst (pooled sprites). One instance; combatants fetch it on hit.
@@ -440,7 +451,9 @@ class FPSGameApp{
     // Dev aid: press K to visualize the weapon aim-alignment + two-hand IK (aim target, crosshair
     // ray, barrel vs corrected direction, IK grip sockets, live blend value). Toggles, off by default.
     playerEntity.AddComponent(new WeaponAimDebug());
-    playerEntity.SetPosition(new THREE.Vector3(2.14, 1.48, -1.36));
+    // Spawn the player on the terrain (the physics capsule then settles onto it). 1.48 = capsule centre
+    // above the ground; add the terrain height so it isn't dropped from inside a hill / above a valley.
+    playerEntity.SetPosition(new THREE.Vector3(2.14, 1.48 + terrain.HeightAt(2.14, -1.36), -1.36));
     playerEntity.SetRotation(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), -Math.PI * 0.5));
     this.entityManager.Add(playerEntity);
 
@@ -450,7 +463,7 @@ class FPSGameApp{
 
     npcLocations.forEach((v,i)=>{
       const npcEntity = new Entity();
-      npcEntity.SetPosition(new THREE.Vector3(v[0], v[1], v[2]));
+      npcEntity.SetPosition(new THREE.Vector3(v[0], v[1] + terrain.HeightAt(v[0], v[2]), v[2]));
       npcEntity.SetName(`Mutant${i}`);
       npcEntity.AddComponent(new NpcCharacterController(SkeletonUtils.clone(this.assets['mutant']), this.mutantAnims, this.scene, this.physicsWorld));
       npcEntity.AddComponent(new AttackTrigger(this.physicsWorld));
@@ -475,7 +488,7 @@ class FPSGameApp{
 
     soldiers.forEach((s,i)=>{
       const soldierEntity = new Entity();
-      soldierEntity.SetPosition(new THREE.Vector3(s.pos[0], s.pos[1], s.pos[2]));
+      soldierEntity.SetPosition(new THREE.Vector3(s.pos[0], s.pos[1] + terrain.HeightAt(s.pos[0], s.pos[2]), s.pos[2]));
       soldierEntity.SetName(`UeSoldier${i}`);
       soldierEntity.AddComponent(new UeSoldierController(SkeletonUtils.clone(this.ueModel), this.ueAnims, this.scene, this.physicsWorld, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps']), true, this.assets['ak47Shot'], this.listener, s.faction));
       soldierEntity.AddComponent(new AttackTrigger(this.physicsWorld));
@@ -503,7 +516,7 @@ class FPSGameApp{
       const box = new Entity();
       box.SetName(`AmmoBox${i}`);
       box.AddComponent(new AmmoBox(this.scene, this.assets['ammobox'].clone(), this.assets['ammoboxShape'], this.physicsWorld));
-      box.SetPosition(new THREE.Vector3(loc[0], loc[1], loc[2]));
+      box.SetPosition(new THREE.Vector3(loc[0], loc[1] + terrain.HeightAt(loc[0], loc[2]) + 0.1, loc[2]));
       this.entityManager.Add(box);
     });
 

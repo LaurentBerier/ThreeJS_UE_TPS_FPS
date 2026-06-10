@@ -149,6 +149,8 @@ export default class CharacterController extends Component{
     Initialize(){
         this.stateMachine = new CharacterFSM(this);
         this.navmesh = this.FindEntity('Level').GetComponent('Navmesh');
+        // Uneven terrain (optional): the beast rides it — Y follows the terrain height under its (x,z).
+        this.terrain = this.FindEntity('Level').GetComponent('Terrain') || null;
         this.hitbox = this.GetComponent('AttackTrigger');
         this.collision = this.GetComponent('CharacterCollision');   // hit capsules; disabled on death
         this.player = this.FindEntity("Player");
@@ -165,6 +167,8 @@ export default class CharacterController extends Component{
         // convex hulls (a container becomes a solid box the navmesh may still cover), relocate off any
         // spot that's buried in static collision before placing the model. Valid spawns are left put.
         this.navmesh.FindClearSpawn(this.parent.position, this.physicsWorld, this.parent.position);
+        // Re-seat on the terrain at the (possibly relocated) clear spawn so the feet start on the ground.
+        if(this.terrain){ this.parent.position.y = this.terrain.HeightAt(this.parent.position.x, this.parent.position.z); }
         scene.position.copy(this.parent.position);
         
         this.mixer = new THREE.AnimationMixer( scene );
@@ -632,12 +636,12 @@ export default class CharacterController extends Component{
             dir.normalize();
             const yaw = (Math.random() - 0.5) * 1.0;            // spread the shove ±~29°
             const cy = Math.cos(yaw), sy = Math.sin(yaw);
-            const mag = 3.4 * (0.7 + Math.random() * 0.7);      // ~2.4 .. 4.6 m/s horizontal (heavy beast slam)
+            const mag = 1.6 * (0.7 + Math.random() * 0.7);      // ~1.1 .. 2.2 m/s horizontal (gentle, realistic slam)
             const impulse = new THREE.Vector3(
                 (dir.x * cy - dir.z * sy) * mag,
-                2.0 * (0.8 + Math.random() * 0.7),              // lift ~1.6 .. 3.0 m/s (a hulking body kicks up hard)
+                1.0 * (0.8 + Math.random() * 0.7),              // lift ~0.8 .. 1.5 m/s (a small kick, not a launch)
                 (dir.x * sy + dir.z * cy) * mag);
-            const twist = (Math.random() - 0.5) * 7.0;          // ±3.5 rad/s spin while falling
+            const twist = (Math.random() - 0.5) * 3.5;          // ±1.75 rad/s spin while falling (calmer)
 
             this.ragdoll = new Ragdoll(this.skinnedmesh, {
                 groundY: this.model.position.y,
@@ -684,9 +688,10 @@ export default class CharacterController extends Component{
                     this.navNode = this.navmesh.ClampStep(
                         this.model.position, this.desiredPos, this.navNode, this.navGroup, this.clampTarget
                     );
-                    // clampStep projects onto the mesh plane; keep the original
-                    // height so the enemy doesn't pop vertically.
-                    this.clampTarget.y = this.desiredPos.y;
+                    // clampStep projects onto the mesh plane; take Y from the terrain under the clamped
+                    // (x,z) so the beast rides the hills (no terrain => keep the original height as before).
+                    this.clampTarget.y = this.terrain
+                        ? this.terrain.HeightAt(this.clampTarget.x, this.clampTarget.z) : this.desiredPos.y;
 
                     // Wall-contact test: how much of the intended horizontal step survived the
                     // navmesh clamp? If the clamp slid us along a boundary and ate most of the

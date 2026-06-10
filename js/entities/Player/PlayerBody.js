@@ -186,6 +186,23 @@ export default class PlayerBody extends Component{
         this.fpsAimBiasLerp = 10.0;                        // ease rate for the centring bias (1/s)
         this._fpsAimBias = 0;                              // eased current bias (rad)
 
+        // FPS reuses the TPS grip (gun seated exactly as in third-person, both hands on it via the
+        // two-hand IK) instead of the dedicated FPS / FPS_AIM seats; the camera is pulled back to frame
+        // the gun + hands. See ActiveGripMode + PlayerControls.PlaceFpsEyePosition. Flip to false to go
+        // back to the head-mounted FPS viewmodel grips.
+        this.fpsUseTpsGrip = true;
+
+        // --- FPS body lateral offset. Optional sideways slide of the body in FPS (the eye is compensated
+        // by the same vector so the camera holds). 0 = centred (the default now that FPS frames the
+        // TPS-held gun, which we want centred). Tunable; 0 disables.
+        this.fpsBodyLeft = 0.0;                            // metres the body slides to the player's left in FPS
+        this.fpsBodyOffset = new THREE.Vector3();          // the applied world offset (PlayerControls cancels it on the eye)
+        // Always hide the head in first-person: once the eye sits beside the offset head the near-plane
+        // cull no longer covers it, so collapse the head bone to a point in FPS. Scaling a bone leaves its
+        // WORLD POSITION unchanged (scale doesn't move the origin), so the FPS eye that rides the head bone
+        // is unaffected; restored to its rest scale in TPS. Captured in Initialize.
+        this._headRestScale = null;
+
         // --- FPS weapon look-pitch. In first-person the body only tracks the look YAW, so the held
         // gun stays flat when you look up/down and slides off the screen. To keep it framed, pitch the
         // weapon up/down with the look altitude ALWAYS (even when NOT aiming). It rotates BOTH upper
@@ -217,9 +234,23 @@ export default class PlayerBody extends Component{
         // FootIK then plants the feet at the ground, which is what BENDS THE KNEES into the crouch. A
         // small additive spine forward-lean adds character. The head bone rides the lowered body, so the
         // FPS eye lowers automatically; the TPS camera lowers via PlayerControls.crouchCamDrop.
-        this._crouchEased = 0;                                  // eased 0..1 crouch blend
-        this.crouchModelDrop = 0.32;                           // how far the body lowers when crouched (world m)
-        this.crouchLerp = 8;                                   // ease rate (1/s) for crouch in/out
+        this._crouchEased = 0;                                  // eased 0..1 crouch blend (S-curve, see _crouchMid)
+        this._crouchMid = 0;                                    // 1st-stage ease; cascaded into _crouchEased for a smooth-START blend
+        this.crouchModelDrop = 0.24;                           // how far the body lowers when crouched-IDLE (world m) — raised (was 0.32) so the crouch sits higher, not jammed to the floor
+        // Crouch-WALK hip lift. While crouch-MOVING, raise the hips toward this fraction of the idle crouch
+        // drop (0.45 => the body sits ~0.11 m down instead of 0.24 m), so the legs are much less extended and
+        // the knees bend less hard — stopping the deep-bent crouch-walk knee from "popping" AND keeping the
+        // crouch-walk noticeably HIGHER than crouch-idle (as requested). FULL idle depth kept at crouch-idle;
+        // eased between the two over the crouch-walk speed band. Feet stay planted (FootIK floor=_crouchEased).
+        this.crouchMoveDropScale = 0.45;                       // crouch-walk depth as a fraction of the idle depth
+        this.crouchMoveRaiseLerp = 8;                          // ease rate (1/s) for the lift in/out
+        this._crouchMoveRaise = 0;                             // eased 0 (idle, full depth) .. 1 (moving, raised)
+        // Snappier crouch settle (was 8): the standing<->crouch blend reaches its pose more promptly so the
+        // transition doesn't read as a slow "delay before settling". The foot plant + penetration guard
+        // (FootIK) keep the feet on the ground throughout the quicker drop, and the per-leg knee pole keeps
+        // the knees bending cleanly into it — so a faster blend stays glitch-free.
+        this.crouchLerp = 11;                                  // ease rate (1/s) for crouch in/out
+        this.crouchJumpLerp = 16;                              // FAST crouch ease-OUT rate while airborne (clean uncrouch-into-jump)
         this.crouchSpineLean = THREE.MathUtils.degToRad(10);   // subtle forward torso lean while crouched
         this._crouchLeanR = new THREE.Quaternion();            // scratch: crouch-lean world rotation
         this._crouchLeanPW = new THREE.Quaternion();           // scratch: parent world quat
@@ -345,6 +376,23 @@ export default class PlayerBody extends Component{
         this.aimHipStab = 0.96;
         this.hipStabLerp = 8;                             // ease rate (1/s) entering/leaving stabilization
         this.hipRefLerp = 1.5;                            // low-pass rate (1/s) for the settled pelvis reference
+
+        // --- Aim-idle settle (a STEADY-AIM pose). StabilizeHips calms the PELVIS, but the breathing /
+        // idle sway lives in the SPINE locals (the arms + gun ride the spine), so while aiming the
+        // weapon still floats with the breath. When aiming (TPS ADS or FPS down-the-sights) we damp the
+        // spine chain toward a slowly low-passed reference, which shrinks the breathing/locomotion
+        // amplitude WITHOUT baring a pose: only a small residual remains so you still read the character
+        // breathing when still — or walking subtly when moving. Capped below 1 so it never fully freezes.
+        // (Reducing the idle's effective "weight"/scale this way is more stable than dropping the mixer
+        // action weight, which would blend toward the bind pose.) Plus a gentler idle PLAYBACK rate while
+        // aiming (aimIdleTimeScale) so the residual breath is slow and calm, not a fast twitch.
+        this._aimIdleBones = [];                          // [{bone, refPos, refQuat}] spine chain (+neck)
+        this._aimIdleRefSeeded = false;
+        this._aimIdleStab = 0;                            // eased current settle 0..1
+        this.aimIdleStabMax = 0.85;                       // cap: ~15% of the breath/sway survives (subtle)
+        this.aimIdleStabLerp = 9;                         // ease rate (1/s) entering/leaving the steady aim
+        this.aimIdleRefLerp = 1.6;                        // low-pass rate (1/s) for the settled spine+arm reference
+        this.aimIdleTimeScale = 0.6;                      // slow the idle breath ~40% while aiming (calmer tempo)
 
         // --- Recently-fired window. The additive aim pose ALSO activates when the camera is close
         // and you're shooting from the hip (not aiming), so the gun re-points at the reticle for the
@@ -494,6 +542,7 @@ export default class PlayerBody extends Component{
         this.modelRoot = built.modelRoot;
         this.rootBone = built.rootBone;
         this.headBone = built.headBone;         // first-person camera rides this bone
+        this._headRestScale = this.headBone ? this.headBone.scale.clone() : null;   // for the FPS head-hide
         this.meshes = built.meshes;
         this.weaponPivot = built.weaponPivot;   // in-hand AK group; used by WeaponPlacementDebug
         this._headWorld = new THREE.Vector3();
@@ -558,6 +607,21 @@ export default class PlayerBody extends Component{
             this._hipRefSeeded = true;
         }
 
+        // Spine chain (+ neck) AND the gun-holding arm chain for the aim-idle settle: damping these locals
+        // calms the breathing/idle sway the gun rides on while aiming. The spine alone leaves the ARM bones
+        // (which carry the gun + support hand) breathing, and in FPS ADS the gun sits at the eye so that
+        // residual reads as viewmodel jitter — so the arms are settled too, giving the weapon IK a steady
+        // base to fine-aim from (the IK runs AFTER and overrides the support arm + wrist as needed). Seed
+        // each settled reference from its bind pose; StabilizeAimIdle low-passes it live thereafter.
+        const aimIdleNames = ['spine_01', 'spine_02', 'spine_03', 'neck_01',
+            'upperarm_r', 'lowerarm_r', 'hand_r', 'upperarm_l', 'lowerarm_l', 'hand_l'];
+        this.model.traverse(o => {
+            if(o.isBone && aimIdleNames.includes(o.name)){
+                this._aimIdleBones.push({ bone: o, refPos: o.position.clone(), refQuat: o.quaternion.clone() });
+            }
+        });
+        this._aimIdleRefSeeded = true;
+
         // Weapon aim-alignment + two-hand IK. Needs the rig (arm bones, by name) and the in-hand
         // weaponPivot, both built above. Sockets + the barrel axis are auto-resolved lazily on its
         // first Update (from the gun bbox + the posed hands); WeaponManager can override per weapon.
@@ -570,7 +634,8 @@ export default class PlayerBody extends Component{
         // body, FootIK keeps the feet on the ground). Needs the Ammo world to raycast against; the
         // PlayerPhysics component holds it (set in its constructor, so it's available here).
         const physics = this.GetComponent('PlayerPhysics');
-        this.footIK = new FootIK(this.model, this.modelRoot, physics ? physics.world : null);
+        this._physicsWorld = physics ? physics.world : null;   // for the weapon-aim muzzle wall-clearance sweep
+        this.footIK = new FootIK(this.model, this.modelRoot, this._physicsWorld);
 
         // --- Per-camera-mode in-hand grip. The AK is the SAME mesh in both modes (FPS rides the head
         // bone, so first-person shows THIS body's gun), but the framing differs, so each mode gets its
@@ -635,7 +700,17 @@ export default class PlayerBody extends Component{
     // alive so the aim-IK/aim-pose snap on at recovery instead of easing in. ResetAimPoseAccumulators
     // clears it on roll exit too.
     OnShoot = () => { this.PlayOneShot('shoot'); if(!this.rolling){ this._shootHold = this.shootHoldTime; } }
-    OnJump = () => { this._jumpRequested = true; }
+    // Take-off. Re-arm the jump sub-graph and reset the foot IK (so the crouch knee-bend/plant doesn't
+    // bleed into the first airborne frame — mirrors the roll's ResetAimPoseAccumulators idiom).
+    // NOTE: we deliberately do NOT snap _crouchEased to 0 here. Snapping teleported the body UP by the full
+    // crouch depth in a SINGLE frame on take-off (the jump velocity only integrates the FOLLOWING frame, so
+    // the eye is still flat that frame — the snap was an unmasked pop). Instead the crouch eases out FAST
+    // while AIRBORNE (see the crouch-ease block in Update), so the body uncrouches smoothly AS it rises —
+    // a clean uncrouch-into-jump with no teleport and no lingering half-crouch.
+    OnJump = () => {
+        this._jumpRequested = true;
+        if(this.footIK){ this.footIK.Reset(); }
+    }
     OnRoll = () => { this.StartRoll(); }
     // Hit reaction. A dodge roll's i-frames negate the damage, so don't flinch then (and the roll owns
     // the whole body anyway). Scale the jolt by the damage so a beast melee rocks harder than an AK round.
@@ -733,6 +808,8 @@ export default class PlayerBody extends Component{
         this.headAimWeight = 0;
         this._hipStab = 0;
         this._hipRefSeeded = false;
+        this._aimIdleStab = 0;          // re-ease the steady-aim settle in from scratch after a roll
+        this._aimIdleRefSeeded = false; // re-acquire the settled spine reference from the post-roll pose
         // Also clear the recently-fired window and hard-reset the weapon aim-IK blend: if you rolled
         // while HOLDING fire, _shootHold stays re-armed and the IK's master blend freezes near 1 through
         // the roll (Update skipped), snapping the gun/support-hand on in one frame at recovery. Zeroing
@@ -742,6 +819,7 @@ export default class PlayerBody extends Component{
         // Crouch + foot IK ease back in from zero after a roll (the roll owns the whole body and skips
         // them, so without this they'd thaw at their frozen pre-roll values and pop the pelvis/legs).
         this._crouchEased = 0;
+        this._crouchMid = 0;
         if(this.footIK){ this.footIK.Reset(); }
     }
 
@@ -785,8 +863,11 @@ export default class PlayerBody extends Component{
     // The grip seat the current camera/aim state wants: TPS, the FPS hip grip, or the FPS down-the-
     // sights grip while aiming in first-person. Drives both the live seat (UpdateActiveGrip) and which
     // grip the placement tool edits (it reads this), so HOLDING right click in FPS edits the AIM grip.
+    // While fpsUseTpsGrip is on, FPS reuses the TPS grip so the gun sits exactly where it does in
+    // third-person and the two-hand IK keeps BOTH hands on it (the camera is moved back to frame it).
     ActiveGripMode(){
         if(this.cameraMode !== 'FPS'){ return 'TPS'; }
+        if(this.fpsUseTpsGrip){ return 'TPS'; }
         const aiming = !!(this.playerControls && this.playerControls.aiming);
         return aiming ? 'FPS_AIM' : 'FPS';
     }
@@ -996,6 +1077,14 @@ export default class PlayerBody extends Component{
         return !!(this.playerControls && this.playerControls.aiming && this.cameraMode === 'TPS');
     }
 
+    // Hip-firing in third-person: shooting (recently fired) WITHOUT holding ADS, in TPS. When this is
+    // true AND the player is moving, the body squares up to the shot direction (UpdateBodyYaw) and the
+    // directional jogs drive the legs (DesiredLocoState) — so "walking facing the camera and shooting"
+    // turns the character to face where the bullets go instead of moon-walking toward the camera.
+    IsHipFiring(){
+        return this.cameraMode === 'TPS' && this._shootHold > 0 && !this.IsAiming();
+    }
+
     // The upper-body locomotion the torso should hold given the legs' state and aim: the steady
     // aim pose (idle upper) while aiming on the ground, otherwise mirror whatever the legs do
     // (including the jump sub-states — the torso jumps/falls with the body).
@@ -1152,14 +1241,17 @@ export default class PlayerBody extends Component{
         const pc = this.playerControls;
         const speed = pc ? pc.HorizontalSpeed : 0;
         if(speed <= 0.5){ return 'idle'; }
-        // FREE-RUN (TPS, not aiming): the body turns to face its MOVEMENT direction (UpdateBodyYaw),
-        // so it's always moving straight forward relative to itself — play the forward jog. This is
-        // what kills the diagonal foot-slide: a single directional jog can't match a 45° travel, so
-        // running diagonally on the forward/strafe clips skated the feet. Orienting to the heading +
-        // running forward makes the stride match the actual travel in every direction.
-        if(this.cameraMode === 'TPS' && !this.IsAiming()){ return 'jogF'; }
-        // AIMING (or FPS): the body faces the camera/look and STRAFES, so pick the directional jog
-        // from the local velocity (W+D reads as a forward jog, A/D as a strafe, S as a backpedal).
+        // FREE-RUN (TPS, not aiming, not hip-firing): the body turns to face its MOVEMENT direction
+        // (UpdateBodyYaw), so it's always moving straight forward relative to itself — play the forward
+        // jog. This is what kills the diagonal foot-slide: a single directional jog can't match a 45°
+        // travel, so running diagonally on the forward/strafe clips skated the feet. Orienting to the
+        // heading + running forward makes the stride match the actual travel in every direction.
+        // HIP-FIRE EXCEPTION: while shooting from the hip the body squares up to the SHOT direction
+        // (UpdateBodyYaw, like aiming), so movement becomes relative to the look — pick the directional
+        // jog so backpedalling toward the camera while firing plays jogB, not a moon-walked jogF.
+        if(this.cameraMode === 'TPS' && !this.IsAiming() && !this.IsHipFiring()){ return 'jogF'; }
+        // AIMING / HIP-FIRE (or FPS): the body faces the camera/look and STRAFES, so pick the directional
+        // jog from the local velocity (W+D reads as a forward jog, A/D as a strafe, S as a backpedal).
         const vx = pc.speed.x, vz = pc.speed.z;
         if(Math.abs(vz) >= Math.abs(vx)){ return vz < 0 ? 'jogF' : 'jogB'; }
         return vx > 0 ? 'jogR' : 'jogL';
@@ -1216,6 +1308,15 @@ export default class PlayerBody extends Component{
     // the playback rate (timeScale = ground speed / authored speed), so the warp must yield to it.
     // Gait phase is instead carried across direction changes by SetLowerState's normalised reseat.
     UpdateLocoTimeScale(){
+        // Slow the IDLE breath while aiming so the (already amplitude-damped) steady-aim pose reads as a
+        // calm, slow breath rather than the normal-tempo idle. Only touches the idle action(s) that are
+        // actually driving a layer, and only when no one-shot owns the upper layer; the jog foot-sync
+        // below is unaffected (jog tempo stays locked to ground speed so the feet don't skate).
+        const aiming = !!(this.playerControls && this.playerControls.aiming);
+        const idleTs = aiming ? this.aimIdleTimeScale : 1.0;
+        if(this.lowerState === 'idle' && this.lowerActions.idle){ this.lowerActions.idle.setEffectiveTimeScale(idleTs); }
+        if(!this.oneShot && this.upperState === 'idle' && this.upperActions.idle){ this.upperActions.idle.setEffectiveTimeScale(idleTs); }
+
         if(!this.IsJogState(this.lowerState)){ return; }
         const ts = this.LocoTimeScale(this.lowerState);
         const lower = this.lowerActions[this.lowerState];
@@ -1245,17 +1346,62 @@ export default class PlayerBody extends Component{
             this.rootBone.scale.copy(this.rootRef.scale);
         }
 
+        // Always hide the head in FPS (collapse the head bone to a point — its world POSITION, and so the
+        // FPS eye riding it, is unchanged); restore the rest scale in TPS. After the mixer so a clip scale
+        // track can't reinflate it; before the downstream matrix updates so the render uses it.
+        if(this.headBone && this._headRestScale){
+            if(this.cameraMode === 'FPS'){ this.headBone.scale.setScalar(1e-4); }
+            else { this.headBone.scale.copy(this._headRestScale); }
+        }
+
         // Ease the crouch blend toward the controls' effective crouch (grounded, not rolling). The body
         // lowers by crouchModelDrop·_crouchEased in WORLD metres below; FootIK then re-plants the feet
         // at the ground, bending the knees into the crouch (no crouch clip). Eased so it glides in/out.
         const crouchWant = (this.playerControls && this.playerControls.crouching && !this.rolling) ? 1 : 0;
-        this._crouchEased += (crouchWant - this._crouchEased) * (1 - Math.exp(-this.crouchLerp * t));
+        if(crouchWant === 0 && this.airState !== null){
+            // JUMPING from a crouch: ease the crouch out FAST (single stage) while airborne, so the body
+            // uncrouches quickly AS it rises (a clean uncrouch-into-jump) rather than launching half-crouched.
+            // Gated on airState (set in UpdateLocomotion, so true from the frame AFTER take-off) — never on
+            // the take-off frame itself, where the eye is still flat, so there's no decoupled body pop.
+            const jk = 1 - Math.exp(-this.crouchJumpLerp * t);
+            this._crouchMid += (0 - this._crouchMid) * jk;
+            this._crouchEased += (0 - this._crouchEased) * jk;
+        }else{
+            // Cascade TWO eases so the crouch blend starts with ~zero velocity (a smooth S-curve) instead of
+            // the single exponential ease's biggest-step-on-frame-1. That first-frame jump (~0.17 at crouchLerp
+            // 11) snapped the FootIK knee bend ~23° in ONE frame on entering crouch — the reported crouch-idle
+            // "few-frame reset" glitch (it is NOT a bind/T-pose; the mixer weights stay 1). The second ease
+            // chases the first, so the frame-1 _crouchEased step is ~k² (tiny) and the knees bend in smoothly.
+            const ck = 1 - Math.exp(-this.crouchLerp * t);
+            this._crouchMid += (crouchWant - this._crouchMid) * ck;
+            this._crouchEased += (this._crouchMid - this._crouchEased) * ck;
+        }
+
+        // Crouch-walk hip lift: ease toward 1 as the crouch-walk speed rises so the body sits shallower
+        // while moving (less knee bend => no knee pop), back to full depth at crouch-idle. Speed band
+        // matches the crouch-walk top speed (~2.2 m/s). Only meaningful while crouched (scales the drop,
+        // which is *_crouchEased), so it's inert when standing.
+        const crouchSpeed = this.playerControls ? this.playerControls.HorizontalSpeed : 0;
+        const crouchMoveTarget = THREE.MathUtils.smoothstep(crouchSpeed, 0.6, 2.4);
+        this._crouchMoveRaise += (crouchMoveTarget - this._crouchMoveRaise) * (1 - Math.exp(-this.crouchMoveRaiseLerp * t));
+        // Effective crouch drop: full at idle, raised to crouchMoveDropScale of it while crouch-walking.
+        const crouchDrop = this.crouchModelDrop * this._crouchEased
+            * (1 - (1 - this.crouchMoveDropScale) * this._crouchMoveRaise);
 
         // Follow the capsule; the facing is eased (not snapped) so panning the camera
         // doesn't instantly whip the body — see UpdateBodyYaw. The crouch drop lowers the whole avatar.
         const p = this.parent.Position;
-        this.modelRoot.position.set(p.x, p.y + this.feetOffset - this.crouchModelDrop * this._crouchEased, p.z);
+        this.modelRoot.position.set(p.x, p.y + this.feetOffset - crouchDrop, p.z);
         this.UpdateBodyYaw(t);
+        // FPS: slide the body to the player's LEFT so the right arm + hand come into frame. The eye is
+        // compensated by this same vector (PlayerControls cancels fpsBodyOffset), so the camera holds
+        // still while only the body shifts. Body-right = (cos,0,-sin) of the facing, so LEFT = (-cos,0,sin).
+        if(this.cameraMode === 'FPS' && this.fpsBodyLeft !== 0){
+            this.fpsBodyOffset.set(-Math.cos(this._bodyYaw), 0, Math.sin(this._bodyYaw)).multiplyScalar(this.fpsBodyLeft);
+            this.modelRoot.position.add(this.fpsBodyOffset);
+        }else{
+            this.fpsBodyOffset.set(0, 0, 0);
+        }
         // Re-seat the in-hand gun if the FPS aim state flipped (FPS hip <-> FPS ADS grip).
         this.UpdateActiveGrip();
         if(this.rolling){
@@ -1269,6 +1415,11 @@ export default class PlayerBody extends Component{
             // front of the lens. Runs after the mixer/root-lock and BEFORE the spine aim lean, since the
             // lean reads the (now-stabilized) pelvis as its parent.
             this.StabilizeHips(t);
+            // Steady the aim: damp the spine breathing/idle sway toward a settled reference while aiming,
+            // so the gun (which rides the spine) holds rock-steady with only a subtle residual breath /
+            // slow-walk. Runs after the hip stabilize and BEFORE the additive leans + weapon IK, so those
+            // compose on top of the calmed spine (and the IK fine-aims the now-steady gun).
+            this.StabilizeAimIdle(t);
             // Subtle crouch torso lean: a small forward spine pitch while crouched, for character. Runs
             // before the aim lean so the two compose (additive world-space rotations on the spine chain).
             this.ApplyCrouchLean();
@@ -1318,8 +1469,8 @@ export default class PlayerBody extends Component{
     // character is stable in front of the lens while aiming / when collision crowds the boom. The
     // legs are children of the pelvis, so they keep their full stride (feet still plant); only the
     // bob/sway that would ride up through the torso, head and the close camera is removed. The cap
-    // (hipStabMax) always leaves a subtle wobble to convey the locomotion. Proximity-driven with
-    // conditions: engages on aim OR collision proximity, and only while actually moving.
+    // (hipStabMax) always leaves a subtle wobble to convey the locomotion. Proximity-driven: engages
+    // while MOVING (collision/aim) OR whenever AIMING (so a standing aim is steady, not just a moving one).
     StabilizeHips(t){
         if(!this._pelvisBone){ return; }
         const pc = this.playerControls;
@@ -1330,13 +1481,21 @@ export default class PlayerBody extends Component{
         const tpsAiming = this.IsAiming();
         const fpsAiming = (this.cameraMode === 'FPS') && !!(pc && pc.aiming);
         const aiming = tpsAiming || fpsAiming;
+        const moving = this.IsJogState(this.lowerState);
+        // FPS-STEADY: in first-person the camera RIDES the head bone, so the idle breathing / weight-shift
+        // bob translates the camera and reads as a constant "jitter" while standing or crouch-idle. So when
+        // first-person AND stationary (not jogging), freeze the hips like an aim — the head, and the camera
+        // riding it, hold still. The natural head bob is kept while MOVING (a jog still bobs the view).
+        const fpsSteady = (this.cameraMode === 'FPS') && !moving;
         const close = (this.cameraMode === 'TPS')
             ? Math.max(tpsAiming ? 1 : 0, pc ? pc.CameraProximity : 0)
-            : (fpsAiming ? 1 : 0);
-        const moving = this.IsJogState(this.lowerState);
+            : ((fpsAiming || fpsSteady) ? 1 : 0);
         // Aiming damps harder (steady gun while strafing) than a plain collision push-in.
         const cap = aiming ? this.aimHipStab : this.hipStabMax;
-        const target = (moving ? close : 0) * cap;
+        // Engage while MOVING (kill the run bob in front of the lens) OR whenever AIMING OR when FPS-steady
+        // (kill the first-person idle/crouch camera jitter) — even standing still, the idle's pelvis bob
+        // rides up the whole chain and floats the gun / shakes the FP camera, so it needs the hips frozen.
+        const target = ((moving || aiming || fpsSteady) ? close : 0) * cap;
         this._hipStab += (target - this._hipStab) * (1 - Math.exp(-this.hipStabLerp * t));
 
         // Low-pass the freshly-animated pelvis (mixer just wrote it) into the bob-free reference.
@@ -1353,6 +1512,48 @@ export default class PlayerBody extends Component{
         // Blend the live pelvis toward the settled pose: removes the bob/sway, keeps the baseline.
         b.position.lerp(this._pelvisRefPos, this._hipStab);
         b.quaternion.slerp(this._pelvisRefQuat, this._hipStab);
+    }
+
+    // Steady-aim settle. While aiming (TPS ADS or FPS down-the-sights) the gun must hold near-still, but
+    // the breathing / idle (or jog) sway lives in the SPINE locals that the arms + gun ride. So we
+    // low-pass each spine (+neck) bone into a settled reference and blend the live local toward it,
+    // shrinking the sway to a small residual — capped below 1 (aimIdleStabMax) so the character still
+    // visibly breathes when still and walks subtly when moving, rather than freezing dead. Runs every
+    // frame (the reference keeps tracking even when not aiming) so the settle is current the instant you
+    // raise the sights; only the BLEND is gated by the eased weight, which is 0 when not aiming. Pose-only
+    // and unit/scale-agnostic (local pos+quat lerps), and ordered before the additive leans + weapon IK so
+    // they refine the calmed spine rather than fight it.
+    StabilizeAimIdle(t){
+        if(!this._aimIdleBones.length){ return; }
+        const pc = this.playerControls;
+        // Aiming in EITHER camera mode (the FPS body's arms are the viewmodel; the TPS body is the ADS
+        // pose). Raw aim flag — not IsAiming(), which is TPS-only.
+        const aiming = !!(pc && pc.aiming);
+        // Also settle the SPINE sway when first-person AND stationary: the breathing rides the spine (which
+        // the head + FP camera hang off), so damping it here — together with StabilizeHips — holds the
+        // first-person camera steady in standing idle / crouch-idle (the reported jitter). Kept off while
+        // moving so the jog still reads. (StabilizeHips covers the pelvis; this covers the spine + neck.)
+        const fpsSteady = (this.cameraMode === 'FPS') && !this.IsJogState(this.lowerState);
+        const target = (aiming || fpsSteady) ? this.aimIdleStabMax : 0;
+        this._aimIdleStab += (target - this._aimIdleStab) * (1 - Math.exp(-this.aimIdleStabLerp * t));
+
+        const k = 1 - Math.exp(-this.aimIdleRefLerp * t);
+        const apply = this._aimIdleStab >= 0.001;
+        for(const e of this._aimIdleBones){
+            const b = e.bone;
+            if(!this._aimIdleRefSeeded){ e.refPos.copy(b.position); e.refQuat.copy(b.quaternion); }
+            // Low-pass the freshly-animated local into the sway-free reference (slow = follows the
+            // baseline pose, drops the breath/step ripple).
+            e.refPos.lerp(b.position, k);
+            e.refQuat.slerp(b.quaternion, k);
+            // Blend the live local toward that reference by the eased settle weight: most of the sway
+            // removed, a subtle residual kept.
+            if(apply){
+                b.position.lerp(e.refPos, this._aimIdleStab);
+                b.quaternion.slerp(e.refQuat, this._aimIdleStab);
+            }
+        }
+        this._aimIdleRefSeeded = true;
     }
 
     // Subtle crouch torso lean: pitch the spine chain FORWARD by a small amount scaled by the eased
@@ -1521,14 +1722,16 @@ export default class PlayerBody extends Component{
     UpdateWeaponAim(t){
         if(!this.weaponAimIK || !this.playerControls){ return; }
         const pc = this.playerControls;
-        // Suppress the IK while the placement tool owns the camera (cameraOverride) so the gun sits
-        // stable at the raw grip while you nudge the FPS_AIM seat, instead of re-aiming at the fly-cam.
-        const active = this.IsAimingOrShooting() && this.oneShot !== 'reload' && !pc.cameraOverride;
+        // Suppress the IK while the placement tool owns the view — the free-fly cam (cameraOverride, TPS)
+        // OR the FPS placement-hold — so the gun sits stable at the RAW grip you're nudging instead of
+        // re-aiming at the crosshair as you edit the seat.
+        const placing = pc.cameraOverride || pc.placementHold;
+        const active = this.IsAimingOrShooting() && this.oneShot !== 'reload' && !placing;
         // ALWAYS-ON GRIP: the support hand stays glued to the gun whenever a weapon is held — NOT only
         // while aiming. This is what kills the aim<->idle<->shoot hand snap (the hand never releases the
-        // foregrip and re-grabs). Dropped only during a reload (the off-hand works the mag) and under the
-        // placement-tool camera. The barrel still only swings while `active` (aiming/shooting).
-        const gripActive = this.oneShot !== 'reload' && !pc.cameraOverride;
+        // foregrip and re-grabs). Dropped only during a reload (the off-hand works the mag) and while
+        // placing the weapon. The barrel still only swings while `active` (aiming/shooting).
+        const gripActive = this.oneShot !== 'reload' && !placing;
         this._weaponAimActive = active;
         this.weaponAimIK.Update(t, {
             active,
@@ -1536,6 +1739,7 @@ export default class PlayerBody extends Component{
             aimTarget: pc.aimTarget,
             aimValid: pc.aimTargetValid,
             cameraForward: pc.aimDir,
+            world: this._physicsWorld,   // muzzle wall-clearance sweep (keeps the barrel out of walls)
         });
     }
 
@@ -1546,9 +1750,14 @@ export default class PlayerBody extends Component{
         if(!this.footIK || !this.playerControls){ return; }
         const pc = this.playerControls;
         const enabled = pc.IsGrounded && this.airState === null && !this.rolling;
+        // Anti-clip GUARD runs more broadly than the plant — even on a brief airborne crest of the
+        // (now stronger) terrain — so a fast walk/jump never punches a foot through a hill. Off only during
+        // a roll (which owns the legs). One-sided, so a real jump's apex (feet high) no-ops.
+        const guard = !this.rolling;
         // Floor the weight at the crouch amount: a crouched body is lowered, so the feet must stay
         // planted (knees bent) even while crouch-walking, not fade out and sink through the floor.
-        this.footIK.Update(t, { enabled, speed: pc.HorizontalSpeed, bodyYaw: this._bodyYaw, floor: this._crouchEased });
+        // crouch: drives both the planted-feet floor AND the knee-pole stabilization + foot flatten.
+        this.footIK.Update(t, { enabled, guard, speed: pc.HorizontalSpeed, bodyYaw: this._bodyYaw, floor: this._crouchEased, crouch: this._crouchEased });
     }
 
     // Orient the head to look along the crosshair direction, so the character visibly looks where the
@@ -1642,9 +1851,12 @@ export default class PlayerBody extends Component{
         const aiming = this.IsAiming();
         const moving = this.playerControls.HorizontalSpeed > 0.5;
         let goal, rate;
-        if(aiming){
-            // ADS: square the body to the camera/look and STRAFE (directional jogs) so the gun stays
-            // trained on the reticle while you sidestep.
+        if(aiming || (moving && this.IsHipFiring())){
+            // ADS — or hip-firing WHILE MOVING: square the body to the camera/look and STRAFE
+            // (directional jogs) so the gun stays trained on the reticle and the character faces where
+            // it shoots. This is what turns the player toward the shot when walking toward the camera and
+            // firing (instead of facing the movement heading). A standing hip-fire keeps the soft idle
+            // trail + the additive spine twist (hipAimYaw) so a casual shot doesn't whip the whole body.
             goal = target;
             rate = this.bodyTurnMoveLerp;
         }else if(moving){

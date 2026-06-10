@@ -14,8 +14,12 @@ export default class PlayerControls extends Component{
 
         this.timeZeroToMax = 0.08;
 
-        this.walkSpeed = 7.0;
-        this.sprintMultiplier = 1.6;
+        // Movement speeds (shared by TPS + FPS — same physics capsule). Toned DOWN for a more
+        // grounded, deliberate pace: a slower base walk, a much milder sprint, and a notably slower
+        // crouch-walk (see crouchSpeedMultiplier below). The foot-synced jog playback rate tracks
+        // these automatically, so the legs stay matched to the floor at the new pace.
+        this.walkSpeed = 5.5;            // base jog (was 7.0) — overall slowdown
+        this.sprintMultiplier = 1.35;   // sprint top speed = walk*1.35 ≈ 7.4 (was 1.6 ⇒ 11.2): a calmer sprint
         this.maxSpeed = this.walkSpeed;
         this.speed = new THREE.Vector3();
         this.acceleration = this.walkSpeed / this.timeZeroToMax;
@@ -30,8 +34,12 @@ export default class PlayerControls extends Component{
         this.crouching = false;             // effective crouch state (read by PlayerBody)
         this._crouchToggle = false;         // C-key toggle state
         this._crouchLatch = false;          // C-key edge latch (so a held key fires once)
-        this.crouchSpeedMultiplier = 0.5;   // top-speed scale while crouched (slow, deliberate)
-        this.crouchCamDrop = 0.32;          // TPS camera pivot drop while crouched (m), eased
+        this.crouchSpeedMultiplier = 0.4;   // top-speed scale while crouched ≈ 2.2 m/s (was 0.5 ⇒ 3.5): a slow, deliberate creep
+        // Crouch no longer DROPS the TPS camera: the request is to NOT adjust/move the camera while
+        // crouched, so the follow stays put as you crouch/uncrouch (the capsule eye is kept stable across
+        // the resize by PlayerControls, so a 0 drop means a perfectly steady third-person camera). Left
+        // as a tunable (eased) in case a subtle dip is wanted later; 0 = no crouch camera movement.
+        this.crouchCamDrop = 0.0;           // TPS camera pivot drop while crouched (m), eased — 0 = steady
         this._crouchCamEased = 0;           // eased 0..crouchCamDrop applied to the TPS camera pivot
         this.crouchCamLerp = 8;             // ease rate (1/s) for the camera drop
 
@@ -79,6 +87,11 @@ export default class PlayerControls extends Component{
         this.aimSensitivity = 0.55;   // mouse multiplier while aiming
         this.aimMoveMultiplier = 0.4; // top-speed scale while aiming — a slow, deliberate ADS walk
         this.baseFov = 50;            // overwritten from the camera in Initialize
+        // First-person FOV (managed separately from the TPS boom FOV). FPS wants a WIDER lens than
+        // third-person so the view feels open and you see more of the weapon/hands; ADS eases to a
+        // modestly tighter FOV for a subtle zoom. Both ease via _curFov in the FPS branch of UpdateCamera.
+        this.fpsFov = 90;             // wide first-person hip FOV
+        this.fpsAimFov = 72;          // a touch tighter while aiming (subtle ADS zoom, still wide)
         // Smoothed current values driven each frame in UpdateCamera.
         this._curDistance = this.tpsDistance;
         this._curShoulder = this.tpsShoulder;
@@ -87,6 +100,7 @@ export default class PlayerControls extends Component{
         this._cap = new THREE.Vector3();
         this._pivot = new THREE.Vector3();
         this._fwd = new THREE.Vector3();
+        this._fwdFlat = new THREE.Vector3();   // yaw-only (horizontal) forward — for the FPS look-down push
         this._right = new THREE.Vector3();
         this._fwdBase = new THREE.Vector3(0, 0, -1);
         this._rightBase = new THREE.Vector3(1, 0, 0);
@@ -128,9 +142,41 @@ export default class PlayerControls extends Component{
         // --- First-person camera: rides the body's head bone (same character), with
         // the head mesh hidden by the camera's near plane ("cull distance"). ---
         this.body = null;               // PlayerBody, queried for the head-bone position
-        this.fpsEyeForward = 0.14;      // nudge the eye ahead of the head bone...
-        this.fpsEyeUp = 0.08;           // ...and up a touch, onto the real eye line
+        // FPS eye offset from the head bone. Now that FPS frames the TPS-held gun (both hands on it), the
+        // eye is pulled BACK (negative forward) and a touch up so the gun + forearms sit centred in view,
+        // like a tight over-the-head first-person. Tune these to reframe the gun.
+        this.fpsEyeForward = -0.13;     // BACK from the head (negative = behind) so the chest-held gun is in frame
+        this.fpsEyeUp = 0.12;           // up, to look down onto the gun + hands
+        this.fpsEyeRight = 0.05;        // slightly right, to centre the right-held gun
         this.fpsNear = 0.18;            // near plane that culls the head at the eye
+        // FPS look-DOWN forward push. The head is HIDDEN in first-person (PlayerBody collapses the head
+        // bone to a point), so tilting the view down would stare straight into the missing-head gap above
+        // the neck. Rather than pull the eye BACK off the body (which only reveals MORE of the headless
+        // torso), we do the OPPOSITE: push the eye FORWARD over the chest as the look tilts down, so the
+        // camera slides out past the neck stump and frames the gun/ground instead of the empty socket.
+        // Pushed along the YAW-ONLY (horizontal) forward so a steep look-down moves the eye forward over
+        // the body, never straight down into it. Eased; zero at level/up (where the framing is already good).
+        this.fpsLookDownForward = 0.34; // metres the eye eases FORWARD at full look-down
+        this.fpsLookDownLerp = 8;       // ease rate (1/s) for the push in/out
+        this._fpsLookDownEased = 0;     // eased 0..1 look-down amount (driven in UpdateCamera)
+        // FPS reload pullback: while reloading in first-person, ease the eye BACK (and a touch up) so the
+        // gun + hands drop into frame and the reload animation is actually visible (otherwise the eye sits
+        // right behind the weapon and the mag swap happens off-screen). Driven by the weapon.reload /
+        // reload.done events; eased so it glides in and out. FPS-only (applied in PlaceFpsEyePosition).
+        this._reloading = false;        // set true on weapon.reload, false on reload.done
+        this._reloadEased = 0;          // eased 0..1 pullback amount
+        // Reload camera move DISABLED per request: the FPS camera no longer pulls back (or up) while
+        // reloading — the view holds steady through the mag swap. Kept as 0 tunables (mechanism intact)
+        // rather than ripping out the eased state, so it can be re-enabled by raising these if wanted.
+        this.fpsReloadPullback = 0.0;   // metres the eye eases BACK along look-forward while reloading (0 = no pullback)
+        this.fpsReloadUp = 0.0;         // ...and a touch UP (0 = no rise)
+        this.reloadPullLerp = 7;        // ease rate (1/s) for the pullback in/out
+        // Placement-hold (dev): when the weapon-placement panel is open in FPS we DON'T hand the camera to
+        // the free-fly cam — instead we freeze the player but keep the real first-person camera + aim pose
+        // intact, so the gun is placed in its true ADS framing. The aim state is latched on open so it can't
+        // drift while you nudge the grip. (TPS placement still uses the free-fly cam via cameraOverride.)
+        this.placementHold = false;
+        this._placementAim = false;     // latched aim state held while placementHold is on
         this.tpsNear = 0.01;            // crisp near for the third-person boom (set in Initialize)
         this._headPos = new THREE.Vector3();
 
@@ -171,6 +217,25 @@ export default class PlayerControls extends Component{
         this.tpsSprintExtra = 0.7;      // extra boom length while sprinting (m)
         this.sprintLerpSpeed = 3.5;     // gentle ease for the sprint pullback (1/s)
         this._curSprint = 0.0;          // smoothed sprint extension
+
+        // --- Walk-start follow lag + pull-back (TPS). When the player breaks into a jog the camera
+        // should start MORE SMOOTHLY and sit a touch further back, for a weightier, more cinematic start
+        // to motion (rather than being rigidly glued to the character). Two parts, both eased on gentle
+        // rates so they breathe in/out and never snap:
+        //   * a small extra boom length while jogging (the "pulled back" feel), and
+        //   * a follow LAG on the pivot: near-rigid when standing, noticeably laggier once jogging, so
+        //     the camera trails and catches up to the character as it accelerates.
+        // Both are SUSPENDED while aiming (ADS must stay tight) and while CROUCHED (the camera stays put
+        // when crouched — see crouchCamDrop). The sprint pullback above still stacks on top when running.
+        this.tpsWalkExtra = 0.5;        // extra boom length while jogging (m) — the "a bit pulled back" feel
+        this.walkLerpSpeed = 2.0;       // gentle ease for the walk pull-back (1/s)
+        this._curWalk = 0.0;            // smoothed walk pull-back extension
+        this.pivotFollowIdle = 20.0;    // near-rigid follow-point catch-up when standing still (1/s)
+        this.pivotFollowMove = 4.5;     // laggier follow once jogging — the "bigger lag" at walk start (1/s)
+        this.pivotFollowLerp = 2.5;     // how fast the follow RATE itself eases between idle/move (1/s)
+        this._pivotFollowRate = this.pivotFollowIdle;   // eased current follow rate (1/s)
+        this._pivotSmooth = new THREE.Vector3();        // lagged camera follow-point
+        this._pivotInit = false;        // seed _pivotSmooth on first use / after a camera-mode switch
 
         // --- Collision FOV. The camera NEVER imposes any rotation to dodge geometry; the
         // only thing it may do is dolly along the look axis — pull away or push IN toward
@@ -295,6 +360,10 @@ export default class PlayerControls extends Component{
         // Camera juice: shake on taking a hit, a kick per shot fired.
         this.parent.RegisterEventHandler(this.OnPlayerHit, 'hit');
         this.parent.RegisterEventHandler(this.OnWeaponShoot, 'weapon.shoot');
+        // FPS reload pullback window: reload START -> pull the eye back; reload DONE -> ease it home. The
+        // body broadcasts reload.done when its (visible) reload one-shot finishes (see PlayerBody).
+        this.parent.RegisterEventHandler(this.OnReloadStart, 'weapon.reload');
+        this.parent.RegisterEventHandler(this.OnReloadEnd, 'reload.done');
 
         // Right click holds precise-aim. (In FPS the arms viewmodel runs its own ADS
         // via Hands; this TPS aim only applies in the TPS camera branch below.)
@@ -359,7 +428,11 @@ export default class PlayerControls extends Component{
         // snap to the new spot next frame rather than flying the camera through the
         // body, and swap the near plane (FPS culls the head).
         this._camInit = false;
+        this._pivotInit = false;   // reseed the lagged follow-point so it snaps to the new mode's pivot
         this.ApplyNearForMode();
+        // FPS uses a wider collision capsule (keeps the first-person body/arms off walls — fewer
+        // wall-clip anim glitches); TPS uses the normal one. Same total height, so no vertical pop.
+        if(this.physicsComponent){ this.physicsComponent.SetWide(this.cameraMode === 'FPS'); }
         this.Broadcast({topic: 'camera.mode', mode: this.cameraMode});
         const label = document.getElementById('camera_mode');
         if(label){ label.textContent = this.cameraMode; }
@@ -456,8 +529,30 @@ export default class PlayerControls extends Component{
             this._camTarget.copy(this._headPos)
                 .addScaledVector(this._fwd, this.fpsEyeForward);
             this._camTarget.y += this.fpsEyeUp;
+            // Cancel the FPS body lateral offset: PlayerBody slides the whole body (and so the head bone)
+            // to the player's left to reveal the right arm; subtracting that same vector keeps the view
+            // anchored to the head, not dragged by the body slide.
+            if(this.body.fpsBodyOffset){ this._camTarget.sub(this.body.fpsBodyOffset); }
+            // Shift the camera to the player's RIGHT (camera-right is horizontal under yaw*pitch).
+            if(this.fpsEyeRight){
+                this._right.copy(this._rightBase).applyQuaternion(this.parent.Rotation);
+                this._camTarget.addScaledVector(this._right, this.fpsEyeRight);
+            }
         }else{
             this._camTarget.copy(capPos);
+        }
+        // Reload pullback: ease the eye BACK along look-forward (and a touch up) while reloading, so the
+        // weapon + hands drop into frame and the reload animation reads instead of happening off-screen.
+        if(this._reloadEased > 1e-3){
+            this._camTarget.addScaledVector(this._fwd, -this.fpsReloadPullback * this._reloadEased);
+            this._camTarget.y += this.fpsReloadUp * this._reloadEased;
+        }
+        // Look-DOWN forward push: slide the eye FORWARD over the chest as the view tilts down, so the
+        // hidden head's neck-stump gap stays behind the camera (see fpsLookDownForward). Horizontal
+        // (yaw-only) forward, so a steep down-look pushes over the body rather than into the floor.
+        if(this._fpsLookDownEased > 1e-4){
+            this._fwdFlat.copy(this._fwdBase).applyQuaternion(this.yaw);
+            this._camTarget.addScaledVector(this._fwdFlat, this.fpsLookDownForward * this._fpsLookDownEased);
         }
         if(this.rolling){
             this._camTarget.y = Math.max(this._camTarget.y, capPos.y - 0.45);
@@ -477,6 +572,18 @@ export default class PlayerControls extends Component{
             * (1 - Math.exp(-this.crouchCamLerp * t));
 
         if(this.cameraMode === 'FPS'){
+            // Wide first-person FOV (eased), tightening a touch while aiming for a subtle ADS zoom.
+            const targetFov = this.aiming ? this.fpsAimFov : this.fpsFov;
+            this._curFov += (targetFov - this._curFov) * Math.min(1, t * this.aimLerpSpeed);
+            this.camera.fov = this._curFov;
+            this.camera.updateProjectionMatrix();
+            // Ease the reload pullback (eye eases back so the reload anim is visible — see PlaceFpsEyePosition).
+            const reloadTarget = this._reloading ? 1 : 0;
+            this._reloadEased += (reloadTarget - this._reloadEased) * (1 - Math.exp(-this.reloadPullLerp * t));
+            // Ease the look-DOWN forward push (eye slides forward past the hidden-head neck gap as you look
+            // down — see PlaceFpsEyePosition). angles.x < 0 is looking down; ramp 0 (level/up) -> 1 (straight down).
+            const lookDownN = Math.max(0, -this.angles.x / (Math.PI * 0.5));
+            this._fpsLookDownEased += (lookDownN - this._fpsLookDownEased) * (1 - Math.exp(-this.fpsLookDownLerp * t));
             // Same character as third-person: the eye rides the mesh's head bone, so the walk/run
             // animation gives a subtle, real head bob. PlaceFpsEyePosition sets the eye position; it is
             // also re-called by PlayerBody AFTER it has posed the body this frame (see the note there)
@@ -501,6 +608,14 @@ export default class PlayerControls extends Component{
         const sprintTarget = (this.isSprinting && !this.aiming) ? this.tpsSprintExtra : 0;
         this._curSprint += (sprintTarget - this._curSprint) * (1 - Math.exp(-this.sprintLerpSpeed * t));
 
+        // Walk-start pull-back: a small extra boom length while jogging (any ground movement), so the
+        // camera eases back a touch as the player starts walking. Suspended while aiming (tight ADS) and
+        // while crouched (steady crouch camera); stacks under the sprint pullback. Folded into the
+        // distance target below alongside the sprint term.
+        const jogging = this.HorizontalSpeed > 0.5 && !this.aiming && !this.crouching;
+        const walkTarget = jogging ? this.tpsWalkExtra : 0;
+        this._curWalk += (walkTarget - this._curWalk) * (1 - Math.exp(-this.walkLerpSpeed * t));
+
         // Looking DOWN pulls the boom back & up into a high-angle view, opening a gap so objects
         // can pass between the camera and the character rather than being shoved against the lens.
         // EASE-OUT of the down angle (downN*(2-downN)) so the pull-back is privileged — it kicks
@@ -513,7 +628,7 @@ export default class PlayerControls extends Component{
         // Ease the boom length / shoulder offset / FOV toward their precise-aim or
         // hip targets so toggling right click glides in and out of the zoom.
         const k = Math.min(1, t * this.aimLerpSpeed);
-        const targetDistance = (this.aiming ? this.tpsAimDistance : this.tpsDistance) + this._curSprint;
+        const targetDistance = (this.aiming ? this.tpsAimDistance : this.tpsDistance) + this._curSprint + this._curWalk;
         const targetShoulder = this.aiming ? this.tpsAimShoulder : this.tpsShoulder;
         const targetFov      = this.aiming ? this.tpsAimFov      : this.baseFov;
         this._curDistance += (targetDistance - this._curDistance) * k;
@@ -533,7 +648,19 @@ export default class PlayerControls extends Component{
         this._fwd.copy(this._fwdBase).applyQuaternion(this.parent.Rotation);
         this._right.copy(this._rightBase).applyQuaternion(this.parent.Rotation);
         this._pivot.copy(capPos);
-        this._pivot.y += this.tpsPivotHeight - this._crouchCamEased;   // CENTRED pivot — start of the spline (lowered while crouched)
+        this._pivot.y += this.tpsPivotHeight - this._crouchCamEased;   // CENTRED pivot — start of the spline (steady while crouched)
+
+        // Walk-start follow LAG: ease the actual follow-point toward the true pivot. The catch-up RATE is
+        // near-rigid when standing (snappy framing) and noticeably laggier once jogging, so the camera
+        // trails and smoothly catches up as the player breaks into a jog. Rigid (no lag) while aiming or
+        // crouched so ADS and the crouch stay locked. Computed entirely on the pivot, so collision (which
+        // sweeps from this pivot) is unaffected. The rate itself eases so jog-start/stop don't snap.
+        const followTarget = jogging ? this.pivotFollowMove : this.pivotFollowIdle;
+        this._pivotFollowRate += (followTarget - this._pivotFollowRate) * (1 - Math.exp(-this.pivotFollowLerp * t));
+        if(!this._pivotInit){ this._pivotSmooth.copy(this._pivot); this._pivotInit = true; }
+        else { this._pivotSmooth.lerp(this._pivot, 1 - Math.exp(-this._pivotFollowRate * t)); }
+        this._pivot.copy(this._pivotSmooth);
+
         // Far end of the spline: behind by the (aim/sprint + look-down) distance + over the shoulder.
         this._free.copy(this._pivot)
             .addScaledVector(this._fwd, -boom)
@@ -653,6 +780,19 @@ export default class PlayerControls extends Component{
     SetCameraOverride(on){
         this.cameraOverride = on;
     }
+
+    // Dev placement-hold (FPS): freeze the player but KEEP the real first-person camera + aim pose, so the
+    // weapon-placement tool can nudge the grip in its true ADS framing without the camera or aim drifting.
+    // The aim state is latched (held) for the duration so HOLD/RELEASE of right click can't flip the grip
+    // mode mid-edit. Unlike SetCameraOverride this does NOT yield the camera to a free-fly cam.
+    SetPlacementHold(on, aim = false){
+        this.placementHold = on;
+        this._placementAim = !!aim;
+        if(on){ this.aiming = !!aim; this._aimHeld = !!aim; }
+    }
+
+    OnReloadStart = () => { this._reloading = true; }
+    OnReloadEnd = () => { this._reloading = false; }
 
     // Edge-detect the movement keys and start a directional roll on a double-tap of the SAME key
     // inside doubleTapWindow. Input only reports HELD state, so we track each key's previous frame to
@@ -785,6 +925,28 @@ export default class PlayerControls extends Component{
             return;
         }
 
+        // Placement-hold (FPS weapon-placement panel open): freeze the player but keep the REAL camera
+        // and aim pose so the gun is nudged in its true first-person framing. Hold the latched aim state,
+        // zero movement, and still run camera + aim-target placement (so the FPS eye tracks the head and
+        // the gun stays seated where the panel is editing it). The free-fly cam is NOT used here.
+        if(this.placementHold){
+            this.aiming = this._placementAim;
+            const v = this.physicsBody.getLinearVelocity();
+            v.setX(0); v.setZ(0);
+            this.physicsBody.setLinearVelocity(v);
+            this.physicsBody.setAngularVelocity(this.zeroVec);
+            const ms = this.physicsBody.getMotionState();
+            if(ms){
+                ms.getWorldTransform(this.transform);
+                const p = this.transform.getOrigin();
+                this._cap.set(p.x(), p.y() + this.yOffset, p.z());
+                this.parent.SetPosition(this._cap);
+                this.UpdateCamera(this._cap, t);
+                this.UpdateAimTarget(t);
+            }
+            return;
+        }
+
         const forwardFactor = Input.GetKeyDown("KeyS") - Input.GetKeyDown("KeyW");
         const rightFactor = Input.GetKeyDown("KeyD") - Input.GetKeyDown("KeyA");
         const direction = this.moveDir.set(rightFactor, 0.0, forwardFactor).normalize();
@@ -817,14 +979,26 @@ export default class PlayerControls extends Component{
         const velocity = this.physicsBody.getLinearVelocity();
 
         if(Input.GetKeyDown('Space') && this.physicsComponent.canJump){
-            velocity.setY(this.jumpVelocity);
-            this.physicsComponent.canJump = false;
-            // Authoritative take-off signal for the body's jump animation. PlayerBody can't reliably
-            // detect take-off from IsGrounded (canJump): we clear it THIS frame BEFORE PlayerBody
-            // runs, and Input reports HELD keys, so holding Space bunny-hops on the first grounded
-            // frame (inside the body's landing debounce) — without this event the body would keep
-            // looping the fall pose and skip the jumpStart launch on the second hop.
-            this.Broadcast({topic: 'player.jump'});
+            // Jumping out of a crouch: STAND UP FIRST and play the normal standing jump, instead of
+            // launching from the crouched (lowered/bent) pose — which read as a glitch. Clear the C
+            // toggle so we land standing; standing is gated on head clearance (SetCrouched), so under
+            // low cover the stand is refused and the jump is suppressed (you can't leap under a ceiling).
+            // Re-read `crouching` from the actual physics state after the attempt.
+            if(this.crouching){
+                this._crouchToggle = false;
+                this.physicsComponent.SetCrouched(false);
+                this.crouching = this.physicsComponent.crouched;
+            }
+            if(!this.crouching){
+                velocity.setY(this.jumpVelocity);
+                this.physicsComponent.canJump = false;
+                // Authoritative take-off signal for the body's jump animation. PlayerBody can't reliably
+                // detect take-off from IsGrounded (canJump): we clear it THIS frame BEFORE PlayerBody
+                // runs, and Input reports HELD keys, so holding Space bunny-hops on the first grounded
+                // frame (inside the body's landing debounce) — without this event the body would keep
+                // looping the fall pose and skip the jumpStart launch on the second hop.
+                this.Broadcast({topic: 'player.jump'});
+            }
         }
         
         this.Deccelerate(t);
