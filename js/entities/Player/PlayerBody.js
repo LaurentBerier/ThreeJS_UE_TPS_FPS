@@ -190,11 +190,17 @@ export default class PlayerBody extends Component{
         this.fpsAimBiasLerp = 10.0;                        // ease rate for the centring bias (1/s)
         this._fpsAimBias = 0;                              // eased current bias (rad)
 
-        // FPS reuses the TPS grip (gun seated exactly as in third-person, both hands on it via the
-        // two-hand IK) instead of the dedicated FPS / FPS_AIM seats; the camera is pulled back to frame
-        // the gun + hands. See ActiveGripMode + PlayerControls.PlaceFpsEyePosition. Flip to false to go
-        // back to the head-mounted FPS viewmodel grips.
-        this.fpsUseTpsGrip = true;
+        // FPS grip seat source. When TRUE, FPS reuses the TPS grip (gun seated exactly as in third-
+        // person, both hands on it via the two-hand IK, camera pulled back to frame it). When FALSE,
+        // FPS uses its OWN dedicated seats — WEAPON_GRIP_FPS (hip) and WEAPON_GRIP_FPS_AIM (down-the-
+        // sights) — so the first-person gun is placed independently of third-person AND the placement
+        // tool (` panel) edits/prints those seats per aim state.
+        // OFF: the FPS / FPS-aim grips are LIVE and tunable. ActiveGripMode returns FPS / FPS_AIM in
+        // first-person (instead of collapsing to TPS), so the placement panel reports the real mode,
+        // applies nudges live to that seat, and prints a WEAPON_GRIP_FPS / WEAPON_GRIP_FPS_AIM snippet
+        // to paste back into UeMannequin.js. (With it ON, FPS always seats the TPS grip, so the FPS_AIM
+        // seat — and the panel's FPS/FPS_AIM modes — were dead, which is why FPS-aim placement never took.)
+        this.fpsUseTpsGrip = false;
 
         // --- FPS body lateral offset. Optional sideways slide of the body in FPS (the eye is compensated
         // by the same vector so the camera holds). 0 = centred (the default now that FPS frames the
@@ -1786,6 +1792,11 @@ export default class PlayerBody extends Component{
         // foregrip and re-grabs). Dropped only during a reload (the off-hand works the mag) and while
         // placing the weapon. The barrel still only swings while `active` (aiming/shooting).
         const gripActive = this.oneShot !== 'reload' && !placing;
+        // FPS seats float the gun off the wrist (the independent FPS / FPS_AIM grips), so IK BOTH arms
+        // onto it instead of the wrist-rotation aim path. TPS — and FPS while it reuses the TPS grip
+        // (fpsUseTpsGrip) — keeps the wrist-rotation path, where the gun grips AT the wrist so the
+        // dominant hand stays attached for free.
+        const dualHand = this.cameraMode === 'FPS' && !this.fpsUseTpsGrip;
         this._weaponAimActive = active;
         this.weaponAimIK.Update(t, {
             active,
@@ -1794,6 +1805,7 @@ export default class PlayerBody extends Component{
             aimValid: pc.aimTargetValid,
             cameraForward: pc.aimDir,
             world: this._physicsWorld,   // muzzle wall-clearance sweep (keeps the barrel out of walls)
+            dualHand,
         });
     }
 

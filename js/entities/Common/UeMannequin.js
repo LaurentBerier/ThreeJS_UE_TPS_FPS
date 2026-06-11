@@ -62,14 +62,15 @@ const WEAPON_GRIP = {
 // the FRAMING differs: over-the-shoulder in TPS vs down-the-sights at the eye in FPS, so the gun
 // wants a different seat for each. PlayerBody swaps the pivot to whichever applies for the current
 // camera mode (see PlayerBody.ApplyWeaponGrip), and the placement tool (WeaponPlacementDebug, the `
-// panel) edits whichever mode you're in. Starts as a COPY of the TPS grip so FPS reads identically
-// until you tune it; paste the FPS panel's snippet here. Hand-local cm / degrees, same as above.
+// panel) edits whichever mode you're in. Because FPS now renders the SAME body with the SAME hand
+// pose as TPS (the camera rides the head bone), this is SEEDED to the TPS grip so the right hand grips
+// the gun identically — re-tune with the panel and paste the FPS snippet here. Hand-local cm / degrees.
 const WEAPON_GRIP_FPS = {
-    position: new THREE.Vector3(-29.5, -27.4, 0.6),
+    position: new THREE.Vector3(-21.2, -4.4, 0.7),
     rotationEuler: new THREE.Euler(
         THREE.MathUtils.degToRad(0),
-        THREE.MathUtils.degToRad(1),
-        THREE.MathUtils.degToRad(280),
+        THREE.MathUtils.degToRad(-5),
+        THREE.MathUtils.degToRad(272),
     ),
 };
 
@@ -78,14 +79,14 @@ const WEAPON_GRIP_FPS = {
 // grip above — so PlayerBody swaps to this one while aiming in first-person (see ApplyWeaponGrip /
 // ActiveGripMode). Tune it by eye with the placement tool (WeaponPlacementDebug): in FPS, HOLD right
 // click to edit this AIM grip (the panel header reads FPS_AIM), nudge until the weapon sits where you
-// want it down the sights, then paste the snippet back here. Starts as a COPY of the FPS hip grip so
-// ADS reads identically until you tune it. Hand-local cm / degrees, same as above.
+// want it down the sights, then paste the snippet back here. SEEDED to the TPS grip (same as the FPS
+// hip seat) so the right hand grips the gun until you tune the ADS pose. Hand-local cm / degrees.
 const WEAPON_GRIP_FPS_AIM = {
-    position: new THREE.Vector3(-51.5, -14.9, 16),
+    position: new THREE.Vector3(-25.2, -9.4, 19.7),
     rotationEuler: new THREE.Euler(
-        THREE.MathUtils.degToRad(0),
+        THREE.MathUtils.degToRad(5),
         THREE.MathUtils.degToRad(-4),
-        THREE.MathUtils.degToRad(271),
+        THREE.MathUtils.degToRad(270),
     ),
 };
 

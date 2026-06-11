@@ -76,13 +76,16 @@ export default class WeaponAimIK{
         this.lockSupportHand       = opts.lockSupportHand ?? true;
         this.leftGripQuatLocal     = new THREE.Quaternion();   // hand_l orientation in weaponPivot-local frame (rest)
         this._leftGripQuatCaptured = false;
+        this.rightGripQuatLocal    = new THREE.Quaternion();   // hand_r orientation in weaponPivot-local frame (rest)
+        this._rightGripQuatCaptured = false;
         // Legacy explicit-offset path (a real weapon can author a palm angle instead of the captured
         // rest). When matchHandToGrip is on it overrides the captured lock with weaponWorld*offset.
         this.matchHandToGrip       = opts.matchHandToGrip ?? false;
         this.LeftHandRotationOffset = opts.LeftHandRotationOffset ? opts.LeftHandRotationOffset.clone() : new THREE.Quaternion();
 
         // ---- Resolved rig + sockets ----
-        this.bones = { upperarm_l: null, lowerarm_l: null, hand_l: null, hand_r: null };
+        this.bones = { upperarm_l: null, lowerarm_l: null, hand_l: null,
+                       upperarm_r: null, lowerarm_r: null, hand_r: null };
         this.muzzleLocal = new THREE.Vector3();      // barrel tip, weaponPivot-local (muzzle flash / trace origin)
         this.aimSocketLocal = new THREE.Vector3();   // aim-alignment socket (the point the barrel ray emanates from) — defaults to the muzzle
         this.forwardLocal = new THREE.Vector3(0, 0, 1); // unit barrel-forward, weaponPivot-local
@@ -161,6 +164,11 @@ export default class WeaponAimIK{
         // 1 = always straight down). High enough to kill the swivel/gimbal as the aim sweeps while still
         // reading natural for a rifle grip.
         this.supportElbowStabilize = 0.7;
+        // Dominant (right) elbow stabilize for the FPS dual-hand grip — LOWER than the support arm so the
+        // IK mostly PRESERVES the animated rifle-grip bend (the right hand only reaches ~the seat offset,
+        // never an extreme cross-body target), biasing toward world-down just enough to avoid a flip.
+        // Raise toward 1 if the right elbow swivels; lower toward 0 to follow the animation more.
+        this.dominantElbowStabilize = 0.35;
 
         // --- Muzzle wall-clearance (stops the barrel poking THROUGH walls — the reported bug). After the
         // barrel is aimed, a small sphere is swept from the wrist to the muzzle tip against the STATIC
@@ -181,6 +189,16 @@ export default class WeaponAimIK{
         this._clrUp = new THREE.Vector3(0, 1, 0);
         this._clrQ = new THREE.Quaternion();
         this._clrRes = { point: new THREE.Vector3(), normal: new THREE.Vector3(), fraction: 1 };
+
+        // --- FPS dual-hand grip. A first-person ADS seat floats the gun OFF the dominant wrist (so it
+        // reads centred down the sights), which the wrist-rotation aim path below can't keep the right
+        // hand on (that only works when the gun grips AT the wrist). When this is set (PlayerBody, FPS),
+        // _updateDualHand instead IKs BOTH arms onto the gun's captured grips, so the gun stays at its
+        // placed seat and both hands reach it. ---
+        this.dualHandGrip = opts.dualHandGrip ?? false;
+        this._dhGunMat = new THREE.Matrix4();   // the placed weapon world matrix (both hands grip THIS)
+        this._dhGunRot = new THREE.Quaternion();
+        this._dhLocalMat = new THREE.Matrix4();  // scratch: the placed gun pose re-expressed local to the IK'd wrist
 
         // Shared two-bone IK solver (analytic, sign-safe). Owns its own scratch pool so the support-arm
         // solve never clobbers the leg solves' intermediates. The two-bone scratch declared above is now
@@ -295,6 +313,13 @@ export default class WeaponAimIK{
         if(this.bones.hand_r){
             this.bones.hand_r.getWorldPosition(this._tmpV);
             this.rightGripLocal.copy(pivot.worldToLocal(this._tmpV.clone()));
+            // hand_r's orientation RELATIVE to the gun at rest (pivot-local), mirroring the support hand.
+            // The dual-hand FPS grip re-imposes this so the gun keeps its PLACED orientation while the
+            // right arm IKs out to a seat that floats the gun off the wrist.
+            pivot.getWorldQuaternion(this._pW);
+            this.bones.hand_r.getWorldQuaternion(this._hq2);
+            this.rightGripQuatLocal.copy(this._pW).invert().multiply(this._hq2);
+            this._rightGripQuatCaptured = true;
         }
         this._socketsCaptured = true;
     }
@@ -350,7 +375,7 @@ export default class WeaponAimIK{
     //   cameraForward : unit camera-forward (fallback aim direction for too-close / behind targets)
     //   world         : the Ammo physics world (for the muzzle wall-clearance sweep; optional)
     //   t             : delta seconds
-    Update(t, { active, gripActive = active, aimTarget, aimValid = true, cameraForward = null, world = null }){
+    Update(t, { active, gripActive = active, aimTarget, aimValid = true, cameraForward = null, world = null, dualHand = false }){
         const pivot = this.weaponPivot;
         if(!pivot || !this.handBoneR){ return; }
 
@@ -387,6 +412,13 @@ export default class WeaponAimIK{
 
         // Refresh world matrices for clean reads (the spine lean just edited the chain).
         this.model.updateMatrixWorld(true);
+
+        // FPS dual-hand grip: the gun is seated OFF the wrist, so IK both arms onto it (the wrist-
+        // rotation aim path below only holds the dominant hand when the gun grips AT the wrist).
+        if(dualHand){
+            this._updateDualHand();
+            return;
+        }
 
         // --- Reset the weapon to its static base, then compute the barrel correction from it. ---
         pivot.quaternion.copy(this._baseQuat);
@@ -502,6 +534,78 @@ export default class WeaponAimIK{
         d.muzzle.copy(this.muzzleLocal).applyMatrix4(pivot.matrixWorld);
         d.barrelFwd.copy(this.forwardLocal).applyQuaternion(pivot.getWorldQuaternion(this._weaponWQ)).normalize();
         d.correctedDir.copy(aimTarget).sub(d.muzzle).normalize();
+        d.rightGrip.copy(this.rightGripLocal).add(this.RightHandOffset).applyMatrix4(pivot.matrixWorld);
+        d.leftGrip.copy(this._leftTarget);
+        d.handTarget.copy(this._leftTarget);
+    }
+
+    // FPS DUAL-HAND GRIP. The first-person ADS seat floats the gun OFF the dominant wrist so it reads
+    // centred down the sights — which the wrist-rotation aim path can't grip (that only keeps the right
+    // hand on when the gun grips AT the wrist). Here BOTH arms IK onto the gun: it's left at its placed
+    // seat (relative to the animated hand), and the dominant + support arms reach for its captured grip
+    // sockets, so both hands land on the placed weapon. No barrel re-aim (FPS looks straight down the
+    // sights and the shot is a camera-centre ray regardless) — the gun points where the seat orients it.
+    // Weighted by the grip blend so the hands GLIDE on (spawn) and release for a reload, like the support
+    // hand. Reuses the same two-bone solver + wrist-lock as the TPS support hand, mirrored to the right.
+    _updateDualHand(){
+        const pivot = this.weaponPivot;
+        // Reset the gun to its placed seat and refresh hand_r (from its animated ancestors) + the gun
+        // (its child). _dhGunMat is the placed weapon pose — both hands grip THIS.
+        pivot.quaternion.copy(this._baseQuat);
+        pivot.position.copy(this._basePos);
+        this.handBoneR.updateWorldMatrix(true, true);
+        this._dhGunMat.copy(pivot.matrixWorld);
+        pivot.getWorldQuaternion(this._dhGunRot);
+
+        const ikW = this._gripAlpha * this.WeaponIKBlendAlpha;
+
+        // DOMINANT (right) hand -> the gun's right grip. Two-bone IK reaches the grip; the wrist lock
+        // re-imposes the captured hand-vs-gun rotation so the bent forearm doesn't tip the placed gun.
+        if(this._socketsCaptured && this.bones.upperarm_r && this.bones.lowerarm_r && this.bones.hand_r){
+            this._tmpV.copy(this.rightGripLocal).add(this.RightHandOffset).applyMatrix4(this._dhGunMat);
+            this.bones.hand_r.getWorldPosition(this._ikE);
+            this._tmpV2.copy(this._ikE).lerp(this._tmpV, ikW);            // ease from the animated hand onto the grip
+            this._solveTwoBone(this.bones.upperarm_r, this.bones.lowerarm_r, this.bones.hand_r,
+                this._tmpV2, this._poleDown, this.dominantElbowStabilize);
+            if(this._rightGripQuatCaptured){
+                const hand = this.bones.hand_r;
+                this._hq1.copy(this._dhGunRot).multiply(this.rightGripQuatLocal);   // desired hand_r world rot
+                hand.getWorldQuaternion(this._hq2).slerp(this._hq1, ikW);
+                hand.parent.getWorldQuaternion(this._pW);
+                hand.quaternion.copy(this._pWInv.copy(this._pW).invert()).multiply(this._hq2);
+            }
+            // The gun rides hand_r, so the IK just shoved it off the placement by the seat offset. PIN it
+            // back: re-express the captured placement (_dhGunMat) LOCAL to the now-IK'd wrist and write
+            // that onto the pivot, so the gun sits EXACTLY where you placed it while the hand grips it.
+            this.handBoneR.updateWorldMatrix(true, false);
+            this._dhLocalMat.copy(this.handBoneR.matrixWorld).invert().multiply(this._dhGunMat);
+            this._dhLocalMat.decompose(pivot.position, pivot.quaternion, this._tmpV2);   // _tmpV2 = throwaway scale
+            pivot.updateWorldMatrix(false, false);
+        }
+
+        // SUPPORT (left) hand -> the foregrip on the (now placed) gun — same solve as the TPS path.
+        if(this.twoHanded && this._socketsCaptured && this.bones.upperarm_l && this.bones.lowerarm_l && this.bones.hand_l){
+            this._leftTarget.copy(this.leftGripLocal).add(this.LeftHandOffset).applyMatrix4(pivot.matrixWorld);
+            this.bones.hand_l.getWorldPosition(this._ikE);
+            this._tmpV2.copy(this._ikE).lerp(this._leftTarget, ikW);
+            this._solveTwoBone(this.bones.upperarm_l, this.bones.lowerarm_l, this.bones.hand_l,
+                this._tmpV2, this._poleDown, this.supportElbowStabilize);
+            if((this.lockSupportHand && this._leftGripQuatCaptured) || this.matchHandToGrip){
+                const hand = this.bones.hand_l;
+                pivot.getWorldQuaternion(this._weaponWQ);
+                if(this.matchHandToGrip){ this._hq1.copy(this._weaponWQ).multiply(this.LeftHandRotationOffset); }
+                else{ this._hq1.copy(this._weaponWQ).multiply(this.leftGripQuatLocal); }
+                hand.getWorldQuaternion(this._hq2).slerp(this._hq1, ikW);
+                hand.parent.getWorldQuaternion(this._pW);
+                hand.quaternion.copy(this._pWInv.copy(this._pW).invert()).multiply(this._hq2);
+            }
+        }
+
+        // Debug snapshot (barrel/grip read off the live, grip-driven gun).
+        const d = this._debug;
+        d.active = true; d.alpha = this._aimAlpha; d.gripAlpha = this._gripAlpha; d.valid = true; d.distance = 0;
+        d.muzzle.copy(this.muzzleLocal).applyMatrix4(pivot.matrixWorld);
+        d.barrelFwd.copy(this.forwardLocal).applyQuaternion(pivot.getWorldQuaternion(this._weaponWQ)).normalize();
         d.rightGrip.copy(this.rightGripLocal).add(this.RightHandOffset).applyMatrix4(pivot.matrixWorld);
         d.leftGrip.copy(this._leftTarget);
         d.handTarget.copy(this._leftTarget);
