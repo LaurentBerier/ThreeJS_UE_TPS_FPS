@@ -156,7 +156,11 @@ try {
   if (!crouching) fail('crouch flag never engaged');
   if (crouchState.crouchEased < 0.8) fail(`crouch never eased in (_crouchEased ${crouchState.crouchEased})`);
   if (headDrop < 0.22) fail(`head did not drop enough when crouching (${headDrop.toFixed(3)} m < 0.22) — crouch not lowering the body`);
-  if (headDrop > 0.55) fail(`head dropped too far when crouching (${headDrop.toFixed(3)} m > 0.55)`);
+  // Upper bound accommodates the AUTHORED crouch-idle clip (CrouchIdle.glb): it's a DEEP crouch that
+  // drops the head ~0.70 m (intended — see the procedural-anim-ik notes). The clip is fetched async at
+  // boot, so depending on load timing this probe sees either the deep authored pose (~0.70 m) or the
+  // procedural fallback (~0.24 m); both are valid. (Old ceiling was 0.55, written before the deep clip.)
+  if (headDrop > 0.80) fail(`head dropped too far when crouching (${headDrop.toFixed(3)} m > 0.80)`);
   // Feet must stay planted (NOT sink with the lowered body) — the core proof the leg IK is working.
   for (const s of ['l', 'r']) {
     const sink = standGeom[s].footY - crouchGeom[s].footY;

@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>UE Crouch-Idle FBX -&gt; GLB converter</title>
+    <!--
+      Build-time converter (NOT part of the game). Mirrors roll_to_glb.html but bakes
+      ONLY the crouch-idle: loads the UE Mannequin mesh + A_Rifle_Crouch_Idle.fbx with a
+      MODERN three.js FBXLoader (r160, which parses these UE 2020 anim exports that the
+      runtime's r127 cannot — r127 throws in parseAnimationLayers) and exports a small
+      binary GLB carrying the skeleton and ONE clip named 'crouch_idle':
+        assets/characters/ue/CrouchIdle.glb
+      The game loads it with its own (r127) GLTFLoader and pulls animations[0], so the
+      existing SK_Mannequin.glb (and all its working clips) is left untouched — zero
+      regression risk. Kept in native UE space (Z-up, cm); adaptClipToPreOriented does
+      the Y-up/metre fix at runtime exactly like every other clip. Run via
+      tools/run_crouchidle_bake.mjs (headless Chrome for Testing).
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <script type="module">
+      import * as THREE from 'three';
+      import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+      import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+
+      const status = { steps: [] };
+      const log = (m) => { status.steps.push(m); document.title = m; };
+
+      try {
+        const loader = new FBXLoader();
+        const base = '../assets/characters/ue/';
+
+        log('loading mesh');
+        const mesh = await loader.loadAsync(base + 'SK_Mannequin.FBX');
+        mesh.name = 'SK_Mannequin';
+
+        // TGA UE materials don't survive FBXLoader->GLTFExporter; swap to neutral PBR
+        // (skinning preserved). The game reapplies its own material anyway.
+        mesh.traverse((c) => {
+          if (c.isSkinnedMesh || c.isMesh) {
+            const swap = () =>
+              new THREE.MeshStandardMaterial({ color: 0x9099a4, metalness: 0.1, roughness: 0.75, skinning: true });
+            c.material = Array.isArray(c.material) ? c.material.map(swap) : swap(c.material);
+          }
+        });
+
+        log('loading anim crouch_idle');
+        const fbx = await loader.loadAsync(base + 'A_Rifle_Crouch_Idle.fbx');
+        const clip = fbx.animations[0];
+        clip.name = 'crouch_idle';
+
+        // We only need the CLIP (it drives the game's own rig by bone name). Export just the
+        // bone hierarchy — NOT the skinned-mesh geometry — so the GLB stays tiny. Find the
+        // topmost bone (its parent is not a bone) and export that subtree; the clip's tracks
+        // all target bones in it, so the animation exports intact.
+        let topBone = null;
+        mesh.traverse((o) => { if (o.isBone && !topBone && !(o.parent && o.parent.isBone)) topBone = o; });
+        const exportRoot = topBone || mesh;
+        exportRoot.animations = [clip];
+
+        log('exporting glb');
+        const exporter = new GLTFExporter();
+        const glb = await new Promise((resolve, reject) => {
+          exporter.parse(exportRoot, resolve, reject, { binary: true, animations: [clip], includeCustomExtensions: true });
+        });
+
+        const bytes = new Uint8Array(glb);
+        let bin = '';
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+        window.__GLB_B64 = btoa(bin);
+        status.bytes = bytes.length;
+        // Report the pelvis Y range (crouch depth, native cm) so the integration can match it.
+        const pelvis = clip.tracks.find((t) => /pelvis.*\.position/i.test(t.name));
+        let pelvisY = null;
+        if (pelvis) {
+          let mn = Infinity, mx = -Infinity;
+          for (let i = 1; i < pelvis.values.length; i += 3) { mn = Math.min(mn, pelvis.values[i]); mx = Math.max(mx, pelvis.values[i]); }
+          pelvisY = [+mn.toFixed(2), +mx.toFixed(2)];
+        }
+        status.clips = [{ name: clip.name, dur: +clip.duration.toFixed(3), tracks: clip.tracks.length, pelvisY }];
+        status.ok = true;
+        log('done');
+      } catch (e) {
+        status.ok = false;
+        status.error = (e.message || String(e)) + '\n' + (e.stack || '');
+        log('error');
+      }
+      window.__STATUS = status;
+    </script>
+  </body>
+</html>

@@ -66,6 +66,13 @@ export default class FootIK{
         // rest height back onto the ground — so the feet never disappear into the uneven terrain (and never
         // pin a swing foot, so no skate). See _guardPenetration. Fast ease so a sudden bump is caught quickly.
         this.guardLerp = opts.guardLerp ?? 14;
+        // CROUCH-WALK guard ATTACK ease rate (1/s). Standing, the guard snaps a clipping foot up INSTANTLY
+        // (a fast jog onto a rise must never flash a foot through the ground). But crouch-WALKING the body
+        // rides a touch low, so the planted foot sits just under its rest height every footfall — an instant
+        // snap there re-solves the knee in ONE frame (the residual footfall "leg snap"). While crouched we
+        // ease the attack over a few frames instead (still fast — the shallow crouch-walk drop can't visibly
+        // clip in 3-4 frames), blended in by the crouch amount so standing terrain safety is untouched.
+        this.guardCrouchAttackLerp = opts.guardCrouchAttackLerp ?? 22;
         this._ball = new THREE.Vector3();
         this._toe  = new THREE.Vector3();
         this._flatQ = new THREE.Quaternion();
@@ -240,12 +247,20 @@ export default class FootIK{
         // crouch-walk rides the stable pole. Drives Pass C's knee pole AND the penetration guard's.
         const crouchAmt = THREE.MathUtils.clamp(crouch, 0, 1);
         const kneeAlign = crouchAmt * (1 - THREE.MathUtils.smoothstep(speed, 0.2, 1.2));
+        // Knee-pole stabilization rides the SQRT of the crouch blend: at a steady crouch it is the
+        // full crouchPoleStabilize (sqrt(1)=1, unchanged), but through a crouch<->stand TRANSITION it
+        // decays much slower than the plant — a linear decay left the half-released knee chasing the
+        // clip's noisy animated pole mid-stride, and the bend PLANE flipped for a frame (a ~40-50°
+        // single-frame calf snap on an uncrouch-while-jogging). sqrt keeps the bend plane pinned
+        // body-forward until the plant is nearly gone; standing (crouch 0) is unchanged.
+        const poleStab = THREE.MathUtils.clamp(
+            this.poleStabilize + Math.sqrt(crouchAmt) * this.crouchPoleStabilize, 0, 1);
 
         // Plant faded out (fast jog, OR airborne crest): the PENETRATION GUARD (anti-ground-clip) is the
         // only foot pass — run it and bail before the full plant (Pass B/C), so the foot-synced jog isn't
         // fought into a skate. (When the plant DOES run, the guard instead runs LAST — see end of Update.)
         if(this._weight < 1e-3){
-            if(guard){ this._guardPenetration(t, bodyYaw, kneeAlign); }
+            if(guard){ this._guardPenetration(t, bodyYaw, kneeAlign, poleStab, crouchAmt); }
             this._hipDrop *= Math.exp(-this.hipDropLerp * t);
             return;
         }
@@ -274,10 +289,10 @@ export default class FootIK{
         // animated pole can't bend the knee backward); poleStabilize 0 otherwise preserves the clip's
         // bend. The ankle target eases from the animated position to the ground by the master weight. ---
         // Crouch ramps the pole-stabilize bias HARD toward the chosen pole so the deep-bent knee stops
-        // chasing the clip's noisy animated pole. The pole DIRECTION is the speed-tapered body-forward/foot
-        // blend (kneeAlign, above) — biasing toward the STABLE body-forward pole while crouch-walking is what
-        // calms the knee. (crouchAmt is computed above with kneeAlign.) 0 standing.
-        const poleStab = THREE.MathUtils.clamp(this.poleStabilize + crouchAmt * this.crouchPoleStabilize, 0, 1);
+        // chasing the clip's noisy animated pole (poleStab, computed above with kneeAlign — sqrt-of-
+        // crouch so transitions stay pinned). The pole DIRECTION is the speed-tapered body-forward/foot
+        // blend (kneeAlign): biasing toward the STABLE body-forward pole while crouch-walking is what
+        // calms the knee. 0 standing.
         // Crouch foot-flatten taper. A crouch-IDLE foot should lie FLAT on the ground; but forcing a
         // mid-stride SWING foot flat during a crouch-WALK reads as locked/crooked feet (the reported
         // crouch-walk glitch). So fade the flatten OUT as the crouch-walk picks up speed — full at
@@ -311,8 +326,8 @@ export default class FootIK{
         // --- FINAL PENETRATION GUARD (anti-ground-clip). Runs AFTER the plant + hip-drop so it catches a
         // foot the body-lower (Pass B) pushed below the surface that a partial plant (Pass C at a faded
         // weight) didn't fully re-seat — the residual mid-stride ground-clip at walk-start. One-sided +
-        // attack-instant: it only ever lifts a clipping foot to the surface, never pins a swing foot. ---
-        if(guard){ this._guardPenetration(t, bodyYaw, kneeAlign); }
+        // attack-instant (standing); crouch eases the attack so footfalls don't snap the knee. ---
+        if(guard){ this._guardPenetration(t, bodyYaw, kneeAlign, poleStab, crouchAmt); }
     }
 
     // Knee bend direction (pole) for one leg, written into `out`. STANDING: the fixed body-forward
@@ -345,8 +360,13 @@ export default class FootIK{
     // crouch, can't flash a foot through the ground) and RELEASE-EASED (no knee pop when the foot rises off
     // the surface). Full strength: it lifts exactly to the surface, so Pass C (which also targets that
     // height) just re-confirms it — they never fight. Reuses Pass A's raycast hit (no extra raycast).
-    _guardPenetration(t, bodyYaw, kneeAlign = 0){
+    _guardPenetration(t, bodyYaw, kneeAlign = 0, poleStab = this.poleStabilize, crouchAmt = 0){
         const ease = 1 - Math.exp(-this.guardLerp * t);
+        // Attack ease: INSTANT standing (terrain anti-clip must not lag a fast stride onto a rise), but
+        // eased while crouched (footfalls of the slightly-low crouch-walk body must not snap the knee).
+        // Blended by the crouch amount, so standing behaviour is byte-for-byte unchanged.
+        const attack = THREE.MathUtils.lerp(1, 1 - Math.exp(-this.guardCrouchAttackLerp * t),
+            THREE.MathUtils.clamp(crouchAmt, 0, 1));
         const align = THREE.MathUtils.clamp(kneeAlign, 0, 1);   // speed-tapered crouch knee/foot alignment
         for(const leg of this.legs){
             let target = 0;
@@ -354,15 +374,18 @@ export default class FootIK{
                 leg.foot.getWorldPosition(this._footPos);
                 if(this._footPos.y < leg.ground + leg.ankleRest){ target = 1; }   // ankle below rest => clipping
             }
-            // Attack instant (snap UP), release eased (glide DOWN) — penetration never shows, exit never pops.
-            leg.guard = target > leg.guard ? target : leg.guard + (target - leg.guard) * ease;
+            // Attack (snap/ease UP), release eased (glide DOWN) — penetration never shows, exit never pops.
+            leg.guard = target > leg.guard ? leg.guard + (target - leg.guard) * attack
+                                           : leg.guard + (target - leg.guard) * ease;
             if(leg.guard < 1e-3 || !leg.hit){ continue; }
             const restY = leg.ground + leg.ankleRest;
             this._target.set(this._footPos.x,
                 THREE.MathUtils.lerp(this._footPos.y, restY, leg.guard), this._footPos.z);
-            // Same speed-tapered knee pole as Pass C, so a lifted crouch foot keeps its knee aligned (#6).
+            // Same speed-tapered knee pole AND the same crouch-aware pole stabilization as Pass C —
+            // the guard's attack-instant lift previously solved with the raw (0) stabilize, so its
+            // one-frame correction was free to flip the knee's bend plane.
             this._kneePole(leg, bodyYaw, align, this._pole);
-            this.ik.solveTwoBone(leg.thigh, leg.calf, leg.foot, this._target, this._pole, this.poleStabilize);
+            this.ik.solveTwoBone(leg.thigh, leg.calf, leg.foot, this._target, this._pole, poleStab);
         }
     }
 

@@ -389,6 +389,29 @@ export default class UeSoldierController extends Component{
         this.path = this.navmesh.FindPath(this.position, this.tempVec) || [];
     }
 
+    // Path to the spot the target was LAST SEEN (used by the search behaviour after losing sight). Unlike
+    // NavigateToTarget it ignores the live target (we've lost it) and heads straight for the memory.
+    NavigateToLastSeen(){
+        if(!this.hasLastSeen){ this.path = []; return; }
+        this.tempVec.copy(this.lastSeenPos);
+        this.tempVec.y = 0.5;
+        this.path = this.navmesh.FindPath(this.position, this.tempVec) || [];
+        return this.path.length > 0;
+    }
+
+    // Pick a walkable point a few metres AROUND the last-seen spot and path to it — the next "leg" of a
+    // search sweep, so the soldier pokes around the area the player vanished into instead of standing on
+    // the exact last-seen tile. Falls back to a point near the soldier itself if the memory tile is off
+    // the mesh. Returns true if a usable path was found.
+    NavigateNearLastSeen(radius = 6.0){
+        let node = this.hasLastSeen ? this.navmesh.GetRandomNode(this.lastSeenPos, radius) : null;
+        if(!node){ node = this.navmesh.GetRandomNode(this.position, radius); }
+        if(!node){ this.path = []; return false; }
+        this.tempVec.copy(node); this.tempVec.y = 0.5;
+        this.path = this.navmesh.FindPath(this.position, this.tempVec) || [];
+        return this.path.length > 0;
+    }
+
     // ---- Tactical combat movement (cover / flank / reposition / push / retreat) ----
     // Choose a tactical destination for a reposition: a reachable navmesh node near the soldier that
     // (1) ideally has a clear line of sight to the target, (2) sits near this soldier's preferred
@@ -1204,14 +1227,15 @@ export default class UeSoldierController extends Component{
             // Getting shot ALWAYS provokes an engagement — the soldier turns and pushes toward the
             // shooter instead of ever shrugging off a hit. The memory refresh above already aimed
             // lastSeenPos at the attacker; now force the FSM to act on it from ANY non-combat state:
-            //   * idle / patrol  -> snap into chase (the only case handled before),
+            //   * idle / patrol / search -> snap into chase (search was already hunting; the shot gives
+            //                       it a fresh direction to press toward),
             //   * chase          -> refresh its patience + repath, so a soldier shot while closing on a
             //                       stale last-seen spot (or about to give up) re-targets the shooter,
             //   * combat         -> already a firefight; the memory refresh keeps it pressing.
             // This closes the "shot from outside my view, didn't react" gap.
             const cur = this.stateMachine.currentState;
             const state = cur && cur.Name;
-            if(state === 'idle' || state === 'patrol'){
+            if(state === 'idle' || state === 'patrol' || state === 'search'){
                 this.stateMachine.SetState('chase');
             }else if(state === 'chase' && cur.OnProvoked){
                 cur.OnProvoked();

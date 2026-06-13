@@ -35,11 +35,26 @@ hunt you instead of orbiting a wall.
 - **UE Mannequin player** (`SK_Mannequin`) driven by UE rifle animations, layered into
   independent **upper/lower body** halves — reload or fire from the torso while the legs
   keep their own walk/run cycle, with crossfades tuned so sprint start/stop stays smooth.
+  In first-person ADS the **arms hold the authored `A_Rifle_Aim` pose** (captured at load,
+  blended in by the aim weight) so the elbows read right, while the dual-hand IK gently
+  plants the hands on the gun — and the ADS FOV tightens to a real **~1.25× zoom**.
+- **Movement feel** — a procedural **clipless crouch** (capsule resize + eased pose, no
+  crouch clip needed; standing back up is gated on real head clearance) with a
+  near-walk-speed crouch-walk; **foot/terrain IK** ([FootIK.js](js/entities/Player/FootIK.js))
+  plants the feet on slopes and keeps crouched knees stable; and **forgiving jumps**:
+  coyote time + a jump buffer so ledge edges and faceted terrain never eat the input, a
+  crouch-jump that fires the same frame as a standing jump, and a one-shot **wall
+  double-jump** — press jump again mid-air near any vertical surface for a boosted hop
+  with a small kick off the wall. Brief ballistic hops over terrain crests stay in the
+  ground locomotion (air-entry debounce) instead of flashing the jump pose.
 - **Enemy AI with teeth** — two archetypes: a **2×-scale root-motion beast** (melee
   bruiser) and a velocity-driven UE **soldier** (ranged gunner). Navmesh pathfinding, a
   patrol/chase/attack FSM, and awareness via a wide view cone **plus** a close proximity
   sense (both gated by line of sight) so a player beside or behind is *noticed*, not
-  ignored. In the chase the beast **re-acquires your position several times a second**,
+  ignored. A soldier that loses sight of you doesn't shrug and wander off: it walks to
+  where it **last saw you, sweeps the area, and pokes nearby spots** (a `search` state
+  between chase and patrol) — and being shot from anywhere snaps it straight back into
+  the hunt. In the chase the beast **re-acquires your position several times a second**,
   so it tracks you tightly. And it can't get stuck: a decisive **failsafe** gives it two
   unstick tries (drop the blocking waypoint → repath); if it's still pinned mid-hunt, a
   small, subtle teleport breaks it loose.
@@ -76,7 +91,8 @@ loaders, ammo.js and three-pathfinding load via importmap / a vendored WASM buil
 | **W A S D** | Move |
 | **Mouse** | Look (click to lock the pointer) |
 | **Shift** | Sprint |
-| **Space** | Jump |
+| **Space** | Jump (coyote time + buffered press; press again mid-air near a wall for the wall double-jump) |
+| **C** (toggle) / **Alt** (hold) | Crouch |
 | **Double-tap W/A/S/D** | Directional dodge roll (momentum + i-frames, TPS & FPS) |
 | **Left click** | Fire |
 | **Right click** | Aim down sights (FP) |
@@ -99,9 +115,11 @@ js/
   entry.js          app bootstrap, asset loading, entity wiring, game loop
   Entity/EntityManager/Component/Input/FiniteStateMachine/AmmoLib   engine core
   entities/
-    Player/         PlayerControls (dual camera: spline collision + near cull; aim-target raycast),
+    Player/         PlayerControls (dual camera: spline collision + near cull; aim-target raycast;
+                    crouch/jump input incl. coyote + buffer + wall double-jump),
                     PlayerBody (UE Mannequin + two-state aim-pitch lean + weapon aim-IK driver), Hands (FP arms),
-                    Weapon/WeaponManager/WeaponFSM, PlayerPhysics, PlayerHealth,
+                    Weapon/WeaponManager/WeaponFSM, PlayerPhysics (crouch capsule resize + head-clearance check),
+                    PlayerHealth, FootIK (terrain/crouch foot planting),
                     WeaponAimIK (exact barrel aim + two-hand IK) + WeaponAimDebug (K overlay) + WeaponPlacementDebug (` grip tool)
     NPC/            CharacterController/CharacterFSM (2× beast) + UeSoldierController/
                     UeSoldierFSM (ranged soldier): awareness + stuck-recovery, hitboxes,
@@ -122,6 +140,8 @@ tools/
   aim_test.mjs      headless aim-IK check (Chrome for Testing): barrel-on-target + two-hand
                     attachment, TPS & FPS  ->  node tools/aim_test.mjs
   smoke_test.mjs    headless regression check: boot, AI run-and-gun, ragdoll, dodge roll
+  diag_*.mjs / *_probe.mjs   focused headless probes (crouch camera/foot-IK/jump, foot
+                    planting, shoot-pop, jitter, ragdoll settle) used while tuning feel
   *.py              reference Blender scripts (optional offline pipeline)
 ```
 
@@ -129,9 +149,9 @@ tools/
 
 - **Player character** — the body mesh is `assets/characters/ue/SK_Mannequin_new.glb`,
   a **Y-up, metre-scaled** GLB with baked PBR materials (the house convention: ship
-  assets Y-up for clean Three.js integration). Its 4 rifle clips
-  (`idle`/`walk`/`reload`/`shoot`) come from the legacy `SK_Mannequin.glb` and are
-  adapted onto the Y-up rig at load (`adaptClipToPreOriented` in
+  assets Y-up for clean Three.js integration). Its rifle clips
+  (`idle`/`walk`/directional jogs/`aim`/`reload`/`shoot`/jump start+fall) come from the
+  legacy `SK_Mannequin.glb` and are adapted onto the Y-up rig at load (`adaptClipToPreOriented` in
   [UeMannequin.js](js/entities/Common/UeMannequin.js)). To swap in your own Y-up
   rigged GLB, point `ueChar` in [entry.js](js/entry.js) at it and build it with
   `preOriented: true`; tune `yawOffset` / `feetOffset` in

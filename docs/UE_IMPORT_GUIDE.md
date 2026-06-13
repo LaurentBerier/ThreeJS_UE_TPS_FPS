@@ -59,7 +59,8 @@ round-trips with zero conversion:
   GLB (Blender / Sandscape FBX→GLB converter) with baked PBR materials + OpenGL
   normal maps. It carries the full UE4 skeleton (`pelvis` / `spine_01` …) but no
   animation, and lands upright as-is (no tilt/scale; `preOriented: true`).
-- **Animations:** the four clips (`idle`, `walk`, `reload`, `shoot`) come from the
+- **Animations:** the rifle clip set (`idle`, `walk`, directional jogs, `aim`,
+  `reload`, `shoot`, jump start/fall) comes from the
   legacy `assets/characters/ue/SK_Mannequin.glb` (baked from `SK_Mannequin.FBX` +
   `A_Rifle_*.FBX` by [`tools/ue_fbx_to_glb.html`](../tools/ue_fbx_to_glb.html)) and
   are adapted onto the Y-up rig at load. The two rigs are byte-identical below the
@@ -68,7 +69,7 @@ round-trips with zero conversion:
   [`UeMannequin.js`](../js/entities/Common/UeMannequin.js)) drops the `root` track
   and rotates only the pelvis tracks.
 - **Back into UE:** import the original FBX (`assets/characters/ue/*.FBX`) the
-  normal way — it *is* the Unreal source. Retarget the four rifle animations onto
+  normal way — it *is* the Unreal source. Retarget the rifle animations onto
   your UE5 Manny/Quinn via IK Retargeter if needed (the source `.mb`/`HIK` rigs in
   `_Character/UE_Anim` carry the Human-IK setup).
 
@@ -98,10 +99,19 @@ IKs the support arm (`upperarm_l` → `lowerarm_l` → `hand_l`) back onto the f
 eased in only while aiming and out otherwise. In UE this maps to an **Aim Offset** plus a
 hand **FABRIK / Control Rig** pass. It is player-only — the UE soldier (§7) does not use it.
 
-**Locomotion clips.** The rifle set has only `idle` + a single jog. The player and
-the soldier both surface a distinct **walk** and **run** from that one jog clip by
-playing it slower for a walk and slightly faster for a sprint (`stateTimeScale` /
-`animTimeScale`); there is no separate walk/run/jump/death source on this rig.
+**Locomotion clips.** The rifle set carries `idle`, a walk, directional jogs and
+jump start/fall, but no sprint or death clip. A **run** is surfaced by
+playing the jog slightly faster (`stateTimeScale` / `animTimeScale`). The **crouch**
+is split: crouch-**idle** is an authored clip — `A_Rifle_Crouch_Idle.fbx`, baked to
+`assets/characters/ue/CrouchIdle.glb` by
+[`tools/run_crouchidle_bake.mjs`](../tools/run_crouchidle_bake.mjs) (see §"Baking UE
+anim FBX" — r127's FBXLoader can't parse it) and driven as the `crouchIdle` loco state
+so entering crouch is a smooth mixer crossfade (no body-drop + FootIK knee-snap);
+crouch-**walk** has no clip, so it stays procedural (capsule resize + eased body-drop +
+foot IK, [`FootIK.js`](../js/entities/Player/FootIK.js) — in UE this maps to a crouched
+blendspace or a Control Rig foot-placement pass). **Death** hands the skinned
+mesh to the shared verlet ragdoll
+([`Ragdoll.js`](../js/entities/NPC/Ragdoll.js)) rather than playing a clip.
 
 ---
 
@@ -163,7 +173,11 @@ driven — useful when mapping to UE's own options:
 
 The UE-soldier path is the one that maps cleanly onto a UE `CharacterMovementComponent`
 + a locomotion blendspace driven by `Velocity` — i.e. "velocity-driven". Both share
-the same navmesh AI (`patrol → chase → attack`), the bullet-hit volumes
+the same navmesh AI core (`patrol → chase → attack`/`combat`; the soldier adds a
+**`search`** state that investigates the target's last-seen position before giving
+up — in UE
+terms, an extra Behaviour Tree branch off AI Perception's "lost sight" event) and
+the bullet-hit volumes
 ([`UeSoldierCollision`](../js/entities/NPC/UeSoldierCollision.js) reads the UE bone
-names; the mutant's reads Mixamo names), and the melee attack uses the rifle
-`shoot` pose since the rig has no punch/death clip (death is a sink-and-fade).
+names; the mutant's reads Mixamo names). Death on both rigs is the shared verlet
+ragdoll ([`Ragdoll.js`](../js/entities/NPC/Ragdoll.js)).

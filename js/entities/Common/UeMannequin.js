@@ -82,7 +82,7 @@ const WEAPON_GRIP_FPS = {
 // want it down the sights, then paste the snippet back here. SEEDED to the TPS grip (same as the FPS
 // hip seat) so the right hand grips the gun until you tune the ADS pose. Hand-local cm / degrees.
 const WEAPON_GRIP_FPS_AIM = {
-    position: new THREE.Vector3(-25.2, -9.4, 19.7),
+    position: new THREE.Vector3(-7.2, -4.4, 19.7),
     rotationEuler: new THREE.Euler(
         THREE.MathUtils.degToRad(5),
         THREE.MathUtils.degToRad(-4),

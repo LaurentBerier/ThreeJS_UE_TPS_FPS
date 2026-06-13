@@ -70,6 +70,14 @@ const ueClipsSrc = 'assets/characters/ue/SK_Mannequin.glb'
 // double-tap-Ctrl dodge roll in both TPS and FPS.
 const ueRollSrc = 'assets/characters/ue/RollForward.glb'
 
+// Crouch-idle clip, baked the SAME way as the roll (FBX -> GLB via tools/run_crouchidle_bake.mjs,
+// since r127's FBXLoader can't parse A_Rifle_Crouch_Idle.fbx — it throws in parseAnimationLayers).
+// A small skeleton-only GLB carrying ONE clip named 'crouch_idle'; the game pulls animations[0] and
+// adapts it onto the pre-oriented rig like every other clip. Drives the player's crouch-IDLE pose
+// (bent knees + lowered hips are AUTHORED in the clip), so entering crouch is a smooth mixer
+// crossfade — no procedural body-drop + FootIK knee-snap. Crouch-WALK stays procedural (jog + drop).
+const ueCrouchIdleSrc = 'assets/characters/ue/CrouchIdle.glb'
+
 // Third-person weapon: a UE SkeletalMesh AK exported as FBX (v7300, which r127's
 // FBXLoader parses fine). Socketed into the mannequin's right hand in TPS; the
 // first-person view keeps its own arms+gun viewmodel (Hands/WeaponManager).
@@ -281,6 +289,7 @@ class FPSGameApp{
     promises.push(this.AddAsset(ueChar, gltfLoader, "ueChar"));
     promises.push(this.AddAsset(ueClipsSrc, gltfLoader, "ueClips"));
     promises.push(this.AddAsset(ueRollSrc, gltfLoader, "ueRoll"));
+    promises.push(this.AddAsset(ueCrouchIdleSrc, gltfLoader, "ueCrouchIdle"));
     //Third-person AK
     promises.push(this.AddAsset(ak47Tps, akFbxLoader, "ak47Tps"));
     //In-hand AK magazine-reload clip (drives the SK_AK47 'Magazine' bone, synced to body reload)
@@ -333,6 +342,11 @@ class FPSGameApp{
     const rollSrcClips = this.assets['ueRoll'] ? this.assets['ueRoll'].animations : [];
     const rollRaw = rollSrcClips.find(c => c.name === 'roll') || rollSrcClips[0];
     const rollClip = rollRaw ? adaptClipToPreOriented(rollRaw) : undefined;
+    // Crouch-idle ships in its own GLB (ueCrouchIdle), baked from A_Rifle_Crouch_Idle.fbx the same
+    // way as the roll. Adapt it onto the pre-oriented rig like every other clip; player-only.
+    const crouchSrcClips = this.assets['ueCrouchIdle'] ? this.assets['ueCrouchIdle'].animations : [];
+    const crouchIdleRaw = crouchSrcClips.find(c => c.name === 'crouch_idle') || crouchSrcClips[0];
+    const crouchIdleClip = crouchIdleRaw ? adaptClipToPreOriented(crouchIdleRaw) : undefined;
     const walkClip = byName('walk');
     // The AI soldier still uses a 'run' (chase) state which reuses the jog clip — but it must
     // be a SEPARATE clip instance, not the same object as 'walk'. Within one AnimationMixer two
@@ -360,6 +374,8 @@ class FPSGameApp{
       jumpFall: byName('jump_fall'),
       // Directional dodge roll (double-tap a movement key). Player-only; the soldier ignores unknown clips.
       roll: rollClip,
+      // Authored crouch-idle pose (player-only; soldier ignores it). Drives the crouch-idle legs+torso.
+      crouchIdle: crouchIdleClip,
     };
     this.ueTextures = null;   // baked into the mesh GLB
 

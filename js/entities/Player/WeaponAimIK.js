@@ -164,6 +164,12 @@ export default class WeaponAimIK{
         // 1 = always straight down). High enough to kill the swivel/gimbal as the aim sweeps while still
         // reading natural for a rifle grip.
         this.supportElbowStabilize = 0.7;
+        // Optional STRONGER support-elbow stabilize for the FPS dual-hand grip (set by the owner). The
+        // shared 0.7 leaves ~30% of the animated bend in, so when the support hand reaches cross-body to
+        // the foregrip the elbow only half-commits to the raised/left pole and can read as bending the
+        // wrong way. A higher value here commits the FPS support elbow firmly onto its pole (down-and-
+        // LEFT) so it bends correctly. null => fall back to supportElbowStabilize.
+        this.supportElbowStabilizeDual = null;
         // Dominant (right) elbow stabilize for the FPS dual-hand grip — LOWER than the support arm so the
         // IK mostly PRESERVES the animated rifle-grip bend (the right hand only reaches ~the seat offset,
         // never an extreme cross-body target), biasing toward world-down just enough to avoid a flip.
@@ -196,6 +202,12 @@ export default class WeaponAimIK{
         // _updateDualHand instead IKs BOTH arms onto the gun's captured grips, so the gun stays at its
         // placed seat and both hands reach it. ---
         this.dualHandGrip = opts.dualHandGrip ?? false;
+        // Optional per-frame world-space pole for the FPS support (left) elbow. When the dual-hand grip
+        // hangs the support elbow straight DOWN (_poleDown) the cross-body reach onto the foregrip can
+        // collapse the arm into the chest — a broken-looking pose while ADS. The owner (PlayerBody, FPS)
+        // feeds a raised pole here (player-left + up, eased in while aiming) so the elbow lifts into a
+        // natural rifle-support "chicken wing" instead of caving in. null => fall back to _poleDown.
+        this._supportPoleOverride = null;
         this._dhGunMat = new THREE.Matrix4();   // the placed weapon world matrix (both hands grip THIS)
         this._dhGunRot = new THREE.Quaternion();
         this._dhLocalMat = new THREE.Matrix4();  // scratch: the placed gun pose re-expressed local to the IK'd wrist
@@ -375,9 +387,11 @@ export default class WeaponAimIK{
     //   cameraForward : unit camera-forward (fallback aim direction for too-close / behind targets)
     //   world         : the Ammo physics world (for the muzzle wall-clearance sweep; optional)
     //   t             : delta seconds
-    Update(t, { active, gripActive = active, aimTarget, aimValid = true, cameraForward = null, world = null, dualHand = false }){
+    Update(t, { active, gripActive = active, aimTarget, aimValid = true, cameraForward = null, world = null, dualHand = false, supportPole = null }){
         const pivot = this.weaponPivot;
         if(!pivot || !this.handBoneR){ return; }
+        // Stash the optional FPS support-elbow pole for _updateDualHand (null => hang straight down).
+        this._supportPoleOverride = (supportPole && supportPole.lengthSq() > 1e-8) ? supportPole : null;
 
         // Ease the TWO blends independently (the split that kills the hand snap). Grip is always-on for
         // a held weapon (so the hands never release the gun); aim eases in/out with aiming/shooting.
@@ -588,8 +602,14 @@ export default class WeaponAimIK{
             this._leftTarget.copy(this.leftGripLocal).add(this.LeftHandOffset).applyMatrix4(pivot.matrixWorld);
             this.bones.hand_l.getWorldPosition(this._ikE);
             this._tmpV2.copy(this._ikE).lerp(this._leftTarget, ikW);
+            // Raised support-elbow pole (owner-supplied, eased) so the left elbow lifts up/out while
+            // aiming instead of caving the arm into the chest; falls back to straight-down at rest. A
+            // stronger dual-hand stabilize (if set) commits the elbow firmly onto that pole.
+            const supportPole = this._supportPoleOverride || this._poleDown;
+            const supportStab = this.supportElbowStabilizeDual != null
+                ? this.supportElbowStabilizeDual : this.supportElbowStabilize;
             this._solveTwoBone(this.bones.upperarm_l, this.bones.lowerarm_l, this.bones.hand_l,
-                this._tmpV2, this._poleDown, this.supportElbowStabilize);
+                this._tmpV2, supportPole, supportStab);
             if((this.lockSupportHand && this._leftGripQuatCaptured) || this.matchHandToGrip){
                 const hand = this.bones.hand_l;
                 pivot.getWorldQuaternion(this._weaponWQ);

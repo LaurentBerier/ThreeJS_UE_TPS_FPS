@@ -72,6 +72,13 @@ export default class PlayerPhysics extends Component{
     // Standing up is BLOCKED when there's no head clearance (CanStandUp) — the caller stays crouched.
     // Returns true if the state changed (or already matched), false if a requested stand was blocked.
     SetCrouched(want){
+        // Normalize: callers pass mixed truthiness (PlayerControls' wantCrouch is built from
+        // Input.GetKeyDown, which returns NUMBERS 0/1). The strict compare below saw 0 !== false,
+        // treated "stay standing" as a state CHANGE, and ran the stand-up branch on an already-
+        // standing body — teleporting the origin +centerDrop and ZEROING the vertical velocity.
+        // That fired one frame after every crouch-jump (the jump block passes boolean false), which
+        // ate the fresh jump impulse: the "crouch jump does nothing / stutters" bug.
+        want = !!want;
         if(want === this.crouched){ return true; }
         if(!want && !this.CanStandUp()){ return false; }   // no headroom: stay crouched
 
@@ -85,9 +92,13 @@ export default class PlayerPhysics extends Component{
         this.body.setCollisionShape(this._currentShape());  // crouch shape (wide in FPS, normal in TPS)
         if(this.world.updateSingleAabb){ this.world.updateSingleAabb(this.body); }
 
-        const v = this.body.getLinearVelocity();
-        v.setY(0);                                          // kill vertical velocity so the swap can't bounce/launch
-        this.body.setLinearVelocity(v);
+        // Vertical velocity is PRESERVED through the swap. It used to be zeroed ("so the swap can't
+        // bounce") — but the swap keeps the capsule bottom in place by construction, so there is no
+        // bounce to guard, while the zero actively BROKE slope walking: toggling crouch while moving
+        // on a slope wiped the slope-following vy, the capsule decoupled (plowed into / floated off
+        // the incline), went briefly ballistic, and the body flashed the fall pose while the camera
+        // jolted — the intermittent "crouch animation glitch + camera jitter". A jump that needs a
+        // specific vy (PlayerControls) sets it explicitly AFTER calling this.
         this.body.activate(true);
         return true;
     }
@@ -114,15 +125,39 @@ export default class PlayerPhysics extends Component{
     // from the crouched centre through the height the head reclaims, against STATIC geometry only.
     CanStandUp(){
         const o = this.body.getWorldTransform().getOrigin();
-        const from = { x: o.x(), y: o.y(), z: o.z() };
-        const to   = { x: o.x(), y: o.y() + this.centerDrop + this.radius, z: o.z() };
         // Slightly under-sized sphere so brushing a wall we're crouched against doesn't trap us.
+        const sweepR = this.radius * 0.9;
+        const from = { x: o.x(), y: o.y(), z: o.z() };
+        // Sweep far enough that the sphere's TOP reaches the FULL standing-capsule top: the stand
+        // raises the centre by centerDrop and the top sits standHeight/2 + radius above that. The old
+        // end (centerDrop + radius) only cleared ~1.5 m above the feet — ceilings between that and the
+        // 1.9 m standing top were missed, so standing under low cover penetrated the ceiling and Bullet
+        // shoved the capsule out violently (the crouch-jump-under-cover chaos).
+        const reach = this.centerDrop + this.standHeight * 0.5 + this.radius - sweepR;
+        const to   = { x: o.x(), y: o.y() + reach, z: o.z() };
         const blocked = AmmoHelper.SphereSweep(
-            this.world, this.radius * 0.9, from, to, this._sweepRes, CollisionFilterGroups.StaticFilter);
+            this.world, sweepR, from, to, this._sweepRes, CollisionFilterGroups.StaticFilter);
         return !blocked;
     }
 
     QueryJump(){
+        // NOTE: canJump is intentionally NOT reset to false here. The faceted terrain collider drops the
+        // player's contact manifolds for a frame or two while DESCENDING a slope (the body outruns the
+        // next facet), so a strict per-tick recompute flickered canJump false on slopes — which switched
+        // off the FootIK + kicked in the air/fall pose, reading as the character "falling" and thrashing
+        // the upper body (worst while crouched). Letting canJump LATCH its previous value across those
+        // brief no-contact gaps masks them; take-off clears it explicitly (PlayerControls) and coyote-time
+        // there still covers the genuine grounded->air transition for forgiving jumps.
+        // RISING is never grounded — even if a contact manifold lingers for a substep after take-off
+        // (Bullet keeps the point until separation exceeds the breaking threshold). Without this, the
+        // frame AFTER a jump still read IsGrounded=true, so a held crouch key re-entered the crouch
+        // mid-ascent: SetCrouched ZEROED the fresh jump velocity (eating the jump) and swapped the
+        // capsule twice in one frame — the crouch-jump "thrash". Slope-climbing never exceeds ~2 m/s
+        // vertical at our walk speeds, so this only trips on real jump ascents (jumpVelocity = 5).
+        if(this.body.getLinearVelocity().y() > 2.5){
+            this.canJump = false;
+            return;
+        }
         const dispatcher = this.world.getDispatcher();
         const numManifolds = dispatcher.getNumManifolds();
 

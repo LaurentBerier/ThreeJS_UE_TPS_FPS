@@ -34,12 +34,18 @@ export default class PlayerControls extends Component{
         this.crouching = false;             // effective crouch state (read by PlayerBody)
         this._crouchToggle = false;         // C-key toggle state
         this._crouchLatch = false;          // C-key edge latch (so a held key fires once)
-        this.crouchSpeedMultiplier = 0.4;   // top-speed scale while crouched ≈ 2.2 m/s (was 0.5 ⇒ 3.5): a slow, deliberate creep
-        // Crouch no longer DROPS the TPS camera: the request is to NOT adjust/move the camera while
-        // crouched, so the follow stays put as you crouch/uncrouch (the capsule eye is kept stable across
-        // the resize by PlayerControls, so a 0 drop means a perfectly steady third-person camera). Left
-        // as a tunable (eased) in case a subtle dip is wanted later; 0 = no crouch camera movement.
-        this.crouchCamDrop = 0.0;           // TPS camera pivot drop while crouched (m), eased — 0 = steady
+        // Crouch-walk now reads CLOSER to the regular walk — only a bit slower — instead of the old slow
+        // creep that looked bad (the foot-synced jog crawled at ~2.2 m/s and the legs dragged). 0.6 ⇒
+        // ~3.3 m/s, a more natural jog cadence (foot-sync ~0.56x, no skate) that still reads as a careful,
+        // slightly-slower crouch move. Pairs with the shallower crouch-walk hip drop in PlayerBody.
+        this.crouchSpeedMultiplier = 0.6;   // top-speed scale while crouched ≈ 3.3 m/s: a bit slower than the walk
+        // Crouch LOWERS the TPS camera so the view follows the character down (the authored crouch-idle
+        // clip drops the head ~0.7 m; a steady camera read as the camera "rising" away from the sinking
+        // character). A FIXED eased drop — NOT head-bone tracking — on purpose: tracking the bone would
+        // feed the crouch clip's breathing + foot-IK + faceted-terrain noise straight into the view (the
+        // old crouch-camera-jitter complaint). 0.55 follows most of the head drop while keeping a touch
+        // more framing over the character; eased by crouchCamLerp so entering/leaving crouch glides.
+        this.crouchCamDrop = 0.55;          // TPS camera pivot drop while crouched (m), eased
         this._crouchCamEased = 0;           // eased 0..crouchCamDrop applied to the TPS camera pivot
         this.crouchCamLerp = 8;             // ease rate (1/s) for the camera drop
 
@@ -55,6 +61,36 @@ export default class PlayerControls extends Component{
         this.yaw = new THREE.Quaternion();
 
         this.jumpVelocity = 5;
+        // --- Jump forgiveness + air double-jump.
+        // COYOTE TIME: a short grace window after leaving the ground where a jump still counts as a
+        // ground jump, so walking off a ledge or a 1-frame canJump flicker (faceted terrain) never eats
+        // the input — the "sometimes I can't jump as if stuck to the ground" complaint.
+        // JUMP BUFFER: a pressed jump is remembered briefly so tapping just before landing still fires.
+        this.coyoteTime = 0.12;          // s after leaving ground that a ground jump still fires
+        this.jumpBufferTime = 0.12;      // s a jump press is buffered waiting to become valid
+        this._coyoteTimer = 0;
+        this._jumpBuffer = 0;
+        this._spaceLatch = false;        // edge-detect Space for the air double-jump (not the held bunny-hop)
+        // WALL DOUBLE-JUMP: while airborne, pressing jump again near a vertical surface grants ONE extra
+        // jump (a wall-assisted double jump). Reset on landing. A short horizontal sphere-sweep in several
+        // directions detects a nearby wall; the second jump is a clean vertical boost (movement input
+        // still steers x/z), with a small outward kick off the wall so you don't just slide back down it.
+        this.doubleJumpEnabled = true;
+        this.wallJumpRange = 0.55;       // how close a wall must be for the air jump (m)
+        this.wallJumpVelocity = 5.4;     // upward velocity of the wall-assisted double jump (m/s)
+        this.wallJumpPush = 2.2;         // outward kick off the wall (m/s), folded into local speed
+        this._airJumpUsed = false;       // consumed per air-time; reset when grounded
+        this._wallNormal = new THREE.Vector3();
+        this._wallFrom = new THREE.Vector3();
+        this._wallTo = new THREE.Vector3();
+        // Horizontal probe directions (8-way) for the nearby-wall sweep.
+        this._wallProbeDirs = [
+            new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1, 0, 0),
+            new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, -1),
+            new THREE.Vector3(0.7071, 0, 0.7071), new THREE.Vector3(-0.7071, 0, 0.7071),
+            new THREE.Vector3(0.7071, 0, -0.7071), new THREE.Vector3(-0.7071, 0, -0.7071),
+        ];
+        this._wallRes = { point: new THREE.Vector3(), normal: new THREE.Vector3(), fraction: 1 };
         this.yOffset = 0.5;
         this.tempVec = new THREE.Vector3();
         this.moveDir = new THREE.Vector3();
@@ -91,7 +127,10 @@ export default class PlayerControls extends Component{
         // third-person so the view feels open and you see more of the weapon/hands; ADS eases to a
         // modestly tighter FOV for a subtle zoom. Both ease via _curFov in the FPS branch of UpdateCamera.
         this.fpsFov = 90;             // wide first-person hip FOV
-        this.fpsAimFov = 72;          // a touch tighter while aiming (subtle ADS zoom, still wide)
+        // ADS zoom: pulled in ~20-25% tighter than before (was 72°). A narrower aim FOV magnifies the
+        // view ~1.25x (magnification ∝ 1/tan(fov/2)), so down-the-sights reads as a real zoom, not just
+        // a small lens crop. Still eases via _curFov so entering/leaving ADS glides.
+        this.fpsAimFov = 58;          // tighter ADS zoom (~25% more magnification than the old 72°)
         // Smoothed current values driven each frame in UpdateCamera.
         this._curDistance = this.tpsDistance;
         this._curShoulder = this.tpsShoulder;
@@ -159,6 +198,18 @@ export default class PlayerControls extends Component{
         this.fpsLookDownForward = 0.34; // metres the eye eases FORWARD at full look-down
         this.fpsLookDownLerp = 8;       // ease rate (1/s) for the push in/out
         this._fpsLookDownEased = 0;     // eased 0..1 look-down amount (driven in UpdateCamera)
+        // FPS look-UP compensation. The held gun pitches UP with the look (UpdateFpsWeaponPitch), so a
+        // steep look-up swings the weapon + shoulder into the lens: the near plane clips THROUGH the
+        // shoulder geo (see-through faces) and the raised gun covers the crosshair. The framing is good
+        // at level, so we keep it: as the look tilts up, ease the eye UP (look OVER the rising gun so the
+        // crosshair clears) and a touch BACK along the yaw-only forward (pull the lens out of the shoulder
+        // so it stops clipping). Stronger while AIMING (ADS centres the gun up the sights, so it occludes
+        // more). Mirrors the look-down forward push; zero at level/down where the framing already works.
+        this.fpsLookUpUp = 0.16;        // metres the eye eases UP at full look-up (clears the gun/crosshair)
+        this.fpsLookUpBack = 0.10;      // ...and BACK (horizontal) so the lens leaves the shoulder geo
+        this.fpsLookUpAimExtra = 1.7;   // multiply the look-up compensation while aiming (gun is centred)
+        this.fpsLookUpLerp = 8;         // ease rate (1/s) for the look-up compensation in/out
+        this._fpsLookUpEased = 0;       // eased 0..1 look-up amount (driven in UpdateCamera)
         // FPS reload pullback: while reloading in first-person, ease the eye BACK (and a touch up) so the
         // gun + hands drop into frame and the reload animation is actually visible (otherwise the eye sits
         // right behind the weapon and the mag swap happens off-screen). Driven by the weapon.reload /
@@ -237,8 +288,9 @@ export default class PlayerControls extends Component{
         //   * a small extra boom length while jogging (the "pulled back" feel), and
         //   * a follow LAG on the pivot: near-rigid when standing, noticeably laggier once jogging, so
         //     the camera trails and catches up to the character as it accelerates.
-        // Both are SUSPENDED while aiming (ADS must stay tight) and while CROUCHED (the camera stays put
-        // when crouched — see crouchCamDrop). The sprint pullback above still stacks on top when running.
+        // Both are SUSPENDED while aiming (ADS must stay tight). Crouch-walk uses the SAME pull-back +
+        // lag as the standing walk (the camera behaves identically crouched or standing — see the
+        // `jogging` note in UpdateCamera). The sprint pullback above still stacks on top when running.
         this.tpsWalkExtra = 0.5;        // extra boom length while jogging (m) — the "a bit pulled back" feel
         this.walkLerpSpeed = 2.0;       // gentle ease for the walk pull-back (1/s)
         this._curWalk = 0.0;            // smoothed walk pull-back extension
@@ -566,6 +618,16 @@ export default class PlayerControls extends Component{
             this._fwdFlat.copy(this._fwdBase).applyQuaternion(this.yaw);
             this._camTarget.addScaledVector(this._fwdFlat, this.fpsLookDownForward * this._fpsLookDownEased);
         }
+        // Look-UP compensation: lift the eye UP over the rising gun (so the crosshair clears) and a touch
+        // BACK along the yaw-only forward (so the lens leaves the shoulder geo it was clipping through).
+        // Stronger while aiming, where the centred gun occludes the most. Keeps the level framing intact
+        // (zero at level) while restoring the same gun-vs-camera layout when tilted up.
+        if(this._fpsLookUpEased > 1e-4){
+            const aimK = this.aiming ? this.fpsLookUpAimExtra : 1.0;
+            this._camTarget.y += this.fpsLookUpUp * this._fpsLookUpEased * aimK;
+            this._fwdFlat.copy(this._fwdBase).applyQuaternion(this.yaw);
+            this._camTarget.addScaledVector(this._fwdFlat, -this.fpsLookUpBack * this._fpsLookUpEased * aimK);
+        }
         if(this.rolling){
             this._camTarget.y = Math.max(this._camTarget.y, capPos.y - 0.45);
         }
@@ -588,11 +650,20 @@ export default class PlayerControls extends Component{
     // are camera-mode-independent.
     UpdateCamera(capPos, t = 0.016){
         this._fxTime += t;
-        // Ease the crouch camera drop (applied to the TPS pivot below) so entering/leaving crouch glides
-        // the third-person view down/up. Eased here (before the FPS early-out) so it never jumps on a
-        // camera-mode switch. FPS lowers via the head bone (the body's pelvis drop), so it's not used there.
-        this._crouchCamEased += ((this.crouching ? this.crouchCamDrop : 0) - this._crouchCamEased)
-            * (1 - Math.exp(-this.crouchCamLerp * t));
+        // Crouch camera drop (applied to the TPS pivot below) — driven by the BODY's own eased crouch
+        // blend (PlayerBody._crouchEased), an already-smoothed S-curve with ~zero start velocity, so the
+        // camera and the crouching body move in LOCKSTEP: smooth in/out, synced to the actual crouch
+        // descent (incl. the fast uncrouch-into-jump), with no separate velocity step. (An independent
+        // exp-ease here front-loaded its velocity — the camera lurched down faster than the body crouched
+        // at the start, which read as a non-smooth transition.) Falls back to a local exp-ease only if the
+        // body isn't wired yet. Computed before the FPS early-out so it never jumps on a mode switch; FPS
+        // lowers via the head bone (the body's pelvis drop), so it's not used there.
+        if(this.body){
+            this._crouchCamEased = this.crouchCamDrop * this.body._crouchEased;
+        }else{
+            this._crouchCamEased += ((this.crouching ? this.crouchCamDrop : 0) - this._crouchCamEased)
+                * (1 - Math.exp(-this.crouchCamLerp * t));
+        }
 
         if(this.cameraMode === 'FPS'){
             // Wide first-person FOV (eased), tightening a touch while aiming for a subtle ADS zoom.
@@ -607,6 +678,9 @@ export default class PlayerControls extends Component{
             // down — see PlaceFpsEyePosition). angles.x < 0 is looking down; ramp 0 (level/up) -> 1 (straight down).
             const lookDownN = Math.max(0, -this.angles.x / (Math.PI * 0.5));
             this._fpsLookDownEased += (lookDownN - this._fpsLookDownEased) * (1 - Math.exp(-this.fpsLookDownLerp * t));
+            // Look-UP compensation amount (angles.x > 0 is looking up): ramp 0 (level/down) -> 1 (straight up).
+            const lookUpN = Math.max(0, this.angles.x / (Math.PI * 0.5));
+            this._fpsLookUpEased += (lookUpN - this._fpsLookUpEased) * (1 - Math.exp(-this.fpsLookUpLerp * t));
             // Same character as third-person: the eye rides the mesh's head bone, so the walk/run
             // animation gives a subtle, real head bob. PlaceFpsEyePosition sets the eye position; it is
             // also re-called by PlayerBody AFTER it has posed the body this frame (see the note there)
@@ -632,10 +706,13 @@ export default class PlayerControls extends Component{
         this._curSprint += (sprintTarget - this._curSprint) * (1 - Math.exp(-this.sprintLerpSpeed * t));
 
         // Walk-start pull-back: a small extra boom length while jogging (any ground movement), so the
-        // camera eases back a touch as the player starts walking. Suspended while aiming (tight ADS) and
-        // while crouched (steady crouch camera); stacks under the sprint pullback. Folded into the
-        // distance target below alongside the sprint term.
-        const jogging = this.HorizontalSpeed > 0.5 && !this.aiming && !this.crouching;
+        // camera eases back a touch as the player starts walking. Suspended while aiming (tight ADS);
+        // stacks under the sprint pullback. Folded into the distance target below alongside the sprint
+        // term. Crouch is deliberately NOT excluded: the camera must behave IDENTICALLY crouched or
+        // standing — excluding it dollied the boom 0.5 m on a mid-walk crouch AND flipped the pivot
+        // follow to the rigid idle rate, which fed every faceted-terrain bump straight into the view
+        // (the "camera jitters while crouched" complaint).
+        const jogging = this.HorizontalSpeed > 0.5 && !this.aiming;
         const walkTarget = jogging ? this.tpsWalkExtra : 0;
         this._curWalk += (walkTarget - this._curWalk) * (1 - Math.exp(-this.walkLerpSpeed * t));
 
@@ -991,7 +1068,12 @@ export default class PlayerControls extends Component{
             if(!this._crouchLatch){ this._crouchLatch = true; this._crouchToggle = !this._crouchToggle; }
         }else{ this._crouchLatch = false; }
         const crouchHeld = Input.GetKeyDown('AltLeft') || Input.GetKeyDown('AltRight');
-        const wantCrouch = (this._crouchToggle || crouchHeld) && this.IsGrounded;
+        // Require grounded to ENTER a crouch, but STAY crouched through brief IsGrounded flickers (it's
+        // computed from contact manifolds, which drop for a frame on faceted-terrain crests). Gating
+        // purely on IsGrounded made crouch-walking over bumps stand up for a frame and re-crouch — a
+        // capsule resize + pose pop every few steps (the crouch-walk "animation glitch"). `|| crouching`
+        // latches the crouch so only releasing the toggle/key (or the explicit jump force-stand) lifts it.
+        const wantCrouch = (this._crouchToggle || crouchHeld) && (this.IsGrounded || this.crouching);
         this.physicsComponent.SetCrouched(wantCrouch);
         this.crouching = this.physicsComponent.crouched;
         if(this.crouching){
@@ -1001,29 +1083,64 @@ export default class PlayerControls extends Component{
 
         const velocity = this.physicsBody.getLinearVelocity();
 
-        if(Input.GetKeyDown('Space') && this.physicsComponent.canJump){
-            // Jumping out of a crouch: STAND UP FIRST and play the normal standing jump, instead of
-            // launching from the crouched (lowered/bent) pose — which read as a glitch. Clear the C
-            // toggle so we land standing; standing is gated on head clearance (SetCrouched), so under
-            // low cover the stand is refused and the jump is suppressed (you can't leap under a ceiling).
-            // Re-read `crouching` from the actual physics state after the attempt.
+        // --- Jump. Held Space (bunny-hop) OR a buffered press fires a ground jump while grounded or
+        // within the coyote window; an EDGE press while airborne triggers the one-shot wall double-jump.
+        const spaceDown = Input.GetKeyDown('Space');
+        const spacePressed = spaceDown && !this._spaceLatch;   // rising edge
+        this._spaceLatch = spaceDown;
+
+        // Coyote + buffer timers. Grounded refreshes the coyote window and re-arms the air jump; a press
+        // fills the buffer. Both tick down otherwise.
+        if(this.physicsComponent.canJump){
+            this._coyoteTimer = this.coyoteTime;
+            this._airJumpUsed = false;
+        }else{
+            this._coyoteTimer = Math.max(0, this._coyoteTimer - t);
+        }
+        this._jumpBuffer = spacePressed ? this.jumpBufferTime : Math.max(0, this._jumpBuffer - t);
+
+        const wantGroundJump = (spaceDown || this._jumpBuffer > 0)
+            && (this.physicsComponent.canJump || this._coyoteTimer > 0);
+
+        if(wantGroundJump){
+            // Jumping out of a crouch behaves EXACTLY like a standing jump: press = jump, same frame.
+            // We still STAND UP first (clear the C toggle + grow the capsule back so we launch/land on the
+            // standing hitbox, and the body's crouch pose eases out fast while airborne — crouchJumpLerp),
+            // but the jump is NOT gated on that stand succeeding: the impulse is applied unconditionally
+            // below, so a marginal CanStandUp (faceted terrain, brushing cover) can never EAT the jump the
+            // way it used to ("crouch jump acting wonky"). SetCrouched preserves vy; the jump sets it
+            // explicitly right after, so the order here doesn't matter.
             if(this.crouching){
                 this._crouchToggle = false;
                 this.physicsComponent.SetCrouched(false);
                 this.crouching = this.physicsComponent.crouched;
             }
-            if(!this.crouching){
-                velocity.setY(this.jumpVelocity);
-                this.physicsComponent.canJump = false;
-                // Authoritative take-off signal for the body's jump animation. PlayerBody can't reliably
-                // detect take-off from IsGrounded (canJump): we clear it THIS frame BEFORE PlayerBody
-                // runs, and Input reports HELD keys, so holding Space bunny-hops on the first grounded
-                // frame (inside the body's landing debounce) — without this event the body would keep
-                // looping the fall pose and skip the jumpStart launch on the second hop.
-                this.Broadcast({topic: 'player.jump'});
-            }
+            velocity.setY(this.jumpVelocity);
+            this.physicsComponent.canJump = false;
+            this._coyoteTimer = 0;
+            this._jumpBuffer = 0;
+            // Authoritative take-off signal for the body's jump animation. PlayerBody can't reliably
+            // detect take-off from IsGrounded (canJump): we clear it THIS frame BEFORE PlayerBody
+            // runs, and Input reports HELD keys, so holding Space bunny-hops on the first grounded
+            // frame (inside the body's landing debounce) — without this event the body would keep
+            // looping the fall pose and skip the jumpStart launch on the second hop.
+            this.Broadcast({topic: 'player.jump'});
+        }else if(spacePressed && this.doubleJumpEnabled && !this._airJumpUsed
+                 && !this.physicsComponent.canJump && this._coyoteTimer <= 0 && this.ProbeWall()){
+            // Airborne + a fresh press + a wall within range: the wall-assisted double jump. A clean
+            // vertical boost plus a small outward kick off the wall (added into the LOCAL speed so the
+            // movement path below doesn't overwrite it). Consumed until the next landing.
+            velocity.setY(this.wallJumpVelocity);
+            this._airJumpUsed = true;
+            this._jumpBuffer = 0;
+            // Outward push (world) folded into local pre-yaw speed so setX/Z below keeps it.
+            this._yawInv.copy(this.yaw).invert();
+            this.tempVec.copy(this._wallNormal).multiplyScalar(this.wallJumpPush).applyQuaternion(this._yawInv);
+            this.speed.x += this.tempVec.x;
+            this.speed.z += this.tempVec.z;
+            this.Broadcast({topic: 'player.jump'});
         }
-        
+
         this.Deccelerate(t);
         this.Accelarate(direction, t);
 
@@ -1081,5 +1198,33 @@ export default class PlayerControls extends Component{
 
     get IsGrounded(){
         return this.physicsComponent ? this.physicsComponent.canJump : false;
+    }
+
+    // Is there a near VERTICAL surface (a wall) within wallJumpRange? Sweeps a sphere horizontally in
+    // 8 directions from mid-torso against STATIC geometry and keeps the CLOSEST near-vertical hit (its
+    // outward normal, flattened to horizontal, is stored in _wallNormal for the wall-jump kick). Used to
+    // gate the air double-jump. Cheap: a handful of convex sweeps only on a fresh airborne jump press.
+    ProbeWall(){
+        if(!this.physicsWorld){ return false; }
+        const c = this.parent.Position;
+        this._wallFrom.set(c.x, c.y - 0.3, c.z);   // mid-torso, below the tracked eye
+        let best = 1, found = false;
+        for(const d of this._wallProbeDirs){
+            this._wallTo.copy(this._wallFrom).addScaledVector(d, this.wallJumpRange);
+            if(AmmoHelper.SphereSweep(this.physicsWorld, this.camRadius, this._wallFrom, this._wallTo,
+                this._wallRes, CollisionFilterGroups.StaticFilter)
+                && this._wallRes.fraction < best
+                && Math.abs(this._wallRes.normal.y) < 0.6){   // near-vertical surface only (not floor/ceiling)
+                best = this._wallRes.fraction;
+                this._wallNormal.copy(this._wallRes.normal);
+                found = true;
+            }
+        }
+        if(found){
+            this._wallNormal.y = 0;                 // horizontal push only
+            if(this._wallNormal.lengthSq() < 1e-6){ return false; }
+            this._wallNormal.normalize();
+        }
+        return found;
     }
 }

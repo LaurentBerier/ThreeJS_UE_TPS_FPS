@@ -22,6 +22,7 @@ export default class UeSoldierFSM extends FiniteStateMachine{
         this.AddState('idle', new IdleState(this));
         this.AddState('patrol', new PatrolState(this));
         this.AddState('chase', new ChaseState(this));
+        this.AddState('search', new SearchState(this));
         this.AddState('combat', new CombatState(this));
         this.AddState('dead', new DeadState(this));
     }
@@ -137,7 +138,14 @@ class ChaseState extends State{
         if(visible){ this.lostTimer = 0.0; }
         else{
             this.lostTimer += t;
-            if(this.lostTimer >= 2.5 || !proxy.hasLastSeen){
+            // Lost sight for a moment: if we remember where the target was, INVESTIGATE that spot
+            // (search) before giving up; with no memory at all, fall straight back to patrol. Search
+            // walks to the last-seen position, sweeps the area, and only then resumes patrol.
+            if(this.lostTimer >= 2.5){
+                this.parent.SetState(proxy.hasLastSeen ? 'search' : 'patrol');
+                return;
+            }
+            if(!proxy.hasLastSeen){
                 this.parent.SetState('patrol');
                 return;
             }
@@ -154,6 +162,71 @@ class ChaseState extends State{
             this.updateTimer = this.updateFrequency;
         }
         this.updateTimer -= t;
+    }
+}
+
+// SEARCH: the soldier lost sight of the target but remembers where it last saw it. Instead of instantly
+// forgetting and wandering off (the old chase->patrol cut), it walks to the last-seen spot, sweeps the
+// view there, then pokes around a couple of nearby points — an alerted "where did they go?" hunt — before
+// finally giving up and resuming patrol. Re-acquiring the target at any moment snaps it back to chase, so
+// a player who breaks line of sight and circles around gets found again instead of cleanly escaping.
+class SearchState extends State{
+    constructor(parent){
+        super(parent);
+        this.searchTime = 0.0;        // total time spent searching
+        this.maxSearchTime = 9.0;     // give up after this and return to patrol
+        this.dwellTimer = 0.0;        // time left looking around the current search point
+        this.legs = 0;                // how many search points investigated so far
+        this.maxLegs = 3;             // last-seen spot + this many nearby probes
+    }
+
+    get Name(){return 'search'}
+
+    Enter(){
+        const proxy = this.parent.proxy;
+        proxy.SetMoveIntent(proxy.walkSpeed);    // a cautious search pace, not a full sprint
+        proxy.combatFacing = false;              // face the move dir while travelling; scan on arrival
+        proxy.scanTargetYaw = null;              // fresh view sweep
+        this.searchTime = 0.0;
+        this.dwellTimer = 0.0;
+        this.legs = 0;
+        proxy.NavigateToLastSeen();              // head to where the target was last seen
+    }
+
+    Exit(){
+        this.parent.proxy.combatFacing = false;
+    }
+
+    Update(t){
+        const proxy = this.parent.proxy;
+
+        // Spotted again: straight back to the chase/firefight loop.
+        if(proxy.AcquireTarget()){
+            this.parent.SetState('chase');
+            return;
+        }
+
+        // Overall give-up timer.
+        this.searchTime += t;
+        if(this.searchTime >= this.maxSearchTime){
+            this.parent.SetState('patrol');
+            return;
+        }
+
+        const arrived = !proxy.path || proxy.path.length === 0;
+        if(arrived){
+            // Reached a search point: stop and SWEEP the view to hunt, then move on to a nearby probe.
+            proxy.SetMoveIntent(0.0);
+            proxy.UpdateScan(t);
+            this.dwellTimer -= t;
+            if(this.dwellTimer <= 0.0){
+                if(this.legs >= this.maxLegs){ this.parent.SetState('patrol'); return; }
+                this.legs++;
+                this.dwellTimer = 1.2 + Math.random() * 1.2;   // look around a beat at each point
+                proxy.SetMoveIntent(proxy.walkSpeed);
+                proxy.NavigateNearLastSeen();                  // poke a nearby spot the target may have fled to
+            }
+        }
     }
 }
 
