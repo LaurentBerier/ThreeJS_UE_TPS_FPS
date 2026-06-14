@@ -143,6 +143,8 @@ export default class PlayerControls extends Component{
         this._right = new THREE.Vector3();
         this._fwdBase = new THREE.Vector3(0, 0, -1);
         this._rightBase = new THREE.Vector3(1, 0, 0);
+        this._fpsPivot = new THREE.Vector3();   // FPS pitch-pivot point (gun pitch centre) — eye orbits this
+        this._fpsPitchRot = new THREE.Quaternion();
 
         // --- Aim target (the single source of truth for "where the player is aiming"). Each frame
         // we cast the SAME camera-centre ray the weapon fires (screen-centre unproject; see
@@ -188,39 +190,32 @@ export default class PlayerControls extends Component{
         this.fpsEyeUp = 0.12;           // up, to look down onto the gun + hands
         this.fpsEyeRight = 0.05;        // slightly right, to centre the right-held gun
         this.fpsNear = 0.18;            // near plane that culls the head at the eye
-        // FPS look-DOWN forward push. The head is HIDDEN in first-person (PlayerBody collapses the head
-        // bone to a point), so tilting the view down would stare straight into the missing-head gap above
-        // the neck. Rather than pull the eye BACK off the body (which only reveals MORE of the headless
-        // torso), we do the OPPOSITE: push the eye FORWARD over the chest as the look tilts down, so the
-        // camera slides out past the neck stump and frames the gun/ground instead of the empty socket.
-        // Pushed along the YAW-ONLY (horizontal) forward so a steep look-down moves the eye forward over
-        // the body, never straight down into it. Eased; zero at level/up (where the framing is already good).
-        this.fpsLookDownForward = 0.34; // metres the eye eases FORWARD at full look-down
-        this.fpsLookDownLerp = 8;       // ease rate (1/s) for the push in/out
-        this._fpsLookDownEased = 0;     // eased 0..1 look-down amount (driven in UpdateCamera)
-        // FPS look-UP compensation. The held gun pitches UP with the look (UpdateFpsWeaponPitch), so a
-        // steep look-up swings the weapon + shoulder into the lens: the near plane clips THROUGH the
-        // shoulder geo (see-through faces) and the raised gun covers the crosshair. The framing is good
-        // at level, so we keep it: as the look tilts up, ease the eye UP (look OVER the rising gun so the
-        // crosshair clears) and a touch BACK along the yaw-only forward (pull the lens out of the shoulder
-        // so it stops clipping). Stronger while AIMING (ADS centres the gun up the sights, so it occludes
-        // more). Mirrors the look-down forward push; zero at level/down where the framing already works.
-        this.fpsLookUpUp = 0.16;        // metres the eye eases UP at full look-up (clears the gun/crosshair)
-        this.fpsLookUpBack = 0.10;      // ...and BACK (horizontal) so the lens leaves the shoulder geo
-        this.fpsLookUpAimExtra = 1.7;   // multiply the look-up compensation while aiming (gun is centred)
-        this.fpsLookUpLerp = 8;         // ease rate (1/s) for the look-up compensation in/out
-        this._fpsLookUpEased = 0;       // eased 0..1 look-up amount (driven in UpdateCamera)
+        // FPS pitch-pivot compensation — keeps the held gun aligned under the crosshair through the WHOLE
+        // pitch range, not just straight ahead. The gun rides the body (yaw only) at a fixed spot below +
+        // right of the eye, but the camera PITCHES ABOUT THE EYE: because the two points differ, tilting
+        // the view sweeps the gun across the screen (parallax) — at a steep up-look the gun drifts right
+        // and slides out from under the crosshair (the misalignment we're fixing). The cure is to make the
+        // eye ORBIT a pivot placed at the gun's pitch centre (≈ the shoulder/grip, below + forward of the
+        // level eye) by the look pitch, so the eye-to-gun vector stays CONSTANT in view space and the gun
+        // holds the exact screen position it has when aiming level — at every altitude. One principled
+        // transform; it also slides the eye forward over the chest on a down-look (hiding the hidden-head
+        // neck stump, the job the old forward-push did) and keeps the lens off the shoulder on an up-look.
+        this.fpsPitchPivotDown = 0.24;     // m the pivot sits BELOW the level eye (toward the shoulder line)
+        this.fpsPitchPivotForward = 0.20;  // m the pivot sits FORWARD of the level eye (toward the held gun)
+        this.fpsPitchPivotGain = 0.9;      // 1 = gun perfectly screen-locked through pitch; lower = less eye travel
+        this.fpsPitchPivotAimGain = 1.0;   // gain while AIMING (ADS centres the gun, so lock it fully)
         // FPS reload pullback: while reloading in first-person, ease the eye BACK (and a touch up) so the
         // gun + hands drop into frame and the reload animation is actually visible (otherwise the eye sits
         // right behind the weapon and the mag swap happens off-screen). Driven by the weapon.reload /
         // reload.done events; eased so it glides in and out. FPS-only (applied in PlaceFpsEyePosition).
         this._reloading = false;        // set true on weapon.reload, false on reload.done
         this._reloadEased = 0;          // eased 0..1 pullback amount
-        // Reload camera move DISABLED per request: the FPS camera no longer pulls back (or up) while
-        // reloading — the view holds steady through the mag swap. Kept as 0 tunables (mechanism intact)
-        // rather than ripping out the eased state, so it can be re-enabled by raising these if wanted.
-        this.fpsReloadPullback = 0.0;   // metres the eye eases BACK along look-forward while reloading (0 = no pullback)
-        this.fpsReloadUp = 0.0;         // ...and a touch UP (0 = no rise)
+        // Reload camera move RE-ENABLED (modest): with the eye sitting right at the gun, the body's reload
+        // (the mag drop / off-hand reach) happened off-screen and read as "the reload doesn't play". Ease
+        // the eye BACK a touch (and slightly up) while reloading so the weapon + hands drop into frame and
+        // the reload is actually visible. Kept small so the view doesn't lurch; raise/lower to taste.
+        this.fpsReloadPullback = 0.30;  // metres the eye eases BACK along look-forward while reloading
+        this.fpsReloadUp = 0.06;        // ...and a touch UP so the gun lowers into view
         this.reloadPullLerp = 7;        // ease rate (1/s) for the pullback in/out
         // Placement-hold (dev): when the weapon-placement panel is open in FPS we DON'T hand the camera to
         // the free-fly cam — instead we freeze the player but keep the real first-person camera + aim pose
@@ -333,6 +328,24 @@ export default class PlayerControls extends Component{
         this.recoilPitch = 0.0;        // transient view kick, recovers to 0
         this.recoilYaw = 0.0;
         this.recoilRecover = 11.0;     // 1/s settle rate (snappier recovery, less lingering wobble)
+        // --- Accumulating recoil CLIMB (the spray pattern). The per-shot kick above settles instantly
+        // (snappy juice); this is a SEPARATE, accumulating offset that walks the aim UP a touch on every
+        // shot, so holding the trigger draws a rising vertical line of impacts (the shot is a camera-
+        // centre ray, so the climb on the view IS the climb on the bullets). It HOLDS while you fire
+        // (it only recovers once shots stop coming — see ApplyCameraShake) and is capped, so sustained
+        // fire climbs to a ceiling then plateaus rather than running away. Applied in BOTH camera modes
+        // (the shake/recoil path runs in FPS and TPS alike), so TPS gets the same recoil feel. Tuned
+        // "moderate / controllable": a clear climb you can pull down against, not a wild flick.
+        this.recoilClimb = 0.0;                                   // accumulated vertical climb (rad)
+        this.recoilClimbPerShot = THREE.MathUtils.degToRad(0.5);  // per-shot climb step
+        this.recoilClimbMax = THREE.MathUtils.degToRad(7.0);      // ceiling on the accumulated climb
+        this.recoilClimbRecover = 7.0;                            // 1/s recovery toward 0 once firing STOPS
+        this.recoilHoriz = 0.0;                                   // accumulated horizontal wander (rad)
+        this.recoilHorizPerShot = THREE.MathUtils.degToRad(0.13); // per-shot horizontal random walk
+        this.recoilHorizMax = THREE.MathUtils.degToRad(1.5);      // clamp so the column stays mostly vertical
+        this.recoilFireHold = 0.18;                               // s without a shot before the climb starts recovering
+        this._sinceShot = 999;                                    // s since the last shot (gates the climb recovery)
+        this.aimRecoilClimbDamp = 0.5;                            // ADS scales the climb DOWN (more controllable aimed)
         // Precise aim must stay STEADY: while ADS the trauma shake + per-shot recoil kick are scaled
         // DOWN (not off — a hair of gun kick still reads) so the crosshair doesn't jitter while you
         // line up / hold a shot. The user's "camera shakes while aiming + shooting" complaint is this —
@@ -519,8 +532,16 @@ export default class PlayerControls extends Component{
         // Mostly a clean vertical kick; only a hair of horizontal jitter. Less trauma per shot so
         // sustained auto-fire doesn't pile into a buzzing view (it reads as a firm kick, not a shake).
         this.trauma = Math.min(1.0, this.trauma + 0.012);
-        this.recoilPitch += 0.005;                          // small kick up (the main feedback)
+        this.recoilPitch += 0.005;                          // small snappy kick up (per-shot feedback)
         this.recoilYaw += (Math.random() - 0.5) * 0.0014;   // very slight horizontal jitter
+        // Accumulating climb (the spray pattern): walk the aim up a step and wander horizontally a hair,
+        // both capped. Reset the since-shot timer so the climb HOLDS between rounds (only recovers once
+        // the trigger is released — see ApplyCameraShake). Drives a rising vertical line of impacts.
+        this.recoilClimb = Math.min(this.recoilClimbMax, this.recoilClimb + this.recoilClimbPerShot);
+        this.recoilHoriz = THREE.MathUtils.clamp(
+            this.recoilHoriz + (Math.random() - 0.5) * 2 * this.recoilHorizPerShot,
+            -this.recoilHorizMax, this.recoilHorizMax);
+        this._sinceShot = 0;
     }
 
     // Apply trauma-driven shake + the per-shot recoil kick on top of the look
@@ -531,17 +552,31 @@ export default class PlayerControls extends Component{
         this.recoilPitch *= settle;
         this.recoilYaw *= settle;
 
+        // Accumulating climb: HOLD it while the trigger is being worked (shots keep resetting _sinceShot
+        // to 0), and only let it recover once firing stops — that's what makes a held burst climb higher
+        // and higher instead of settling to a steady plateau. Both the climb and the horizontal wander
+        // recover together so the view eases back to centre after you release.
+        this._sinceShot += t;
+        if(this._sinceShot > this.recoilFireHold){
+            const climbSettle = Math.exp(-this.recoilClimbRecover * t);
+            this.recoilClimb *= climbSettle;
+            this.recoilHoriz *= climbSettle;
+        }
+
         // Steady the view while aiming: scale the whole shake + recoil contribution down so a precise
         // aim doesn't jitter (the crosshair, the gun barrel IK and the shot all read off this view).
         const steady = this.aiming ? this.aimShakeDamp : 1.0;
+        // The CLIMB gets its own (gentler) ADS damp: aiming should still walk the shots up a controllable
+        // amount, not flatten the pattern to nothing like the per-shot buzz does.
+        const climbScale = this.aiming ? this.aimRecoilClimbDamp : 1.0;
         const shake = this.trauma * this.trauma * steady;   // ease-in so light trauma is subtle
         const f = this._fxTime;
-        const recoilP = this.recoilPitch * steady;
-        const recoilY = this.recoilYaw * steady;
+        const recoilP = this.recoilPitch * steady + this.recoilClimb * climbScale;
+        const recoilY = this.recoilYaw * steady + this.recoilHoriz * climbScale;
 
         // Rotation-only shake (no positional offset) so the camera never lurches in
         // space — just a small, quickly-settling jitter of the view angle, plus the
-        // per-shot recoil kick.
+        // per-shot recoil kick AND the accumulating climb (recoilP/recoilY carry both).
         const rp = (shake > 0.0001 ? Math.sin(f * 59.0) * shake * this.maxShakeRot : 0) + recoilP;
         const ry = (shake > 0.0001 ? Math.sin(f * 43.0 + 0.5) * shake * this.maxShakeRot : 0) + recoilY;
         const rz = shake > 0.0001 ? Math.sin(f * 67.0 + 1.1) * shake * this.maxShakeRot * 0.6 : 0;
@@ -611,22 +646,22 @@ export default class PlayerControls extends Component{
             this._camTarget.addScaledVector(this._fwd, -this.fpsReloadPullback * this._reloadEased);
             this._camTarget.y += this.fpsReloadUp * this._reloadEased;
         }
-        // Look-DOWN forward push: slide the eye FORWARD over the chest as the view tilts down, so the
-        // hidden head's neck-stump gap stays behind the camera (see fpsLookDownForward). Horizontal
-        // (yaw-only) forward, so a steep down-look pushes over the body rather than into the floor.
-        if(this._fpsLookDownEased > 1e-4){
-            this._fwdFlat.copy(this._fwdBase).applyQuaternion(this.yaw);
-            this._camTarget.addScaledVector(this._fwdFlat, this.fpsLookDownForward * this._fpsLookDownEased);
-        }
-        // Look-UP compensation: lift the eye UP over the rising gun (so the crosshair clears) and a touch
-        // BACK along the yaw-only forward (so the lens leaves the shoulder geo it was clipping through).
-        // Stronger while aiming, where the centred gun occludes the most. Keeps the level framing intact
-        // (zero at level) while restoring the same gun-vs-camera layout when tilted up.
-        if(this._fpsLookUpEased > 1e-4){
-            const aimK = this.aiming ? this.fpsLookUpAimExtra : 1.0;
-            this._camTarget.y += this.fpsLookUpUp * this._fpsLookUpEased * aimK;
-            this._fwdFlat.copy(this._fwdBase).applyQuaternion(this.yaw);
-            this._camTarget.addScaledVector(this._fwdFlat, -this.fpsLookUpBack * this._fpsLookUpEased * aimK);
+        // Pitch-pivot compensation (see fpsPitchPivot* in the constructor): orbit the eye about the gun's
+        // pitch centre by the look pitch so the gun keeps its straight-ahead screen position at every
+        // altitude — killing the parallax drift that slid the gun out from under the crosshair on a steep
+        // up/down look. The pivot sits below + forward of the level eye (≈ the shoulder/grip the body holds
+        // the gun at), built in the YAW-only frame so it tracks facing but not pitch; the eye then rides
+        // the same arc the gun's root does. Looking down this also slides the eye forward over the chest
+        // (past the hidden-head neck stump); looking up it drops + pulls back off the rising shoulder geo.
+        if(Math.abs(this.angles.x) > 1e-4){
+            this._fwdFlat.copy(this._fwdBase).applyQuaternion(this.yaw);   // yaw-only forward
+            this._right.copy(this._rightBase).applyQuaternion(this.yaw);   // yaw-only right (orbit axis)
+            this._fpsPivot.copy(this._camTarget)
+                .addScaledVector(this._fwdFlat, this.fpsPitchPivotForward)
+                .addScaledVector(this.yAxis, -this.fpsPitchPivotDown);
+            const gain = this.aiming ? this.fpsPitchPivotAimGain : this.fpsPitchPivotGain;
+            this._fpsPitchRot.setFromAxisAngle(this._right, this.angles.x * gain);
+            this._camTarget.sub(this._fpsPivot).applyQuaternion(this._fpsPitchRot).add(this._fpsPivot);
         }
         if(this.rolling){
             this._camTarget.y = Math.max(this._camTarget.y, capPos.y - 0.45);
@@ -674,13 +709,8 @@ export default class PlayerControls extends Component{
             // Ease the reload pullback (eye eases back so the reload anim is visible — see PlaceFpsEyePosition).
             const reloadTarget = this._reloading ? 1 : 0;
             this._reloadEased += (reloadTarget - this._reloadEased) * (1 - Math.exp(-this.reloadPullLerp * t));
-            // Ease the look-DOWN forward push (eye slides forward past the hidden-head neck gap as you look
-            // down — see PlaceFpsEyePosition). angles.x < 0 is looking down; ramp 0 (level/up) -> 1 (straight down).
-            const lookDownN = Math.max(0, -this.angles.x / (Math.PI * 0.5));
-            this._fpsLookDownEased += (lookDownN - this._fpsLookDownEased) * (1 - Math.exp(-this.fpsLookDownLerp * t));
-            // Look-UP compensation amount (angles.x > 0 is looking up): ramp 0 (level/down) -> 1 (straight up).
-            const lookUpN = Math.max(0, this.angles.x / (Math.PI * 0.5));
-            this._fpsLookUpEased += (lookUpN - this._fpsLookUpEased) * (1 - Math.exp(-this.fpsLookUpLerp * t));
+            // Pitch-pivot compensation (gun stays under the crosshair through the look pitch) is applied
+            // directly from angles.x in PlaceFpsEyePosition — no eased weight needed, it tracks the look 1:1.
             // Same character as third-person: the eye rides the mesh's head bone, so the walk/run
             // animation gives a subtle, real head bob. PlaceFpsEyePosition sets the eye position; it is
             // also re-called by PlayerBody AFTER it has posed the body this frame (see the note there)

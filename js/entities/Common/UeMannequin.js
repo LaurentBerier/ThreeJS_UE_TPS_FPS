@@ -81,6 +81,11 @@ const WEAPON_GRIP_FPS = {
 // click to edit this AIM grip (the panel header reads FPS_AIM), nudge until the weapon sits where you
 // want it down the sights, then paste the snippet back here. SEEDED to the TPS grip (same as the FPS
 // hip seat) so the right hand grips the gun until you tune the ADS pose. Hand-local cm / degrees.
+// ⚠️ FPS-ONLY SEAT — do NOT change while tuning third-person. This grip is consumed ONLY in
+// first-person ADS; nudging it for a TPS framing tweak silently regresses how the gun points down the
+// sights. Tune it in-game in FPS (hold right click; panel header reads FPS_AIM) and paste back here.
+// NOTE: this seat aligns the gun with the centre crosshair at LEVEL pitch; the up/down crosshair
+// tracking is handled by PlayerBody.fpsAimLookPitchGain (1:1 while aiming), not by this position.
 const WEAPON_GRIP_FPS_AIM = {
     position: new THREE.Vector3(-7.2, -4.4, 19.7),
     rotationEuler: new THREE.Euler(

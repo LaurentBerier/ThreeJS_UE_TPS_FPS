@@ -46,8 +46,11 @@ export default class LevelSetup extends Component{
                 const shadow = node.shadow;
                 const lightCam = shadow.camera;
 
-                shadow.mapSize.width = 1024 * 3;
-                shadow.mapSize.height = 1024 * 3;
+                // 2048² soft shadows: the 3072² map was a large per-frame depth pass for a single light
+                // and a visually near-identical result over this 35 m camera box. 2048 keeps crisp edges
+                // while cutting the shadow pass cost noticeably (bump back to 1024*3 if edges look soft).
+                shadow.mapSize.width = 2048;
+                shadow.mapSize.height = 2048;
                 shadow.bias = -0.00007;
 
                 const dH = 35, dV = 35;

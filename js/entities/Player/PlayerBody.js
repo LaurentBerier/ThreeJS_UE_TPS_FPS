@@ -80,6 +80,7 @@ export default class PlayerBody extends Component{
         this.lowerState = null;        // locomotion name currently driving the legs
         this.upperState = null;        // locomotion name currently driving the torso
         this.oneShot = null;           // name of an in-progress reload/shoot, or null
+        this._fpsReloadPending = false;// FPS mag-drop reload in progress (refill keys off the mag clip's finish)
         // Jump sub-graph: null on the ground, else 'start' (jumpStart playing) or 'fall' (jumpFall
         // loop). _groundedTimer debounces ground re-detection so the 1-frame contact flicker on
         // take-off can't abort the jump and a brief mid-air graze can't snap the legs to idle.
@@ -229,8 +230,15 @@ export default class PlayerBody extends Component{
         // so the head bone (and the FPS eye that rides it) stays put while the weapon tilts. Eased +
         // clamped; the IK still re-aims the barrel exactly when you ADS. Tune the gain/clamp in-game.
         this.fpsArmBones = [];                             // [upperarm_r, upperarm_l], filled in Initialize
-        this.fpsLookPitchGain = 0.8;                       // fraction of the look pitch fed to the arms
-        this.fpsLookPitchMax = THREE.MathUtils.degToRad(60); // clamp on the weapon tilt
+        this.fpsLookPitchGain = 0.8;                       // HIP: fraction of the look pitch fed to the arms (cosmetic framing)
+        this.fpsLookPitchMax = THREE.MathUtils.degToRad(60); // HIP clamp on the weapon tilt
+        // AIMING (ADS): the gun MUST track the look pitch 1:1 so its barrel stays under the centre
+        // crosshair as you tilt up/down — at the hip gain (0.8) it under-rotated 20% and the gun drifted
+        // BELOW the crosshair looking up / above it looking down (the reported "offset when tilting").
+        // Full gain + a wider clamp keeps it locked on the reticle across the usable aim arc; the shot is
+        // a camera-centre ray, so this lines the VISUAL gun up with where the bullet already goes.
+        this.fpsAimLookPitchGain = 1.0;                    // AIM: full 1:1 pitch tracking (gun stays on the crosshair)
+        this.fpsAimLookPitchMax = THREE.MathUtils.degToRad(88); // AIM clamp (near-full arc so high/low aim stays aligned)
         this._fpsPitchValue = 0;                           // eased current arm pitch (rad)
 
         // --- FPS aim arm pose (authored). Procedurally posing the FPS support elbow with an IK pole
@@ -777,7 +785,27 @@ export default class PlayerBody extends Component{
     get currentState(){ return this.lowerState; }
 
     OnCameraMode = (msg) => { this.SetCameraMode(msg.mode); }
-    OnReload = () => { this.PlayOneShot('reload'); this.PlayGunReload(); }
+    OnReload = () => {
+        // The UE rifle reload clip raises the gun toward the chest and swings the off-hand to the mag —
+        // authored for a THIRD-PERSON read. Viewed from the first-person head-cam that flails the gun up
+        // off-screen (the "reload doesn't work" look). So:
+        //   * FPS: DON'T play the body reload arm clip. Keep the gun held steady down the view (the dual-
+        //     hand grip stays engaged — see UpdateWeaponAim) and play ONLY the in-hand magazine drop/
+        //     reseat (PlayGunReload), so the reload reads as the mag visibly swapping while the gun stays
+        //     framed. Ammo still refills: the (hidden) Hands reload FSM runs and calls ReloadDone on finish.
+        //   * TPS: play the full body reload one-shot as before (it reads correctly over the shoulder).
+        const fpsViewmodel = this.cameraMode === 'FPS' && !this.fpsUseTpsGrip && !!this.gunReloadAction;
+        if(fpsViewmodel){
+            // FPS: mag-drop only (gun stays framed). The body one-shot is what normally broadcasts
+            // 'reload.done' (the ammo refill); since we skip it, flag the reload so OnOneShotFinished
+            // fires the refill when the magazine-drop clip finishes instead. Falls back to the body
+            // one-shot (below) if the mag clip didn't bake, so the refill always happens.
+            this._fpsReloadPending = true;
+        }else{
+            this.PlayOneShot('reload');
+        }
+        this.PlayGunReload();
+    }
     // Don't re-arm the recently-fired window mid-roll: the roll owns the body (PlayOneShot already
     // no-ops while rolling), and a held trigger firing through the roll would otherwise keep _shootHold
     // alive so the aim-IK/aim-pose snap on at recovery instead of easing in. ResetAimPoseAccumulators
@@ -1300,6 +1328,14 @@ export default class PlayerBody extends Component{
     }
 
     OnOneShotFinished = (e) => {
+        // FPS mag-drop reload (no body one-shot): the magazine-drop clip finishing is what completes the
+        // reload, so refill the mag here (the body one-shot that normally broadcasts this was skipped to
+        // keep the gun framed — see OnReload). ReloadDone is idempotent, so a stray TPS path is harmless.
+        if(this._fpsReloadPending && e && e.action === this.gunReloadAction){
+            this._fpsReloadPending = false;
+            this.Broadcast({topic: 'reload.done'});
+            return;
+        }
         // The mixer fires 'finished' for ANY LoopOnce action, so ignore a stale
         // finish from a one-shot we've already moved on from — e.g. a lingering
         // 'shoot' action ending just after a reload began. Acting on it would clear
@@ -1875,8 +1911,12 @@ export default class PlayerBody extends Component{
     UpdateFpsWeaponPitch(t){
         const pc = this.playerControls;
         if(!pc || !this.fpsArmBones.length){ return; }
-        const targetPitch = THREE.MathUtils.clamp(
-            -pc.angles.x * this.fpsLookPitchGain, -this.fpsLookPitchMax, this.fpsLookPitchMax);
+        // While AIMING use full 1:1 tracking + the wider clamp so the gun stays on the crosshair through
+        // the tilt; at the hip use the gentler gain/clamp (purely cosmetic framing of the held weapon).
+        const aiming = !!pc.aiming;
+        const gain = aiming ? this.fpsAimLookPitchGain : this.fpsLookPitchGain;
+        const clampMax = aiming ? this.fpsAimLookPitchMax : this.fpsLookPitchMax;
+        const targetPitch = THREE.MathUtils.clamp(-pc.angles.x * gain, -clampMax, clampMax);
         this._fpsPitchValue += (targetPitch - this._fpsPitchValue) * (1 - Math.exp(-this.aimPitchLerp * t));
         if(Math.abs(this._fpsPitchValue) < 1e-4){ return; }
         // Body-right axis in world: local +X carried through the (yaw-only) facing.
@@ -1913,16 +1953,20 @@ export default class PlayerBody extends Component{
         // re-aiming at the crosshair as you edit the seat.
         const placing = pc.cameraOverride || pc.placementHold;
         const active = this.IsAimingOrShooting() && this.oneShot !== 'reload' && !placing;
-        // ALWAYS-ON GRIP: the support hand stays glued to the gun whenever a weapon is held — NOT only
-        // while aiming. This is what kills the aim<->idle<->shoot hand snap (the hand never releases the
-        // foregrip and re-grabs). Dropped only during a reload (the off-hand works the mag) and while
-        // placing the weapon. The barrel still only swings while `active` (aiming/shooting).
-        const gripActive = this.oneShot !== 'reload' && !placing;
         // FPS seats float the gun off the wrist (the independent FPS / FPS_AIM grips), so IK BOTH arms
         // onto it instead of the wrist-rotation aim path. TPS — and FPS while it reuses the TPS grip
         // (fpsUseTpsGrip) — keeps the wrist-rotation path, where the gun grips AT the wrist so the
         // dominant hand stays attached for free.
         const dualHand = this.cameraMode === 'FPS' && !this.fpsUseTpsGrip;
+        // ALWAYS-ON GRIP: the support hand stays glued to the gun whenever a weapon is held — NOT only
+        // while aiming. This is what kills the aim<->idle<->shoot hand snap (the hand never releases the
+        // foregrip and re-grabs). Dropped during a reload so the off-hand can work the mag — EXCEPT in
+        // first-person, where releasing it let the gun snap to its raw clip pose (it flailed up off-
+        // screen — the "reload doesn't work" look). In FPS we KEEP the grip through the reload so the gun
+        // stays seated/framed down the view and the in-hand magazine-drop clip (PlayGunReload) reads as
+        // the reload. Also dropped while placing the weapon. The barrel still only swings while `active`.
+        const reloadHoldsGrip = dualHand;   // FPS: hold the gun through the reload; TPS: free the off-hand
+        const gripActive = (this.oneShot !== 'reload' || reloadHoldsGrip) && !placing;
         this._weaponAimActive = active;
 
         // FPS support-elbow: while AIMING the authored A_Rifle_Aim arm pose (applied in UpdateAimPose)

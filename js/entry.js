@@ -169,8 +169,11 @@ class FPSGameApp{
     this.listener = new THREE.AudioListener();
     this.camera.add( this.listener );
 
-    // renderer
-    this.renderer.setPixelRatio(window.devicePixelRatio);
+    // renderer. CAP the device pixel ratio: rendering at full native DPI on a HiDPI display (Windows
+    // scaling 125–200% => dpr 1.25–2.0) draws 1.5–4x the pixels for a barely-perceptible sharpness gain,
+    // and with antialias + a soft-shadow pass that was the bulk of the recent frame-time cost. 1.5 keeps
+    // the image crisp while cutting fill-rate hard on high-DPI panels. Raise toward 2 if you want sharper.
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
 
     this.WindowResizeHanlder();
     window.addEventListener('resize', this.WindowResizeHanlder);
