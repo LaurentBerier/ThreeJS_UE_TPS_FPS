@@ -248,6 +248,7 @@ export default class PlayerControls extends Component{
         // is SNAPPED (not smoothed) while airborne/rolling so a jump/fall/land tracks the capsule 1:1.
         // Only the camera height is touched — the body, feet and gun are untouched (no swim, no foot drift).
         this.fpsEyeYLerp = 8;           // eye-height low-pass rate (1/s); higher = snappier, less steady
+        this.fpsAimEyeYLerp = 30;       // MUCH tighter while ADS: the camera-locked gun must stay glued under the crosshair through a crouch (the slow lerp lagged the body drop and sank the gun)
         this._fpsEyeY = 0;              // smoothed eye height
         this._fpsEyeYSeeded = false;
 
@@ -493,7 +494,11 @@ export default class PlayerControls extends Component{
         this.angles.y -= movementX * sens;
         this.angles.x -= movementY * sens;
 
-        this.angles.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.angles.x));
+        // Clamp the vertical look. FPS pulls the limit in ~10% (±90° -> ±81°) so you can't crane the view
+        // all the way to straight up/down — the extremes are where the head-ridden FPS camera grazes the
+        // body and the viewmodel pitch-lock works hardest. TPS keeps the full ±90°.
+        const maxPitch = (this.cameraMode === 'FPS') ? (Math.PI / 2) * 0.9 : (Math.PI / 2);
+        this.angles.x = Math.max(-maxPitch, Math.min(maxPitch, this.angles.x));
 
         this.UpdateRotation();
     }
@@ -704,8 +709,15 @@ export default class PlayerControls extends Component{
         // rolling so a jump/fall/landing tracks the capsule 1:1 (then the smoothing re-seeds on landing).
         if(smooth && t > 0){
             const grounded = this.IsGrounded && !this.rolling;
+            // While AIMING, track the body's vertical TIGHTLY (fpsAimEyeYLerp >> fpsEyeYLerp). The ADS
+            // viewmodel is camera-locked to the eye (PlayerBody.UpdateFpsViewmodelPitch); the slow walk/
+            // terrain low-pass made the eye LAG the body's vertical drop on a crouch (and FootIK's hip-drop
+            // bleeds off over seconds), so the camera-locked gun sank below the crosshair until it settled —
+            // the reported crouch-ADS "gun too low". The hips are already stabilized while aiming, so the
+            // body's head bone is steady; tracking it tightly keeps the gun on the reticle with no bob.
+            const eyeLerp = this.aiming ? this.fpsAimEyeYLerp : this.fpsEyeYLerp;
             if(!this._fpsEyeYSeeded || !grounded){ this._fpsEyeY = this._camTarget.y; this._fpsEyeYSeeded = true; }
-            else { this._fpsEyeY += (this._camTarget.y - this._fpsEyeY) * (1 - Math.exp(-this.fpsEyeYLerp * t)); }
+            else { this._fpsEyeY += (this._camTarget.y - this._fpsEyeY) * (1 - Math.exp(-eyeLerp * t)); }
             this._camTarget.y = this._fpsEyeY;
         }
         this.camera.position.copy(this._camTarget);

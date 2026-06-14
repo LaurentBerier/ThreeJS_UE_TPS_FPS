@@ -89,7 +89,7 @@ export default class WeaponManager extends Component{
         // muzzle right under the camera. Measure the quad's native size once at unit
         // scale; UpdateTpsMuzzleFlash scales to the active mode's world size each shot.
         this._tpsFlashSize = 0.45;   // metres, third-person
-        this._fpsFlashSize = 0.13;   // metres, first-person (muzzle is ~0.5 m away)
+        this._fpsFlashSize = 0.26;   // metres, first-person (muzzle is ~0.5 m away) — 2x: the point-blank FPS flash read too small
         this._flashStretch = 1.0;    // per-shot width variety (set in TriggerTpsFlash)
         this.tpsFlash.scale.set(1, 1, 1);
         this.tpsFlash.updateMatrixWorld(true);

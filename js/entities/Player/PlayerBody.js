@@ -268,6 +268,25 @@ export default class PlayerBody extends Component{
         this._fpsLockTmp = new THREE.Vector3();            // scratch
         this._fpsLockTmp2 = new THREE.Vector3();           // scratch
 
+        // --- FPS ADS horizontal recoil hold. The shoot one-shot's recoil kicks the gun sideways (its
+        // animation has a horizontal component), so while ADS the gun + hands slide LEFT off the crosshair
+        // when firing. The muzzle flash + reticle bloom already read the shot, so hold the gun's CAMERA-X
+        // (horizontal screen position) at its steady, not-firing value while a burst plays — the VERTICAL
+        // recoil is left free, so the gun still kicks up. FPS ADS only; eased in/out so it never pops.
+        this._fpsAimRefX = 0;                              // steady camera-X offset of hand_r (tracked when not firing)
+        this._fpsAimRefXValid = false;
+        this._fpsRecoilHoldX = 0;                          // eased horizontal hold applied to the arms (camera-X metres)
+        this.fpsRecoilRefLerp = 10;                        // how fast the steady-X reference tracks when not firing (1/s)
+        this.fpsRecoilHoldLerp = 22;                       // how fast the hold engages/releases over a burst (1/s)
+        this._fpsRecoilTmp = new THREE.Vector3();          // scratch
+        // Deliberate ADS gun drop: lower the camera-locked gun along CAMERA-down so the crosshair sits JUST
+        // ABOVE the gun + sights (requested framing) rather than on/behind them. fpsAimGunDrop is the base
+        // (both stances); fpsAimGunDropCrouch adds a crouch-proportional bit because the crouch barrel rides
+        // a touch higher than standing (the receiver aligns but the muzzle/sights sit ~0.1 NDC up), so the
+        // extra drop levels the crouch sights with the standing ones. Tune in metres (camera-down).
+        this.fpsAimGunDrop = 0.03;
+        this.fpsAimGunDropCrouch = 0.045;
+
         // --- FPS aim arm pose (authored). Procedurally posing the FPS support elbow with an IK pole
         // never read right, so instead we drive the ARMS from the real A_Rifle_Aim animation while ADS
         // in first-person: the authored two-handed aim pose sets a correct elbow/shoulder, and the
@@ -295,6 +314,14 @@ export default class PlayerBody extends Component{
         // Active in-hand grip seat: 'TPS' | 'FPS' (hip) | 'FPS_AIM' (down-the-sights). Re-seated when
         // the FPS aim state flips so the weapon comes up/centres for ADS (see UpdateActiveGrip).
         this._activeGripMode = 'TPS';
+        // The seat is EASED toward the active mode's grip rather than snapped: the FPS hip and FPS-ADS
+        // grips are far apart (the gun comes up + forward to the sights), so the hard swap on press/release
+        // of aim popped the gun + hands for a frame (the reported idle<->aim transition glitch). A short
+        // ease glides the weapon up/down the sights. Snapped only on the first seat + on a camera-mode swap.
+        this._gripCurPos = new THREE.Vector3();
+        this._gripCurQuat = new THREE.Quaternion();
+        this._gripSeatSeeded = false;
+        this.gripEaseLerp = 16;                            // in-hand seat ease rate (1/s) for FPS hip<->ADS
 
         // --- Crouch (procedural, NO crouch clip). PlayerControls owns the input + the capsule resize
         // (PlayerPhysics) and exposes `crouching`. Here we lower the VISUAL body — the whole modelRoot in
@@ -1003,13 +1030,28 @@ export default class PlayerBody extends Component{
         return aiming ? 'FPS_AIM' : 'FPS';
     }
 
-    // Re-seat the in-hand gun when the active grip mode changes (e.g. FPS hip <-> FPS ADS as you press
-    // / release aim) so the weapon comes up and centres down the sights. Cheap: only acts on a change.
-    UpdateActiveGrip(){
+    // Re-seat the in-hand gun toward the active grip mode (e.g. FPS hip <-> FPS ADS as you press / release
+    // aim) so the weapon comes up and centres down the sights. EASED, not snapped — the hip and ADS seats
+    // are far apart, so a hard swap popped the gun + hands for a frame on every aim press/release (the
+    // reported transition glitch). Runs every frame; the ease is a no-op once it has converged on the seat.
+    UpdateActiveGrip(t = 0){
+        if(!this.weaponPivot || !this.weaponGrips){ return; }
         const mode = this.ActiveGripMode();
-        if(mode === this._activeGripMode){ return; }
         this._activeGripMode = mode;
-        this.ApplyWeaponGrip(mode);
+        const g = this.weaponGrips[mode] || this.weaponGrips.TPS;
+        // Snap (no ease) the first time only; a camera-mode swap snaps via ApplyWeaponGrip (SetCameraMode),
+        // which re-seeds the eased seat. Otherwise ease toward the active seat.
+        if(!this._gripSeatSeeded){
+            this._gripCurPos.copy(g.position); this._gripCurQuat.copy(g.quaternion);
+            this._gripSeatSeeded = true;
+        }else{
+            const k = 1 - Math.exp(-this.gripEaseLerp * t);
+            this._gripCurPos.lerp(g.position, k);
+            this._gripCurQuat.slerp(g.quaternion, k);
+        }
+        this.weaponPivot.position.copy(this._gripCurPos);
+        this.weaponPivot.quaternion.copy(this._gripCurQuat);
+        if(this.weaponAimIK){ this.weaponAimIK.CaptureBase(); }
     }
 
     // Per-camera-mode body proximity-dither thresholds (the head-dither shader's whole-body term).
@@ -1030,11 +1072,15 @@ export default class PlayerBody extends Component{
     // captured base to it, so the swap is correct both at rest (the pivot just sits at the grip) and
     // while aiming (WeaponAimIK resets the pivot to this base every frame before correcting it). The
     // barrel/foregrip sockets are pivot-LOCAL, so they don't need re-deriving — they ride the new seat.
+    // Snap the in-hand gun straight to a seat (no ease) and seed the eased seat there — used by the
+    // placement tool's live nudges and on a camera-mode swap, where the gun should appear AT the seat.
     ApplyWeaponGrip(mode){
         if(!this.weaponPivot || !this.weaponGrips){ return; }
         const g = this.weaponGrips[mode] || this.weaponGrips.TPS;
-        this.weaponPivot.position.copy(g.position);
-        this.weaponPivot.quaternion.copy(g.quaternion);
+        this._gripCurPos.copy(g.position); this._gripCurQuat.copy(g.quaternion);
+        this._gripSeatSeeded = true;
+        this.weaponPivot.position.copy(this._gripCurPos);
+        this.weaponPivot.quaternion.copy(this._gripCurQuat);
         if(this.weaponAimIK){ this.weaponAimIK.CaptureBase(); }
     }
 
@@ -1330,6 +1376,13 @@ export default class PlayerBody extends Component{
     PlayGunReload(){
         if(this.rolling || !this.gunReloadAction){ return; }
         this.gunReloadAction.reset();
+        // Match the body reload one-shot EXACTLY: same time scale and the same 0.1s ramp-in. PlayOneShot
+        // snaps the arms reload to weight 1 and fades the locomotion OUT over 0.1s, so the ARMS ease into
+        // the reload over that window — but the magazine bone has no competing action, so a hard play() put
+        // it at full weight instantly and the mag dropped ~0.1s AHEAD of the hands (the reported reload
+        // offset). fadeIn ramps the mag in over the same 0.1s so the hand, gun and magazine move together.
+        this.gunReloadAction.setEffectiveTimeScale(this.stateTimeScale['reload'] ?? 1.0);
+        this.gunReloadAction.fadeIn(0.1);
         this.gunReloadAction.play();
     }
 
@@ -1458,7 +1511,14 @@ export default class PlayerBody extends Component{
         this.SetLowerState(loco, this.LocoFade(this.lowerState, loco));
         const desiredUpper = this.DesiredUpperState(loco);
         if(!this.oneShot && this.upperState !== desiredUpper && this.upperActions[desiredUpper]){
-            this.PlayUpperLocomotion(desiredUpper, this.LocoFade(this.upperState, desiredUpper));
+            // The aim<->locomotion swap uses a TRUE crossfade. PlayUpperLocomotion (SetUpperPrimary) snaps
+            // the incoming action to full weight, so the aim pose popped in at ~50% on the first frame —
+            // the reported TPS idle->aim "animation bug" (the upper body jolts as ADS engages). A real
+            // crossfade ramps the aim pose 0->1 against the outgoing idle/jog so it eases in. Plain
+            // locomotion swaps keep the snap: there the cadence is phase-matched so the 50% frame doesn't read.
+            const aimSwap = desiredUpper === 'aim' || this.upperState === 'aim';
+            if(aimSwap){ this.CrossfadeUpper(desiredUpper, this.LocoFade(this.upperState, desiredUpper)); }
+            else { this.PlayUpperLocomotion(desiredUpper, this.LocoFade(this.upperState, desiredUpper)); }
         }
     }
 
@@ -1577,7 +1637,7 @@ export default class PlayerBody extends Component{
             this.fpsBodyOffset.set(0, 0, 0);
         }
         // Re-seat the in-hand gun if the FPS aim state flipped (FPS hip <-> FPS ADS grip).
-        this.UpdateActiveGrip();
+        this.UpdateActiveGrip(t);
         if(this.rolling){
             // The roll owns the WHOLE body while it plays: no hip stabilization, no aim lean and no
             // locomotion graph (any of which would fight the roll). Just advance it and, when the
@@ -1936,14 +1996,21 @@ export default class PlayerBody extends Component{
         const pc = this.playerControls;
         if(!pc || !this.fpsArmBones.length || !this._fpsArmRestPos){ return; }
 
+        // Placement WHILE AIMING keeps the camera-lock running so the gun holds its EXACT ADS pose as you
+        // nudge the seat (opening the panel used to drop the lock and snap the gun to the raw seat — the
+        // reported "reset to a random position"). HIP placement (and the TPS free-fly cam) still drop the
+        // lock and show the raw seat at rest. _placementAim is the aim state latched when the panel opened.
+        const aimPlacement = pc.placementHold && pc._placementAim;
+
         // ADS camera-lock weight: eases 0 (hip) -> 1 (aiming) so ADS in/out glides between the regimes.
-        const locking = !!pc.aiming && this.oneShot !== 'reload' && !pc.cameraOverride && !pc.placementHold;
+        const locking = !!pc.aiming && this.oneShot !== 'reload' && !pc.cameraOverride && (!pc.placementHold || aimPlacement);
         this._fpsAimLockW += ((locking ? 1 : 0) - this._fpsAimLockW) * (1 - Math.exp(-this.aimPitchLerp * t));
         const w = this._fpsAimLockW;
 
-        // Reload / placement: leave the arms at rest translation; the mixer rewrites their rotation each
-        // frame, so the reload clip (or the placement seat) shows through with no tilt and no lock.
-        if(this.oneShot === 'reload' || pc.cameraOverride || pc.placementHold){
+        // Reload / hip-placement / free-fly: leave the arms at rest translation; the mixer rewrites their
+        // rotation each frame, so the reload clip (or the raw placement seat) shows through with no lock.
+        // Aiming-placement is excluded so its camera-lock (above) keeps the ADS framing while you nudge.
+        if(this.oneShot === 'reload' || pc.cameraOverride || (pc.placementHold && !aimPlacement)){
             for(let i = 0; i < this.fpsArmBones.length; i++){ this.fpsArmBones[i].position.copy(this._fpsArmRestPos[i]); }
             return;
         }
@@ -2040,6 +2107,63 @@ export default class PlayerBody extends Component{
                     bone.parent.getWorldScale(this._fpsCompScale);
                     this._fpsLockTmp.applyQuaternion(this._aimPWInv).divide(this._fpsCompScale);
                     bone.position.add(this._fpsLockTmp);
+                }
+            }
+        }
+
+        // Vertical ADS arm offsets, applied as one world delta to both upper arms:
+        //  (1) FootIK terrain/crouch compensation (world UP). FootIK lowers modelRoot (arms + gun ride it)
+        //      AFTER the viewmodel is posed, to plant the feet; the eye the gun is camera-locked to already
+        //      carries that drop from the PRIOR frame, so the fresh per-frame drop would sink the gun below
+        //      the crosshair (worst in a deep crouch). Pre-lift by the pending hip-drop so FootIK's drop
+        //      lands the gun back on the lock. _hipDrop is eased, so last frame's value is effectively current.
+        //  (2) Deliberate gun drop (CAMERA down) so the crosshair sits just above the gun/sights.
+        // Both scale with the ADS weight (w); the hip gun rides the body normally.
+        if(w > 1e-3){
+            const footLift = (this.footIK && this.footIK._hipDrop > 1e-4) ? this.footIK._hipDrop : 0;
+            this._fpsCompB.set(0, footLift * w, 0);                                        // (1) world up
+            const gunDrop = this.fpsAimGunDrop + this.fpsAimGunDropCrouch * this._crouchEased;
+            if(gunDrop > 1e-4 && this.camera){
+                this._fpsCompDelta.set(0, -1, 0).applyQuaternion(this.camera.quaternion);  // camera-down (world)
+                this._fpsCompB.addScaledVector(this._fpsCompDelta, gunDrop * w);           // (2) screen down
+            }
+            if(this._fpsCompB.lengthSq() > 1e-10){
+                for(let i = 0; i < this.fpsArmBones.length; i++){
+                    const bone = this.fpsArmBones[i];
+                    bone.parent.getWorldQuaternion(this._aimPW);
+                    this._aimPWInv.copy(this._aimPW).invert();
+                    bone.parent.getWorldScale(this._fpsCompScale);
+                    this._fpsCompLocal.copy(this._fpsCompB).applyQuaternion(this._aimPWInv).divide(this._fpsCompScale);
+                    bone.position.add(this._fpsCompLocal);
+                }
+            }
+        }
+
+        // ADS horizontal recoil hold (see field comments). _aimRight is the camera-RIGHT axis under the
+        // look yaw (set above). Track the gun's steady horizontal screen position when NOT firing, then
+        // hold it there through a burst — cancelling the shoot clip's sideways kick while leaving the
+        // vertical recoil free. Only meaningful while down the sights (w high); fades with the ADS weight.
+        if(w > 0.5 && eye && handR){
+            handR.updateWorldMatrix(true, false);
+            handR.getWorldPosition(this._fpsRecoilTmp);
+            const curX = this._fpsRecoilTmp.sub(eye).dot(this._aimRight);   // gun horizontal offset from the eye
+            const firing = this._shootHold > 0;
+            if(!firing){
+                // Not firing: let the reference follow the live steady position so it's current when a burst starts.
+                if(!this._fpsAimRefXValid){ this._fpsAimRefX = curX; this._fpsAimRefXValid = true; }
+                else { this._fpsAimRefX += (curX - this._fpsAimRefX) * (1 - Math.exp(-this.fpsRecoilRefLerp * t)); }
+            }
+            const target = firing ? (this._fpsAimRefX - curX) * w : 0;   // push back to the steady X while firing
+            this._fpsRecoilHoldX += (target - this._fpsRecoilHoldX) * (1 - Math.exp(-this.fpsRecoilHoldLerp * t));
+            if(Math.abs(this._fpsRecoilHoldX) > 1e-5){
+                for(let i = 0; i < this.fpsArmBones.length; i++){
+                    const bone = this.fpsArmBones[i];
+                    bone.parent.getWorldQuaternion(this._aimPW);
+                    this._aimPWInv.copy(this._aimPW).invert();
+                    bone.parent.getWorldScale(this._fpsCompScale);
+                    this._fpsCompLocal.copy(this._aimRight).multiplyScalar(this._fpsRecoilHoldX)
+                        .applyQuaternion(this._aimPWInv).divide(this._fpsCompScale);
+                    bone.position.add(this._fpsCompLocal);
                 }
             }
         }
