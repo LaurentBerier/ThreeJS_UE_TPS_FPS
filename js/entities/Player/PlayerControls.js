@@ -210,6 +210,17 @@ export default class PlayerControls extends Component{
         this.fpsLookUpLerp = 8;         // ease rate (1/s) for the look-up compensation in/out
         this._fpsLookUpEased = 0;       // eased 0..1 look-up amount (driven in UpdateCamera)
         this._fpsAimEyeEase = 0;        // eased 0..1 ADS factor; fades the pitch-driven eye dodges out while aiming
+        // FPS AIMING look-DOWN shift. While ADS the hip eye-dodges above are suppressed (the viewmodel is
+        // CAMERA-LOCKED: PlayerBody.UpdateFpsViewmodelPitch pins the gun to a fixed eye), so looking down
+        // orbits the locked gun + arms DOWN about that fixed eye and they punch THROUGH the chest/torso
+        // (the reported bug — worst crouched). Fix: while aiming AND looking down, slide the eye FORWARD
+        // (yaw-only, over the chest) and a touch UP. The ADS gun is pinned camera-local and the arms+hands
+        // are carried onto it, so moving the eye moves the WHOLE viewmodel — camera, gun, arms, hands —
+        // FORWARD together, off the body, while it stays framed on the reticle (the lock is eye-relative).
+        // Zero at level/up; FPS + aiming only. Same stance standing or crouched.
+        this.fpsAimLookDownForward = 0.30; // metres the eye+viewmodel ease FORWARD at full look-down while aiming
+        this.fpsAimLookDownUp = 0.06;      // ...and a touch UP so the lens lifts off the shoulders
+        this._fpsAimLookDownEased = 0;     // eased 0..1 aiming look-down amount (driven in UpdateCamera)
         // FPS reload: the camera stays PUT. The body now plays the full reload one-shot down the view (the
         // arms work the mag, the gun rides them) instead of being held framed off the eye — see
         // PlayerBody.OnReload + UpdateFpsViewmodelPitch — so the reload reads with no camera pullback at
@@ -673,6 +684,16 @@ export default class PlayerControls extends Component{
             this._fwdFlat.copy(this._fwdBase).applyQuaternion(this.yaw);
             this._camTarget.addScaledVector(this._fwdFlat, -this.fpsLookUpBack * this._fpsLookUpEased);
         }
+        // Aiming look-DOWN shift: while ADS and tilting down, slide the eye FORWARD (yaw-only) over the
+        // chest and a touch UP. The ADS viewmodel is camera-locked (gun pinned camera-local, arms+hands
+        // carried onto it), so moving the eye carries the WHOLE viewmodel — camera, gun, arms, hands —
+        // forward off the body instead of orbiting down THROUGH it. Standing + crouched alike; the gun
+        // stays on the reticle because the lock is eye-relative. See fpsAimLookDownForward.
+        if(this._fpsAimLookDownEased > 1e-4){
+            this._fwdFlat.copy(this._fwdBase).applyQuaternion(this.yaw);
+            this._camTarget.addScaledVector(this._fwdFlat, this.fpsAimLookDownForward * this._fpsAimLookDownEased);
+            this._camTarget.y += this.fpsAimLookDownUp * this._fpsAimLookDownEased;
+        }
         if(this.rolling){
             this._camTarget.y = Math.max(this._camTarget.y, capPos.y - 0.45);
         }
@@ -733,6 +754,11 @@ export default class PlayerControls extends Component{
             // Look-UP compensation amount (angles.x > 0 is looking up): ramp 0 (level/down) -> 1 (straight up).
             const lookUpN = eyeDodge * Math.max(0, this.angles.x / (Math.PI * 0.5));
             this._fpsLookUpEased += (lookUpN - this._fpsLookUpEased) * (1 - Math.exp(-this.fpsLookUpLerp * t));
+            // Aiming look-DOWN shift amount: the INVERSE of eyeDodge — ON only while ADS — times the
+            // look-down ramp (0 level/up -> 1 straight down). Drives the eye+viewmodel forward push in
+            // PlaceFpsEyePosition so the camera-locked gun/arms clear the body instead of clipping through.
+            const aimLookDownN = this._fpsAimEyeEase * Math.max(0, -this.angles.x / (Math.PI * 0.5));
+            this._fpsAimLookDownEased += (aimLookDownN - this._fpsAimLookDownEased) * (1 - Math.exp(-this.fpsLookDownLerp * t));
             // Same character as third-person: the eye rides the mesh's head bone, so the walk/run
             // animation gives a subtle, real head bob. PlaceFpsEyePosition sets the eye position; it is
             // also re-called by PlayerBody AFTER it has posed the body this frame (see the note there)

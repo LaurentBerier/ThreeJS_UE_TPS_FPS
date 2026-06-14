@@ -226,14 +226,15 @@ export default class PlayerBody extends Component{
         // stays flat as you look up/down and slides off the screen. Two regimes, blended by the ADS weight
         // (_fpsAimLockW), both rotating BOTH upper arms (which carry the gun + the support hand) — NOT the
         // spine — so the head bone (and the FPS eye that rides it) stays put:
-        //   * HIP (cosmetic): tilt the arms about the body-right axis by a fraction of the look pitch,
-        //     rotating the gun about the SHOULDER. Eased + clamped — just keeps the hip gun framed.
+        //   * HIP (not aiming): orbit the arms about the EYE by a FRACTION of the look pitch (same sign +
+        //     same orbit as the lock below, just scaled by fpsLookPitchGain), so the gun + hands FOLLOW the
+        //     look up/down and stay centred on screen. Eased + clamped.
         //   * AIMING (ADS): rigidly CAMERA-LOCK the whole viewmodel — orbit it about the EYE by the FULL
         //     look pitch — so it keeps its EXACT straight-ahead pose relative to the camera at every
         //     altitude. The gun is already aligned under the crosshair at level, so locking it to the
         //     camera keeps it aligned looking up/down too, with NO camera move (see UpdateFpsViewmodelPitch).
         this.fpsArmBones = [];                             // [upperarm_r, upperarm_l], filled in Initialize
-        this.fpsLookPitchGain = 0.8;                       // HIP: fraction of the look pitch fed to the arms (cosmetic framing)
+        this.fpsLookPitchGain = 0.8;                       // HIP: fraction of the look pitch the gun follows (orbited about the eye)
         this.fpsLookPitchMax = THREE.MathUtils.degToRad(60); // HIP clamp on the weapon tilt
         this._fpsPitchValue = 0;                           // eased current HIP arm pitch (rad)
         this._fpsAimLockW = 0;                             // eased ADS camera-lock weight (0 hip -> 1 aiming)
@@ -1947,34 +1948,44 @@ export default class PlayerBody extends Component{
             return;
         }
 
-        // HIP cosmetic tilt (eased), faded OUT as the camera-lock fades in (so the two don't double up).
-        const hipTarget = THREE.MathUtils.clamp(-pc.angles.x * this.fpsLookPitchGain, -this.fpsLookPitchMax, this.fpsLookPitchMax);
+        // HIP follow (eased), faded OUT as the camera-lock fades in (so the two don't double up). Uses the
+        // SAME sign AND the SAME orbit-about-the-eye as the ADS lock below — just a FRACTION of the look
+        // pitch (fpsLookPitchGain) — so when NOT aiming the gun + hands FOLLOW the look up/down and stay
+        // centred on screen. (Previously this tilted the arms about the SHOULDER by the NEGATED pitch with
+        // NO eye-orbit, which both inverted the motion AND swung the whole viewmodel off screen — the
+        // reported bug. The aiming path already worked because it orbits the eye with the +pitch sign.)
+        const hipTarget = THREE.MathUtils.clamp(pc.angles.x * this.fpsLookPitchGain, -this.fpsLookPitchMax, this.fpsLookPitchMax);
         this._fpsPitchValue += (hipTarget - this._fpsPitchValue) * (1 - Math.exp(-this.aimPitchLerp * t));
         const hipAngle = this._fpsPitchValue * (1 - w);
         // CAMERA-LOCK pitch = the camera's OWN pitch (angles.x about body-right), faded IN by the ADS weight.
         const lockAngle = pc.angles.x * w;
+        // Total arm pitch: hip-follow (not aiming) + ADS lock (aiming) are both about body-right with the
+        // same sign, so they sum, and the whole arm+gun rigidly orbits the eye by it. When aiming (w→1)
+        // hipAngle→0 so this equals the old lockAngle — the working aim behaviour is unchanged.
+        const pitchAngle = hipAngle + lockAngle;
 
         // Camera-right axis under the look YAW — the axis the camera pitches about; the eye = the live camera.
         this._aimRight.set(Math.cos(pc.angles.y), 0, -Math.sin(pc.angles.y));
         const eye = this.camera ? this.camera.position : null;
-        this._fpsLockQ.setFromAxisAngle(this._aimRight, lockAngle);
+        this._fpsLockQ.setFromAxisAngle(this._aimRight, pitchAngle);
 
         for(let i = 0; i < this.fpsArmBones.length; i++){
             const bone = this.fpsArmBones[i];
             bone.parent.getWorldQuaternion(this._aimPW);   // also refreshes bone.parent.matrixWorld (used below)
             this._aimPWInv.copy(this._aimPW).invert();
 
-            // Orientation: hip tilt + camera-lock are both about body-right, so one rotation by their sum,
-            // applied in world about the bone (newLocal = parentW^-1 * R * parentW * oldLocal).
-            this._aimR.setFromAxisAngle(this._aimRight, hipAngle + lockAngle);
+            // Orientation: one rotation about body-right by the total pitch, applied in world about the
+            // bone (newLocal = parentW^-1 * R * parentW * oldLocal).
+            this._aimR.setFromAxisAngle(this._aimRight, pitchAngle);
             this._aimDelta.copy(this._aimPWInv).multiply(this._aimR).multiply(this._aimPW);
             bone.quaternion.premultiply(this._aimDelta);
 
-            // Position: orbit the shoulder about the eye for the LOCK part only (the hip tilt rotates about
-            // the shoulder, needing no translation). worldΔ = (R_lock − I)·(shoulderRest − eye), re-expressed
-            // in the arm's parent-local space (strip the parent world rotation, then its 0.01 world scale).
+            // Position: orbit the shoulder about the EYE by the same total pitch (hip + lock alike), so the
+            // gun stays centred under the crosshair as it pitches — rotating the arm about the shoulder
+            // alone would swing the gun off screen. worldΔ = (R − I)·(shoulderRest − eye), re-expressed in
+            // the arm's parent-local space (strip the parent world rotation, then its 0.01 world scale).
             bone.position.copy(this._fpsArmRestPos[i]);
-            if(eye && Math.abs(lockAngle) > 1e-5){
+            if(eye && Math.abs(pitchAngle) > 1e-5){
                 this._fpsCompB.copy(this._fpsArmRestPos[i]).applyMatrix4(bone.parent.matrixWorld).sub(eye); // v = shoulder - eye
                 this._fpsCompDelta.copy(this._fpsCompB).applyQuaternion(this._fpsLockQ).sub(this._fpsCompB); // (R-I)v
                 bone.parent.getWorldScale(this._fpsCompScale);

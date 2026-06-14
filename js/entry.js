@@ -476,7 +476,7 @@ class FPSGameApp{
     playerEntity.AddComponent(new WeaponAimDebug());
     // Spawn the player on the terrain (the physics capsule then settles onto it). 1.48 = capsule centre
     // above the ground; add the terrain height so it isn't dropped from inside a hill / above a valley.
-    playerEntity.SetPosition(new THREE.Vector3(2.14, 1.48 + terrain.HeightAt(2.14, -1.36), -1.36));
+    playerEntity.SetPosition(new THREE.Vector3(5.64, 1.48 + terrain.HeightAt(5.64, -1.36), -1.36));
     playerEntity.SetRotation(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), -Math.PI * 0.5));
     this.entityManager.Add(playerEntity);
 
