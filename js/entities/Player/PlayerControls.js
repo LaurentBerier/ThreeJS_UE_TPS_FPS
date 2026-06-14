@@ -198,30 +198,26 @@ export default class PlayerControls extends Component{
         this.fpsLookDownForward = 0.34; // metres the eye eases FORWARD at full look-down
         this.fpsLookDownLerp = 8;       // ease rate (1/s) for the push in/out
         this._fpsLookDownEased = 0;     // eased 0..1 look-down amount (driven in UpdateCamera)
-        // FPS look-UP compensation. The held gun pitches UP with the look (UpdateFpsWeaponPitch), so a
+        // FPS look-UP compensation. The held gun pitches UP with the look (UpdateFpsViewmodelPitch), so a
         // steep look-up swings the weapon + shoulder into the lens: the near plane clips THROUGH the
         // shoulder geo (see-through faces) and the raised gun covers the crosshair. The framing is good
         // at level, so we keep it: as the look tilts up, ease the eye UP (look OVER the rising gun so the
         // crosshair clears) and a touch BACK along the yaw-only forward (pull the lens out of the shoulder
-        // so it stops clipping). Stronger while AIMING (ADS centres the gun up the sights, so it occludes
-        // more). Mirrors the look-down forward push; zero at level/down where the framing already works.
+        // so it stops clipping). HIP-ONLY: faded out while AIMING (the camera-locked ADS gun holds its
+        // framing without an eye dodge). Mirrors the look-down forward push; zero at level/down already.
         this.fpsLookUpUp = 0.16;        // metres the eye eases UP at full look-up (clears the gun/crosshair)
         this.fpsLookUpBack = 0.10;      // ...and BACK (horizontal) so the lens leaves the shoulder geo
-        this.fpsLookUpAimExtra = 1.7;   // multiply the look-up compensation while aiming (gun is centred)
         this.fpsLookUpLerp = 8;         // ease rate (1/s) for the look-up compensation in/out
         this._fpsLookUpEased = 0;       // eased 0..1 look-up amount (driven in UpdateCamera)
-        // FPS reload pullback: while reloading in first-person, ease the eye BACK (and a touch up) so the
-        // gun + hands drop into frame and the reload animation is actually visible (otherwise the eye sits
-        // right behind the weapon and the mag swap happens off-screen). Driven by the weapon.reload /
-        // reload.done events; eased so it glides in and out. FPS-only (applied in PlaceFpsEyePosition).
+        this._fpsAimEyeEase = 0;        // eased 0..1 ADS factor; fades the pitch-driven eye dodges out while aiming
+        // FPS reload: the camera stays PUT. The body now plays the full reload one-shot down the view (the
+        // arms work the mag, the gun rides them) instead of being held framed off the eye — see
+        // PlayerBody.OnReload + UpdateFpsViewmodelPitch — so the reload reads with no camera pullback at
+        // all. The pullback constants are kept (zeroed) so the plumbing/tuning is one edit away if wanted.
         this._reloading = false;        // set true on weapon.reload, false on reload.done
         this._reloadEased = 0;          // eased 0..1 pullback amount
-        // Reload camera move RE-ENABLED (modest): with the eye sitting right at the gun, the body's reload
-        // (the mag drop / off-hand reach) happened off-screen and read as "the reload doesn't play". Ease
-        // the eye BACK a touch (and slightly up) while reloading so the weapon + hands drop into frame and
-        // the reload is actually visible. Kept small so the view doesn't lurch; raise/lower to taste.
-        this.fpsReloadPullback = 0.30;  // metres the eye eases BACK along look-forward while reloading
-        this.fpsReloadUp = 0.06;        // ...and a touch UP so the gun lowers into view
+        this.fpsReloadPullback = 0;     // metres the eye eases BACK along look-forward while reloading (0 = camera fixed)
+        this.fpsReloadUp = 0;           // ...and a touch UP so the gun lowers into view (0 = camera fixed)
         this.reloadPullLerp = 7;        // ease rate (1/s) for the pullback in/out
         // Placement-hold (dev): when the weapon-placement panel is open in FPS we DON'T hand the camera to
         // the free-fly cam — instead we freeze the player but keep the real first-person camera + aim pose
@@ -630,6 +626,15 @@ export default class PlayerControls extends Component{
     PlaceFpsEyePosition(capPos, t = 0, smooth = false){
         if(this.cameraMode !== 'FPS' || !this.camera){ return; }
         this._fwd.copy(this._fwdBase).applyQuaternion(this.parent.Rotation);
+        // While AIMING, take the eye's back-offset (fpsEyeForward) along the YAW-ONLY (horizontal) forward
+        // so the eye POSITION no longer rises/sinks with the look pitch. That pitch-driven vertical swing
+        // would slide the camera-locked gun (PlayerBody.UpdateFpsViewmodelPitch) off the crosshair as you
+        // tilt up/down — the eye is the lock's orbit pivot, so it must hold still in the body frame. At the
+        // hip keep the full-look offset (it tucks the eye behind the low-held gun). Eased via _fpsAimEyeEase.
+        if(this._fpsAimEyeEase > 1e-4){
+            this._fwdFlat.copy(this._fwdBase).applyQuaternion(this.yaw);
+            this._fwd.lerp(this._fwdFlat, this._fpsAimEyeEase).normalize();
+        }
         if(this.body && this.body.GetHeadWorldPosition(this._headPos)){
             this._camTarget.copy(this._headPos)
                 .addScaledVector(this._fwd, this.fpsEyeForward);
@@ -661,13 +666,12 @@ export default class PlayerControls extends Component{
         }
         // Look-UP compensation: lift the eye UP over the rising gun (so the crosshair clears) and a touch
         // BACK along the yaw-only forward (so the lens leaves the shoulder geo it was clipping through).
-        // Stronger while aiming, where the centred gun occludes the most. Keeps the level framing intact
-        // (zero at level) while restoring the same gun-vs-camera layout when tilted up.
+        // A HIP-only dodge — _fpsLookUpEased is already faded out while aiming (the camera-locked ADS gun
+        // needs no dodge). Keeps the level framing intact (zero at level) while clearing the tilted-up gun.
         if(this._fpsLookUpEased > 1e-4){
-            const aimK = this.aiming ? this.fpsLookUpAimExtra : 1.0;
-            this._camTarget.y += this.fpsLookUpUp * this._fpsLookUpEased * aimK;
+            this._camTarget.y += this.fpsLookUpUp * this._fpsLookUpEased;
             this._fwdFlat.copy(this._fwdBase).applyQuaternion(this.yaw);
-            this._camTarget.addScaledVector(this._fwdFlat, -this.fpsLookUpBack * this._fpsLookUpEased * aimK);
+            this._camTarget.addScaledVector(this._fwdFlat, -this.fpsLookUpBack * this._fpsLookUpEased);
         }
         if(this.rolling){
             this._camTarget.y = Math.max(this._camTarget.y, capPos.y - 0.45);
@@ -715,12 +719,19 @@ export default class PlayerControls extends Component{
             // Ease the reload pullback (eye eases back so the reload anim is visible — see PlaceFpsEyePosition).
             const reloadTarget = this._reloading ? 1 : 0;
             this._reloadEased += (reloadTarget - this._reloadEased) * (1 - Math.exp(-this.reloadPullLerp * t));
+            // ADS suppresses the pitch-driven eye dodges below. They exist to keep the HIP gun framed
+            // (slide the eye forward/up past the gun as you tilt), but while AIMING the viewmodel is
+            // CAMERA-LOCKED (PlayerBody.UpdateFpsViewmodelPitch keeps the gun glued under the crosshair),
+            // and any eye translation relative to the body would slide the locked gun off the reticle. So
+            // ease these to zero as ADS engages — the camera then truly holds its spot down the sights.
+            this._fpsAimEyeEase += ((this.aiming ? 1 : 0) - this._fpsAimEyeEase) * (1 - Math.exp(-this.aimLerpSpeed * t));
+            const eyeDodge = 1 - this._fpsAimEyeEase;
             // Ease the look-DOWN forward push (eye slides forward past the hidden-head neck gap as you look
             // down — see PlaceFpsEyePosition). angles.x < 0 is looking down; ramp 0 (level/up) -> 1 (straight down).
-            const lookDownN = Math.max(0, -this.angles.x / (Math.PI * 0.5));
+            const lookDownN = eyeDodge * Math.max(0, -this.angles.x / (Math.PI * 0.5));
             this._fpsLookDownEased += (lookDownN - this._fpsLookDownEased) * (1 - Math.exp(-this.fpsLookDownLerp * t));
             // Look-UP compensation amount (angles.x > 0 is looking up): ramp 0 (level/down) -> 1 (straight up).
-            const lookUpN = Math.max(0, this.angles.x / (Math.PI * 0.5));
+            const lookUpN = eyeDodge * Math.max(0, this.angles.x / (Math.PI * 0.5));
             this._fpsLookUpEased += (lookUpN - this._fpsLookUpEased) * (1 - Math.exp(-this.fpsLookUpLerp * t));
             // Same character as third-person: the eye rides the mesh's head bone, so the walk/run
             // animation gives a subtle, real head bob. PlaceFpsEyePosition sets the eye position; it is

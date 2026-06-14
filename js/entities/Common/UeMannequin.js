@@ -85,7 +85,8 @@ const WEAPON_GRIP_FPS = {
 // first-person ADS; nudging it for a TPS framing tweak silently regresses how the gun points down the
 // sights. Tune it in-game in FPS (hold right click; panel header reads FPS_AIM) and paste back here.
 // NOTE: this seat aligns the gun with the centre crosshair at LEVEL pitch; the up/down crosshair
-// tracking is handled by PlayerBody.fpsAimLookPitchGain (1:1 while aiming), not by this position.
+// tracking is handled by PlayerBody.UpdateFpsViewmodelPitch (the ADS camera-lock orbits this level-aligned
+// seat about the eye, so it stays aligned at every altitude), not by this position.
 const WEAPON_GRIP_FPS_AIM = {
     position: new THREE.Vector3(-7.2, -4.4, 19.7),
     rotationEuler: new THREE.Euler(

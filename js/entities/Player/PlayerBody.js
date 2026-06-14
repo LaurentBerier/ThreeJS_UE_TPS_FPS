@@ -80,7 +80,6 @@ export default class PlayerBody extends Component{
         this.lowerState = null;        // locomotion name currently driving the legs
         this.upperState = null;        // locomotion name currently driving the torso
         this.oneShot = null;           // name of an in-progress reload/shoot, or null
-        this._fpsReloadPending = false;// FPS mag-drop reload in progress (refill keys off the mag clip's finish)
         // Jump sub-graph: null on the ground, else 'start' (jumpStart playing) or 'fall' (jumpFall
         // loop). _groundedTimer debounces ground re-detection so the 1-frame contact flicker on
         // take-off can't abort the jump and a brief mid-air graze can't snap the legs to idle.
@@ -223,23 +222,50 @@ export default class PlayerBody extends Component{
         // is unaffected; restored to its rest scale in TPS. Captured in Initialize.
         this._headRestScale = null;
 
-        // --- FPS weapon look-pitch. In first-person the body only tracks the look YAW, so the held
-        // gun stays flat when you look up/down and slides off the screen. To keep it framed, pitch the
-        // weapon up/down with the look altitude ALWAYS (even when NOT aiming). It rotates BOTH upper
-        // arms (which carry the gun + the support hand) about the body-right axis — NOT the spine —
-        // so the head bone (and the FPS eye that rides it) stays put while the weapon tilts. Eased +
-        // clamped; the IK still re-aims the barrel exactly when you ADS. Tune the gain/clamp in-game.
+        // --- FPS viewmodel pitch. In first-person the body only tracks the look YAW, so the held gun
+        // stays flat as you look up/down and slides off the screen. Two regimes, blended by the ADS weight
+        // (_fpsAimLockW), both rotating BOTH upper arms (which carry the gun + the support hand) — NOT the
+        // spine — so the head bone (and the FPS eye that rides it) stays put:
+        //   * HIP (cosmetic): tilt the arms about the body-right axis by a fraction of the look pitch,
+        //     rotating the gun about the SHOULDER. Eased + clamped — just keeps the hip gun framed.
+        //   * AIMING (ADS): rigidly CAMERA-LOCK the whole viewmodel — orbit it about the EYE by the FULL
+        //     look pitch — so it keeps its EXACT straight-ahead pose relative to the camera at every
+        //     altitude. The gun is already aligned under the crosshair at level, so locking it to the
+        //     camera keeps it aligned looking up/down too, with NO camera move (see UpdateFpsViewmodelPitch).
         this.fpsArmBones = [];                             // [upperarm_r, upperarm_l], filled in Initialize
         this.fpsLookPitchGain = 0.8;                       // HIP: fraction of the look pitch fed to the arms (cosmetic framing)
         this.fpsLookPitchMax = THREE.MathUtils.degToRad(60); // HIP clamp on the weapon tilt
-        // AIMING (ADS): the gun MUST track the look pitch 1:1 so its barrel stays under the centre
-        // crosshair as you tilt up/down — at the hip gain (0.8) it under-rotated 20% and the gun drifted
-        // BELOW the crosshair looking up / above it looking down (the reported "offset when tilting").
-        // Full gain + a wider clamp keeps it locked on the reticle across the usable aim arc; the shot is
-        // a camera-centre ray, so this lines the VISUAL gun up with where the bullet already goes.
-        this.fpsAimLookPitchGain = 1.0;                    // AIM: full 1:1 pitch tracking (gun stays on the crosshair)
-        this.fpsAimLookPitchMax = THREE.MathUtils.degToRad(88); // AIM clamp (near-full arc so high/low aim stays aligned)
-        this._fpsPitchValue = 0;                           // eased current arm pitch (rad)
+        this._fpsPitchValue = 0;                           // eased current HIP arm pitch (rad)
+        this._fpsAimLockW = 0;                             // eased ADS camera-lock weight (0 hip -> 1 aiming)
+        this._fpsArmRestPos = null;                        // captured rest (bind) position of each fpsArmBone — the lift is applied on top
+        // Scratch for the camera-lock orbit (no per-frame allocation).
+        this._fpsLockQ = new THREE.Quaternion();           // R = look-pitch about body-right, scaled by the ADS weight
+        this._fpsCompB = new THREE.Vector3();              // v = shoulderRest - eye (the orbit lever arm)
+        this._fpsCompDelta = new THREE.Vector3();          // world translation that orbits the shoulder about the eye
+        this._fpsCompLocal = new THREE.Vector3();          // that delta in an arm's parent-local space
+        this._fpsCompScale = new THREE.Vector3();          // arm parent world scale (skeleton is 0.01-scaled — see UeMannequin)
+
+        // --- FPS ADS stance lock. The pitch-orbit above camera-locks the gun to whatever BASE pose the
+        // current STANCE gives — but a crouch poses the spine low + forward (the crouch-idle clip), so that
+        // base is itself off the crosshair (gun drops + points ~25° low + shifts sideways). The eye must
+        // stay low (you crouch to drop your view), so the spine can't be straightened — instead capture the
+        // gun's camera-relative pose while STANDING (where the seat is tuned to the reticle) and, while
+        // crouched, drive the gun back onto that captured pose with ONE rigid transform on both arms. The
+        // hands ride along (rigid), then the dual-hand IK re-plants them. Standing -> capture == live pose
+        // -> identity; only a crouch (or any spine deviation) moves anything. See UpdateFpsViewmodelPitch.
+        this._fpsAimGunCamPos = new THREE.Vector3();       // captured gun position in CAMERA-local space (standing aim)
+        this._fpsAimGunCamQuat = new THREE.Quaternion();   // ...and its orientation in camera-local space
+        this._fpsAimGunCamValid = false;                   // true once a standing-aim frame has calibrated the reference
+        this._fpsCamQInv = new THREE.Quaternion();         // camera world quat inverse (scratch)
+        this._fpsLockCurPos = new THREE.Vector3();         // live hand_r world position (post pitch-orbit)
+        this._fpsLockCurQuat = new THREE.Quaternion();     // ...and orientation
+        this._fpsLockCurQuatInv = new THREE.Quaternion();  // scratch
+        this._fpsLockDesPos = new THREE.Vector3();         // desired (camera-locked) hand_r world position
+        this._fpsLockDesQuat = new THREE.Quaternion();     // ...and orientation
+        this._fpsLockDRot = new THREE.Quaternion();        // rigid delta rotation mapping current -> desired
+        this._fpsLockOldOrigin = new THREE.Vector3();      // an arm's world origin before the stance-lock translate
+        this._fpsLockTmp = new THREE.Vector3();            // scratch
+        this._fpsLockTmp2 = new THREE.Vector3();           // scratch
 
         // --- FPS aim arm pose (authored). Procedurally posing the FPS support elbow with an IK pole
         // never read right, so instead we drive the ARMS from the real A_Rifle_Aim animation while ADS
@@ -664,6 +690,9 @@ export default class PlayerBody extends Component{
         const armBones = { upperarm_r: null, upperarm_l: null };
         this.model.traverse(o => { if(o.isBone && (o.name in armBones) && !armBones[o.name]){ armBones[o.name] = o; } });
         ['upperarm_r', 'upperarm_l'].forEach(n => { if(armBones[n]){ this.fpsArmBones.push(armBones[n]); } });
+        // Snapshot the arm roots' rest (bind) translation; the FPS gun-position screen-lock re-applies its
+        // slide on top of this each frame so it never accumulates (arm bones don't translate in the clips).
+        this._fpsArmRestPos = this.fpsArmBones.map(b => b.position.clone());
 
         // Pre-seed the head-aim gaze axis from the rig's REST pose (the bones are still at bind here —
         // no mixer update has run). _headFwdLocal is the head-bone-LOCAL axis that points along the
@@ -786,24 +815,12 @@ export default class PlayerBody extends Component{
 
     OnCameraMode = (msg) => { this.SetCameraMode(msg.mode); }
     OnReload = () => {
-        // The UE rifle reload clip raises the gun toward the chest and swings the off-hand to the mag —
-        // authored for a THIRD-PERSON read. Viewed from the first-person head-cam that flails the gun up
-        // off-screen (the "reload doesn't work" look). So:
-        //   * FPS: DON'T play the body reload arm clip. Keep the gun held steady down the view (the dual-
-        //     hand grip stays engaged — see UpdateWeaponAim) and play ONLY the in-hand magazine drop/
-        //     reseat (PlayGunReload), so the reload reads as the mag visibly swapping while the gun stays
-        //     framed. Ammo still refills: the (hidden) Hands reload FSM runs and calls ReloadDone on finish.
-        //   * TPS: play the full body reload one-shot as before (it reads correctly over the shoulder).
-        const fpsViewmodel = this.cameraMode === 'FPS' && !this.fpsUseTpsGrip && !!this.gunReloadAction;
-        if(fpsViewmodel){
-            // FPS: mag-drop only (gun stays framed). The body one-shot is what normally broadcasts
-            // 'reload.done' (the ammo refill); since we skip it, flag the reload so OnOneShotFinished
-            // fires the refill when the magazine-drop clip finishes instead. Falls back to the body
-            // one-shot (below) if the mag clip didn't bake, so the refill always happens.
-            this._fpsReloadPending = true;
-        }else{
-            this.PlayOneShot('reload');
-        }
+        // Play the full body reload one-shot (arms work the mag) PLUS the in-hand magazine drop/reseat, in
+        // BOTH camera modes. The reload reads on the body + gun: over the shoulder in TPS, and down the
+        // view in FPS (the eye stays put — no pullback — and UpdateFpsViewmodelPitch / the dual-hand grip
+        // step aside for the reload so the raw clip plays in frame; see UpdateFpsViewmodelPitch + the
+        // reload gates in UpdateWeaponAim). The one-shot's finish broadcasts 'reload.done' (the ammo refill).
+        this.PlayOneShot('reload');
         this.PlayGunReload();
     }
     // Don't re-arm the recently-fired window mid-roll: the roll owns the body (PlayOneShot already
@@ -1328,14 +1345,6 @@ export default class PlayerBody extends Component{
     }
 
     OnOneShotFinished = (e) => {
-        // FPS mag-drop reload (no body one-shot): the magazine-drop clip finishing is what completes the
-        // reload, so refill the mag here (the body one-shot that normally broadcasts this was skipped to
-        // keep the gun framed — see OnReload). ReloadDone is idempotent, so a stray TPS path is harmless.
-        if(this._fpsReloadPending && e && e.action === this.gunReloadAction){
-            this._fpsReloadPending = false;
-            this.Broadcast({topic: 'reload.done'});
-            return;
-        }
         // The mixer fires 'finished' for ANY LoopOnce action, so ignore a stale
         // finish from a one-shot we've already moved on from — e.g. a lingering
         // 'shoot' action ending just after a reload began. Acting on it would clear
@@ -1766,7 +1775,7 @@ export default class PlayerBody extends Component{
         // FPS: tilt the held weapon up/down with the look pitch so it stays on screen — even when NOT
         // aiming. Handled separately because it rotates the ARMS (not the spine), so the head bone and
         // the FPS eye that rides it don't move. None of the TPS spine yaw twists below apply in FPS.
-        if(this.cameraMode === 'FPS'){ this.ApplyFpsAimArmPose(t); this.UpdateFpsWeaponPitch(t); return; }
+        if(this.cameraMode === 'FPS'){ this.ApplyFpsAimArmPose(t); this.UpdateFpsViewmodelPitch(t); return; }
         if(!this.aimBones.length){ return; }
         // Apply the additive gun lean when AIMING, or — the close-camera HIP-FIRE case — when the
         // camera is close (proximity) AND you're shooting: the collapsed close framing leaves the
@@ -1889,11 +1898,13 @@ export default class PlayerBody extends Component{
 
     // FPS ADS: blend the arms from their current (locomotion) pose toward the captured authored aim pose
     // by an eased aim weight, so first-person aiming holds the real A_Rifle_Aim arm/elbow pose. Arm bones
-    // only (the FPS eye, riding the head bone, is untouched). The look-pitch tilt (UpdateFpsWeaponPitch)
+    // only (the FPS eye, riding the head bone, is untouched). The camera-lock pitch (UpdateFpsViewmodelPitch)
     // and the dual-hand IK then compose on top — the IK runs gently while aiming (fpsAimSupportStabilize)
     // so it just plants the hands on the current gun seat without undoing this elbow.
     ApplyFpsAimArmPose(t){
-        const aiming = !!(this.playerControls && this.playerControls.aiming);
+        // Suspended during a reload so the authored aim pose doesn't fight the reload clip — the arms
+        // (and the gun riding them) play the real reload motion in view instead.
+        const aiming = !!(this.playerControls && this.playerControls.aiming) && this.oneShot !== 'reload';
         const target = aiming ? 1 : 0;
         this._fpsAimPoseW += (target - this._fpsAimPoseW) * (1 - Math.exp(-this.fpsAimPoseLerp * t));
         if(this._fpsAimPoseW < 1e-3 || !this._fpsAimArmPose.length){ return; }
@@ -1902,32 +1913,124 @@ export default class PlayerBody extends Component{
         }
     }
 
-    // FPS weapon look-pitch: tilt the held weapon up/down with the look altitude so it stays framed on
-    // screen even when NOT aiming (the FPS body only tracks yaw, so without this the gun points flat
-    // when you look up/down and slides out of view). Rotates BOTH upper arms — which carry the gun and
-    // the support hand — about the body-right axis by the look pitch, NOT the spine, so the head bone
-    // (and the FPS eye riding it) stays put. Same sign convention as the TPS spine lean (-angles.x =>
-    // look up tilts the gun up). Eased + clamped; the barrel IK still re-aims exactly while ADS.
-    UpdateFpsWeaponPitch(t){
+    // FPS viewmodel pitch — keep the held gun framed (hip) and crosshair-aligned (ADS) as you look up/
+    // down, WITHOUT moving the camera. The FPS body only tracks the look YAW, so the gun rides a yaw-only
+    // frame while the camera pitches about the eye — looking up/down slides the gun off the crosshair.
+    // Two regimes, blended by the eased ADS weight (_fpsAimLockW); both rotate BOTH upper arms (which
+    // carry the gun + the support hand), NOT the spine, so the FPS eye on the head bone never moves:
+    //   * HIP (w→0): cosmetic tilt about the body-right axis by a fraction of the look pitch, rotating
+    //     the gun about the SHOULDER. Just enough to keep the hip gun in frame.
+    //   * ADS (w→1): rigidly CAMERA-LOCK the viewmodel — ORBIT it about the EYE by the FULL look pitch —
+    //     so it holds its EXACT straight-ahead pose relative to the camera at every altitude. The gun is
+    //     already aligned under the crosshair at level, so a camera-lock keeps it aligned looking up/down
+    //     too. The orbit = rotate the arm orientation about body-right (so the barrel tilts with the look)
+    //     PLUS translate the shoulder to its eye-orbited spot ((R−I)·(shoulder−eye)); together those are a
+    //     rigid orbit of the whole arm+gun about the eye. The dual-hand IK runs AFTER and re-plants both
+    //     hands on the rigidly-moved gun, so nothing detaches.
+    // A final ADS STANCE LOCK (below) then corrects the CROUCH base: the crouch-idle clip poses the spine
+    // low + forward, so the camera-locked gun sits off the crosshair until it's driven back onto the
+    // captured STANDING camera-relative pose. Suspended during a reload / placement so the raw reload clip
+    // (and the edited seat) read untouched.
+    UpdateFpsViewmodelPitch(t){
         const pc = this.playerControls;
-        if(!pc || !this.fpsArmBones.length){ return; }
-        // While AIMING use full 1:1 tracking + the wider clamp so the gun stays on the crosshair through
-        // the tilt; at the hip use the gentler gain/clamp (purely cosmetic framing of the held weapon).
-        const aiming = !!pc.aiming;
-        const gain = aiming ? this.fpsAimLookPitchGain : this.fpsLookPitchGain;
-        const clampMax = aiming ? this.fpsAimLookPitchMax : this.fpsLookPitchMax;
-        const targetPitch = THREE.MathUtils.clamp(-pc.angles.x * gain, -clampMax, clampMax);
-        this._fpsPitchValue += (targetPitch - this._fpsPitchValue) * (1 - Math.exp(-this.aimPitchLerp * t));
-        if(Math.abs(this._fpsPitchValue) < 1e-4){ return; }
-        // Body-right axis in world: local +X carried through the (yaw-only) facing.
-        this._aimRight.set(Math.cos(this._bodyYaw), 0, -Math.sin(this._bodyYaw));
-        for(const bone of this.fpsArmBones){
-            this._aimR.setFromAxisAngle(this._aimRight, this._fpsPitchValue);   // full pitch on each arm
-            bone.parent.getWorldQuaternion(this._aimPW);
+        if(!pc || !this.fpsArmBones.length || !this._fpsArmRestPos){ return; }
+
+        // ADS camera-lock weight: eases 0 (hip) -> 1 (aiming) so ADS in/out glides between the regimes.
+        const locking = !!pc.aiming && this.oneShot !== 'reload' && !pc.cameraOverride && !pc.placementHold;
+        this._fpsAimLockW += ((locking ? 1 : 0) - this._fpsAimLockW) * (1 - Math.exp(-this.aimPitchLerp * t));
+        const w = this._fpsAimLockW;
+
+        // Reload / placement: leave the arms at rest translation; the mixer rewrites their rotation each
+        // frame, so the reload clip (or the placement seat) shows through with no tilt and no lock.
+        if(this.oneShot === 'reload' || pc.cameraOverride || pc.placementHold){
+            for(let i = 0; i < this.fpsArmBones.length; i++){ this.fpsArmBones[i].position.copy(this._fpsArmRestPos[i]); }
+            return;
+        }
+
+        // HIP cosmetic tilt (eased), faded OUT as the camera-lock fades in (so the two don't double up).
+        const hipTarget = THREE.MathUtils.clamp(-pc.angles.x * this.fpsLookPitchGain, -this.fpsLookPitchMax, this.fpsLookPitchMax);
+        this._fpsPitchValue += (hipTarget - this._fpsPitchValue) * (1 - Math.exp(-this.aimPitchLerp * t));
+        const hipAngle = this._fpsPitchValue * (1 - w);
+        // CAMERA-LOCK pitch = the camera's OWN pitch (angles.x about body-right), faded IN by the ADS weight.
+        const lockAngle = pc.angles.x * w;
+
+        // Camera-right axis under the look YAW — the axis the camera pitches about; the eye = the live camera.
+        this._aimRight.set(Math.cos(pc.angles.y), 0, -Math.sin(pc.angles.y));
+        const eye = this.camera ? this.camera.position : null;
+        this._fpsLockQ.setFromAxisAngle(this._aimRight, lockAngle);
+
+        for(let i = 0; i < this.fpsArmBones.length; i++){
+            const bone = this.fpsArmBones[i];
+            bone.parent.getWorldQuaternion(this._aimPW);   // also refreshes bone.parent.matrixWorld (used below)
             this._aimPWInv.copy(this._aimPW).invert();
-            // newLocal = parentWorld^-1 * R * parentWorld * oldLocal
+
+            // Orientation: hip tilt + camera-lock are both about body-right, so one rotation by their sum,
+            // applied in world about the bone (newLocal = parentW^-1 * R * parentW * oldLocal).
+            this._aimR.setFromAxisAngle(this._aimRight, hipAngle + lockAngle);
             this._aimDelta.copy(this._aimPWInv).multiply(this._aimR).multiply(this._aimPW);
             bone.quaternion.premultiply(this._aimDelta);
+
+            // Position: orbit the shoulder about the eye for the LOCK part only (the hip tilt rotates about
+            // the shoulder, needing no translation). worldΔ = (R_lock − I)·(shoulderRest − eye), re-expressed
+            // in the arm's parent-local space (strip the parent world rotation, then its 0.01 world scale).
+            bone.position.copy(this._fpsArmRestPos[i]);
+            if(eye && Math.abs(lockAngle) > 1e-5){
+                this._fpsCompB.copy(this._fpsArmRestPos[i]).applyMatrix4(bone.parent.matrixWorld).sub(eye); // v = shoulder - eye
+                this._fpsCompDelta.copy(this._fpsCompB).applyQuaternion(this._fpsLockQ).sub(this._fpsCompB); // (R-I)v
+                bone.parent.getWorldScale(this._fpsCompScale);
+                this._fpsCompLocal.copy(this._fpsCompDelta).applyQuaternion(this._aimPWInv).divide(this._fpsCompScale);
+                bone.position.add(this._fpsCompLocal);
+            }
+        }
+
+        // --- ADS STANCE LOCK (crouch alignment). The orbit above camera-locked the gun to the current
+        // STANCE's base pose, but a crouch's spine pose puts that base off the crosshair. Carry hand_r (the
+        // bone the gun rides) as the viewmodel proxy: capture its camera-relative pose while STANDING, then
+        // drive it back onto that captured pose with one rigid delta on both arms. Standing -> identity;
+        // crouched -> the correction that re-centres the gun on the (lowered) crosshair. FPS dual-hand only.
+        const handR = this.weaponPivot ? this.weaponPivot.parent : null;   // gun is parented to hand_r
+        if(w > 1e-3 && eye && handR && !this.fpsUseTpsGrip){
+            handR.updateWorldMatrix(true, false);                          // hand_r world AFTER the pitch-orbit
+            handR.matrixWorld.decompose(this._fpsLockCurPos, this._fpsLockCurQuat, this._fpsCompScale);
+            // (Re)capture the reference while STANDING and settled into ADS — keeps it fresh with the live
+            // seat. The post-orbit standing hand_r is already camera-locked, so the capture is pitch-free.
+            // !crouching stops the capture the instant a crouch is pressed (before the pose drops); the
+            // _crouchEased gate also blocks the uncrouch settle tail, so the reference stays pure standing.
+            if(!pc.crouching && this._crouchEased < 0.08 && w > 0.95){
+                this._fpsCamQInv.copy(this.camera.quaternion).invert();
+                this._fpsAimGunCamPos.copy(this._fpsLockCurPos).sub(eye).applyQuaternion(this._fpsCamQInv);
+                this._fpsAimGunCamQuat.copy(this._fpsCamQInv).multiply(this._fpsLockCurQuat);
+                this._fpsAimGunCamValid = true;
+            }
+            if(this._fpsAimGunCamValid){
+                // Desired hand_r world = the captured camera-local pose carried by the live camera, eased to
+                // the current pose by (1-w) so leaving ADS releases the correction smoothly.
+                this._fpsLockDesPos.copy(this._fpsAimGunCamPos).applyQuaternion(this.camera.quaternion).add(eye);
+                this._fpsLockDesQuat.copy(this.camera.quaternion).multiply(this._fpsAimGunCamQuat);
+                this._fpsLockDesPos.lerp(this._fpsLockCurPos, 1 - w);
+                this._fpsLockDesQuat.slerp(this._fpsLockCurQuat, 1 - w);
+                // Rigid delta mapping current hand_r -> desired: Drot = des * cur⁻¹; every arm point p maps
+                // p -> Drot·p + (desPos − Drot·curPos). Applied to both upper arms, it rigidly carries the
+                // whole arm + gun (+ hands) onto the desired pose; the dual-hand IK re-plants the hands after.
+                this._fpsLockCurQuatInv.copy(this._fpsLockCurQuat).invert();
+                this._fpsLockDRot.copy(this._fpsLockDesQuat).multiply(this._fpsLockCurQuatInv);
+                for(let i = 0; i < this.fpsArmBones.length; i++){
+                    const bone = this.fpsArmBones[i];
+                    bone.getWorldPosition(this._fpsLockOldOrigin);                 // arm world origin (pre stance-lock)
+                    bone.parent.getWorldQuaternion(this._aimPW);
+                    this._aimPWInv.copy(this._aimPW).invert();
+                    // Orientation: premultiply the world delta rotation about the bone.
+                    this._aimDelta.copy(this._aimPWInv).multiply(this._fpsLockDRot).multiply(this._aimPW);
+                    bone.quaternion.premultiply(this._aimDelta);
+                    // Position: newOrigin = Drot·oldOrigin + (desPos − Drot·curPos); write the world delta in local.
+                    this._fpsLockTmp.copy(this._fpsLockOldOrigin).applyQuaternion(this._fpsLockDRot);
+                    this._fpsLockTmp2.copy(this._fpsLockCurPos).applyQuaternion(this._fpsLockDRot);
+                    this._fpsLockTmp.sub(this._fpsLockTmp2).add(this._fpsLockDesPos).sub(this._fpsLockOldOrigin); // world Δ
+                    bone.parent.getWorldScale(this._fpsCompScale);
+                    this._fpsLockTmp.applyQuaternion(this._aimPWInv).divide(this._fpsCompScale);
+                    bone.position.add(this._fpsLockTmp);
+                }
+            }
         }
     }
 
@@ -1960,13 +2063,11 @@ export default class PlayerBody extends Component{
         const dualHand = this.cameraMode === 'FPS' && !this.fpsUseTpsGrip;
         // ALWAYS-ON GRIP: the support hand stays glued to the gun whenever a weapon is held — NOT only
         // while aiming. This is what kills the aim<->idle<->shoot hand snap (the hand never releases the
-        // foregrip and re-grabs). Dropped during a reload so the off-hand can work the mag — EXCEPT in
-        // first-person, where releasing it let the gun snap to its raw clip pose (it flailed up off-
-        // screen — the "reload doesn't work" look). In FPS we KEEP the grip through the reload so the gun
-        // stays seated/framed down the view and the in-hand magazine-drop clip (PlayGunReload) reads as
-        // the reload. Also dropped while placing the weapon. The barrel still only swings while `active`.
-        const reloadHoldsGrip = dualHand;   // FPS: hold the gun through the reload; TPS: free the off-hand
-        const gripActive = (this.oneShot !== 'reload' || reloadHoldsGrip) && !placing;
+        // foregrip and re-grabs). Dropped during a reload (BOTH modes now) so the hands follow the reload
+        // clip and the off-hand visibly works the mag — in FPS that plays the reload down the view (the
+        // camera holds; see OnReload + UpdateFpsViewmodelPitch). Also dropped while placing the weapon.
+        // The barrel still only swings while `active`.
+        const gripActive = this.oneShot !== 'reload' && !placing;
         this._weaponAimActive = active;
 
         // FPS support-elbow: while AIMING the authored A_Rifle_Aim arm pose (applied in UpdateAimPose)
