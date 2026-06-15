@@ -212,6 +212,21 @@ export default class WeaponAimIK{
         this._dhGunRot = new THREE.Quaternion();
         this._dhLocalMat = new THREE.Matrix4();  // scratch: the placed gun pose re-expressed local to the IK'd wrist
 
+        // --- FPS ADS camera-lock. Makes the first-person ADS gun an AUTHORITATIVE camera-relative viewmodel:
+        // the gun (and the hands gripping it) reset under the crosshair no matter what the body animation does
+        // — a jump, a hurt-flinch, a roll recovery — because the gun pose is taken from the CAMERA, not the
+        // animated arm. The calibrated pose is captured ONCE from a clean grounded-standing-steady aim (the
+        // pre-override gun pose IS the good pose then; PlayerBody gates the capture so a jump/flinch pose is
+        // never stored) and re-applied every frame carried by the LIVE camera, eased by the ADS weight, so any
+        // body deviation is overwritten. _updateDualHand reads this; PlayerBody fills _fpsLock each frame.
+        this._fpsLock = null;                       // { camera, weight, capture } from PlayerBody (FPS dual-hand only)
+        this._dhCamRefMat = new THREE.Matrix4();    // the calibrated gun pose, CAMERA-local (the reference)
+        this._dhCamRefValid = false;
+        this._dhTargetMat = new THREE.Matrix4();    // scratch: reference carried by the live camera (world)
+        this._dhCamInv = new THREE.Matrix4();       // scratch: camera world-inverse
+        this._dhP = new THREE.Vector3(); this._dhQ = new THREE.Quaternion(); this._dhS = new THREE.Vector3();
+        this._dhP2 = new THREE.Vector3(); this._dhQ2 = new THREE.Quaternion(); this._dhS2 = new THREE.Vector3();
+
         // Shared two-bone IK solver (analytic, sign-safe). Owns its own scratch pool so the support-arm
         // solve never clobbers the leg solves' intermediates. The two-bone scratch declared above is now
         // unused (the solver owns it) but left in place to keep this refactor behaviour-neutral; _pW/
@@ -364,6 +379,10 @@ export default class WeaponAimIK{
     // genuinely different rigged mesh supplies its own via ikConfig (SetWeaponConfig), applied on equip.
     OnWeaponChanged(){
         this._aimDirSeeded = false;
+        // Invalidate the FPS ADS camera-lock reference: a new weapon may have different grip/length geometry,
+        // so the calibrated camera-relative gun pose must be re-captured from a fresh grounded-standing aim
+        // before it can apply again (else the next ADS raise would settle onto the OLD weapon's framing).
+        this._dhCamRefValid = false;
     }
 
     // Hard-reset the eased correction to fully OFF. Used when the body hands the whole pose off to a
@@ -375,6 +394,9 @@ export default class WeaponAimIK{
         this._gripAlpha = 0;
         this._aimAlpha = 0;
         this._aimDirSeeded = false;
+        // Drop the FPS ADS camera-lock reference too, so a roll recovery (or any hand-off) re-captures it
+        // from a fresh grounded-standing aim rather than re-applying a possibly-stale pose on the way back.
+        this._dhCamRefValid = false;
     }
 
     // Main solve. Call AFTER the mixer + spine lean each frame.
@@ -387,11 +409,12 @@ export default class WeaponAimIK{
     //   cameraForward : unit camera-forward (fallback aim direction for too-close / behind targets)
     //   world         : the Ammo physics world (for the muzzle wall-clearance sweep; optional)
     //   t             : delta seconds
-    Update(t, { active, gripActive = active, aimTarget, aimValid = true, cameraForward = null, world = null, dualHand = false, supportPole = null }){
+    Update(t, { active, gripActive = active, aimTarget, aimValid = true, cameraForward = null, world = null, dualHand = false, supportPole = null, fpsLock = null }){
         const pivot = this.weaponPivot;
         if(!pivot || !this.handBoneR){ return; }
-        // Stash the optional FPS support-elbow pole for _updateDualHand (null => hang straight down).
+        // Stash the optional FPS support-elbow pole + ADS camera-lock for _updateDualHand.
         this._supportPoleOverride = (supportPole && supportPole.lengthSq() > 1e-8) ? supportPole : null;
+        this._fpsLock = fpsLock;
 
         // Ease the TWO blends independently (the split that kills the hand snap). Grip is always-on for
         // a held weapon (so the hands never release the gun); aim eases in/out with aiming/shooting.
@@ -570,6 +593,40 @@ export default class WeaponAimIK{
         this.handBoneR.updateWorldMatrix(true, true);
         this._dhGunMat.copy(pivot.matrixWorld);
         pivot.getWorldQuaternion(this._dhGunRot);
+
+        // --- FPS ADS camera-lock (AUTHORITATIVE). Make the gun a calibrated camera-relative viewmodel so it
+        // — and the hands that grip it below — always reset under the crosshair, OVERWRITING the body
+        // animation. This runs AFTER the hurt-flinch and is the LAST thing that poses the gun, so a jump, a
+        // flinch jolt, or a roll recovery (none of which the per-bone corrections fully neutralise) can't
+        // leave the gun off the reticle. The pre-override pose (_dhGunMat = hand_r * placed seat) IS the good
+        // pose while standing still aiming, so CAPTURE it then — PlayerBody gates capture to a grounded-
+        // standing-steady aim, so a jump/flinch pose is never stored — and re-APPLY it carried by the LIVE
+        // camera, eased by the ADS weight. Standing-steady => the reference == the current pose => identity;
+        // any deviation => the gun eases back onto the calibrated pose. The dual-hand IK below re-grips THIS.
+        const L = this._fpsLock;
+        if(L && L.camera){
+            L.camera.updateMatrixWorld();
+            if(L.capture){
+                this._dhCamInv.copy(L.camera.matrixWorld).invert();
+                this._dhCamRefMat.multiplyMatrices(this._dhCamInv, this._dhGunMat);   // gun pose, camera-local
+                this._dhCamRefValid = true;
+            }
+            if(this._dhCamRefValid && L.weight > 1e-3){
+                this._dhTargetMat.multiplyMatrices(L.camera.matrixWorld, this._dhCamRefMat);   // calibrated, live camera
+                this._dhGunMat.decompose(this._dhP, this._dhQ, this._dhS);                     // keep the gun's own scale
+                this._dhTargetMat.decompose(this._dhP2, this._dhQ2, this._dhS2);
+                this._dhP.lerp(this._dhP2, L.weight);
+                this._dhQ.slerp(this._dhQ2, L.weight);
+                // FootIK (UpdateFootIK) lowers modelRoot — and so the gun riding it — by _hipDrop AFTER this
+                // IK runs, to plant the feet on terrain. The lock just set the gun to an ABSOLUTE world pose,
+                // so that pending drop would sink it below the crosshair (the lock overrode the arm-based
+                // footLift that normally cancels it). Pre-lift the locked gun by the same _hipDrop so FootIK's
+                // drop lands it back exactly on the calibrated pose — terrain-independent, like the eye comp.
+                if(L.hipDrop > 1e-4){ this._dhP.y += L.hipDrop * L.weight; }
+                this._dhGunMat.compose(this._dhP, this._dhQ, this._dhS);
+                this._dhGunRot.copy(this._dhQ);
+            }
+        }
 
         const ikW = this._gripAlpha * this.WeaponIKBlendAlpha;
 

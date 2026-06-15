@@ -699,6 +699,29 @@ export default class PlayerControls extends Component{
             this._camTarget.addScaledVector(this._fwdFlat, this.fpsAimLookDownForward * this._fpsAimLookDownEased);
             this._camTarget.y += this.fpsAimLookDownUp * this._fpsAimLookDownEased;
         }
+        // FPS ADS foot-plant compensation — pin the eye to the world-steady gun, terrain-independently.
+        // FootIK lowers modelRoot by _hipDrop each frame to plant the feet on the FACETED terrain collider,
+        // which bobs the whole rig — and so the head bone + this eye that rides it — up/down (measured ~11 cm
+        // while strafing, and MORE on rougher ground; diag_fpsstrafe.mjs). The camera-locked ADS gun is held
+        // WORLD-steady (its footLift in PlayerBody.UpdateFpsViewmodelPitch cancels FootIK's drop), so a
+        // bobbing eye made the steady gun appear to swing under the crosshair while strafe-aiming (the
+        // reported bug). Cancel the SAME _hipDrop from the eye so the eye is world-steady too: eye + gun then
+        // hold a FIXED screen relationship regardless of how rough the terrain is or whether you're moving —
+        // unlike smoothing the eye, which only attenuates the bob and fails where the terrain is rough.
+        // Standing hipDrop is ~0, so standing ADS keeps its existing tuned "just under the crosshair" framing
+        // (fpsAimGunDrop, PlayerBody); this just brings MOVING up to match it (verified consistent: standing
+        // rearY −0.595 vs strafing −0.587, swing 0.563→0.06; diag_fpsframing.mjs). Scaled by the gun's ADS
+        // lock weight so eye + gun engage in lockstep; zero when not
+        // aiming, so the natural first-person walk bob (the intended "subtle weapon bob against a calm view")
+        // is untouched. Applied to BOTH eye placements (start-of-frame, that the gun is posed against, and the
+        // end-of-frame render) so they agree; _hipDrop is eased (hipDropLerp), so the one-frame skew between
+        // them is small (~sub-cm even on a sharp terrain-facet step) and imperceptible in motion.
+        if(this.body && this.body.footIK){
+            const adsW = this.body._fpsAimLockW || 0;
+            if(adsW > 1e-3 && this.body.footIK._hipDrop > 1e-4){
+                this._camTarget.y += this.body.footIK._hipDrop * adsW;
+            }
+        }
         if(this.rolling){
             this._camTarget.y = Math.max(this._camTarget.y, capPos.y - 0.45);
         }
@@ -713,8 +736,8 @@ export default class PlayerControls extends Component{
             // viewmodel is camera-locked to the eye (PlayerBody.UpdateFpsViewmodelPitch); the slow walk/
             // terrain low-pass made the eye LAG the body's vertical drop on a crouch (and FootIK's hip-drop
             // bleeds off over seconds), so the camera-locked gun sank below the crosshair until it settled —
-            // the reported crouch-ADS "gun too low". The hips are already stabilized while aiming, so the
-            // body's head bone is steady; tracking it tightly keeps the gun on the reticle with no bob.
+            // the reported crouch-ADS "gun too low". The strafe terrain BOB is instead cancelled directly by
+            // the foot-plant compensation above (not by smoothing here), so this can stay tight for crouch.
             const eyeLerp = this.aiming ? this.fpsAimEyeYLerp : this.fpsEyeYLerp;
             if(!this._fpsEyeYSeeded || !grounded){ this._fpsEyeY = this._camTarget.y; this._fpsEyeYSeeded = true; }
             else { this._fpsEyeY += (this._camTarget.y - this._fpsEyeY) * (1 - Math.exp(-eyeLerp * t)); }

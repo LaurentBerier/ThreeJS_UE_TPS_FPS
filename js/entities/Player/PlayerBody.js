@@ -516,6 +516,11 @@ export default class PlayerBody extends Component{
         // keeps the strafing legs from swinging the torso/gun off the aim target (the look-facing body
         // + steady idle aim pose then point the gun right at the reticle while you strafe).
         this.aimHipStab = 0.96;
+        // FPS ADS damps the pelvis a touch harder than the TPS 0.96: in first-person the gun is the
+        // viewmodel and must stay pinned under the crosshair while strafing, so the residual hip bob that
+        // would ride up the chain is removed. (The dominant first-person strafe bob is the head bone's own
+        // baked bob — see fpsAimSpineStab + the 'head' entry in the aim-idle set — not the pelvis.)
+        this.fpsAimHipStab = 0.97;
         this.hipStabLerp = 8;                             // ease rate (1/s) entering/leaving stabilization
         this.hipRefLerp = 1.5;                            // low-pass rate (1/s) for the settled pelvis reference
 
@@ -532,6 +537,14 @@ export default class PlayerBody extends Component{
         this._aimIdleRefSeeded = false;
         this._aimIdleStab = 0;                            // eased current settle 0..1
         this.aimIdleStabMax = 0.85;                       // cap: ~15% of the breath/sway survives (subtle)
+        // FPS ADS uses a HARDER cap (vs the TPS 0.85) AND covers the whole upper chain incl. the HEAD bone
+        // (see the aim-idle set in Initialize): first-person aiming should OVERWRITE the locomotion swing so
+        // the upper body is a steady base for the gun. This calms the bones' OWN baked bob (breath + the jog
+        // clip's spine/head animation). NOTE: the dominant first-person strafe-ADS gun-swing was NOT this —
+        // it was FootIK's per-frame modelRoot terrain drop bobbing the EYE against the world-steady gun, and
+        // that is cancelled by the eye foot-plant comp in PlayerControls.PlaceFpsEyePosition (this cap alone
+        // did NOT move it; diag_fpsstrafe.mjs). Left a hair under 1 so a trace of breath survives.
+        this.fpsAimSpineStab = 0.95;                      // FPS ADS: near-lock the upper chain incl. head
         this.aimIdleStabLerp = 9;                         // ease rate (1/s) entering/leaving the steady aim
         this.aimIdleRefLerp = 1.6;                        // low-pass rate (1/s) for the settled spine+arm reference
         this.aimIdleTimeScale = 0.6;                      // slow the idle breath ~40% while aiming (calmer tempo)
@@ -767,13 +780,18 @@ export default class PlayerBody extends Component{
             this._hipRefSeeded = true;
         }
 
-        // Spine chain (+ neck) AND the gun-holding arm chain for the aim-idle settle: damping these locals
-        // calms the breathing/idle sway the gun rides on while aiming. The spine alone leaves the ARM bones
-        // (which carry the gun + support hand) breathing, and in FPS ADS the gun sits at the eye so that
-        // residual reads as viewmodel jitter — so the arms are settled too, giving the weapon IK a steady
-        // base to fine-aim from (the IK runs AFTER and overrides the support arm + wrist as needed). Seed
-        // each settled reference from its bind pose; StabilizeAimIdle low-passes it live thereafter.
-        const aimIdleNames = ['spine_01', 'spine_02', 'spine_03', 'neck_01',
+        // Spine chain (+ neck + HEAD) AND the gun-holding arm chain for the aim-idle settle: damping these
+        // locals calms the breathing/idle sway the gun rides on while aiming. The spine alone leaves the ARM
+        // bones (which carry the gun + support hand) breathing, and in FPS ADS the gun sits at the eye so
+        // that residual reads as viewmodel jitter — so the arms are settled too, giving the weapon IK a
+        // steady base to fine-aim from (the IK runs AFTER and overrides the support arm + wrist as needed).
+        // The HEAD bone is included for FPS (the first-person EYE rides it): the UE clips animate the head
+        // bone directly (diag_bones.mjs), so damping it calms the head's OWN baked bob/breath at the eye.
+        // NOTE this is a steadiness nicety, NOT the strafe-ADS gun-swing fix — that swing was FootIK's
+        // modelRoot terrain drop bobbing the eye, cancelled by the eye foot-plant comp in
+        // PlayerControls.PlaceFpsEyePosition (damping these bones alone did not move it). Seed each settled
+        // reference from its bind pose; StabilizeAimIdle low-passes it live thereafter.
+        const aimIdleNames = ['spine_01', 'spine_02', 'spine_03', 'neck_01', 'head',
             'upperarm_r', 'lowerarm_r', 'hand_r', 'upperarm_l', 'lowerarm_l', 'hand_l'];
         this.model.traverse(o => {
             if(o.isBone && aimIdleNames.includes(o.name)){
@@ -1763,7 +1781,11 @@ export default class PlayerBody extends Component{
         // Aiming damps harder (steady gun while strafing) than a plain collision push-in; FPS-steady
         // (first-person idle/crouch-idle, not aiming) damps hardest of all — the lens rides the head, so
         // a near-freeze is what holds the first-person view still (see fpsSteadyHipStab).
-        const cap = aiming ? this.aimHipStab : (fpsSteady ? this.fpsSteadyHipStab : this.hipStabMax);
+        // FPS ADS near-freezes the pelvis (fpsAimHipStab) so a strafing hip bob can't ride up into the
+        // viewmodel; TPS ADS keeps its slightly looser aimHipStab; FPS-steady freezes the idle bob.
+        const cap = fpsAiming ? this.fpsAimHipStab
+            : aiming ? this.aimHipStab
+            : (fpsSteady ? this.fpsSteadyHipStab : this.hipStabMax);
         // Engage while MOVING (kill the run bob in front of the lens) OR whenever AIMING OR when FPS-steady
         // (kill the first-person idle/crouch camera jitter) — even standing still, the idle's pelvis bob
         // rides up the whole chain and floats the gun / shakes the FP camera, so it needs the hips frozen.
@@ -1801,6 +1823,10 @@ export default class PlayerBody extends Component{
         // Aiming in EITHER camera mode (the FPS body's arms are the viewmodel; the TPS body is the ADS
         // pose). Raw aim flag — not IsAiming(), which is TPS-only.
         const aiming = !!(pc && pc.aiming);
+        // FPS ADS: the gun IS the viewmodel and must stay pinned under the crosshair while strafing, so the
+        // spine + arm chain it rides is near-FROZEN — the aim pose overwrites the locomotion swing at the
+        // source (the camera-lock orbit + dual-hand IK that run after then place the gun on the crosshair).
+        const fpsAiming = (this.cameraMode === 'FPS') && aiming;
         // Also settle the SPINE sway when first-person AND stationary: the breathing rides the spine (which
         // the head + FP camera hang off), so damping it here — together with StabilizeHips — holds the
         // first-person camera steady in standing idle / crouch-idle (the reported jitter). Kept off while
@@ -1809,9 +1835,11 @@ export default class PlayerBody extends Component{
         // FPS + walking (not aiming): partially damp the spine sway too (companion to the hip damp in
         // StabilizeHips) so the first-person walk bob is calmer in BOTH the eye and the gun it holds.
         const fpsMoving = (this.cameraMode === 'FPS') && this.IsJogState(this.lowerState) && !aiming;
-        // FPS-steady (not aiming) near-freezes the spine/arms (head + eye ride them); ADS keeps its own
-        // subtler settle (aimIdleStabMax). FPS-walking gets the partial fpsMoveAimStab.
-        const cap = (fpsSteady && !aiming) ? this.fpsSteadyAimStab : this.aimIdleStabMax;
+        // FPS ADS near-freezes the chain (fpsAimSpineStab); FPS-steady (not aiming) near-freezes it too;
+        // TPS ADS keeps its subtler breath (aimIdleStabMax). FPS-walking gets the partial fpsMoveAimStab.
+        const cap = fpsAiming ? this.fpsAimSpineStab
+            : (fpsSteady && !aiming) ? this.fpsSteadyAimStab
+            : this.aimIdleStabMax;
         const target = (aiming || fpsSteady) ? cap : (fpsMoving ? this.fpsMoveAimStab : 0);
         this._aimIdleStab += (target - this._aimIdleStab) * (1 - Math.exp(-this.aimIdleStabLerp * t));
 
@@ -2106,8 +2134,14 @@ export default class PlayerBody extends Component{
             // freezes a partial reference (it keeps the last fully-settled standing one). pc.aiming (not w)
             // gates it so the ref is never taken from the ADS release tail; !crouching/!jog freeze it the
             // instant the stance changes so the stored framing is pure standing.
+            // _fpsMoveLockW < 0.1 (genuinely settled, ~0.3 s stopped) is CRITICAL: strafing back and forth
+            // crosses speed 0 on every reversal, dropping lowerState to 'idle' for a few frames — !IsJogState
+            // alone then RE-COMMITTED the reference from that mid-reversal transient pose (gun swung), so the
+            // gun locked to a corrupt framing and stuck ~0.15 NDC + 15° off the crosshair, drifting worse each
+            // reversal (diag_bones.mjs trace). Requiring the eased move weight to have fully decayed first means
+            // a brief reversal blip can't re-commit — the clean last-standing reference is preserved throughout.
             if(pc.aiming && !pc.crouching && this._crouchEased < 0.08 && !this.IsJogState(this.lowerState)
-                && w > 0.9 && this._fpsAimPoseW > 0.9){
+                && this._fpsMoveLockW < 0.1 && w > 0.9 && this._fpsAimPoseW > 0.9){
                 this._fpsCamQInv.copy(this.camera.quaternion).invert();
                 this._fpsAimGunCamPos.copy(this._fpsLockCurPos).sub(eye).applyQuaternion(this._fpsCamQInv);
                 this._fpsAimGunCamQuat.copy(this._fpsCamQInv).multiply(this._fpsLockCurQuat);
@@ -2261,6 +2295,30 @@ export default class PlayerBody extends Component{
             this.weaponAimIK.supportElbowStabilizeDual = this._fpsSupportStabEased;
         }
 
+        // FPS ADS camera-lock (see WeaponAimIK._updateDualHand): hand the IK the live camera + the eased ADS
+        // weight so it drives the gun (and the gripping hands) onto a CALIBRATED camera-relative pose every
+        // frame, OVERWRITING whatever the body animation does — a jump, a hurt-flinch, a roll recovery. The
+        // reference is CAPTURED only from a grounded-standing-steady aim so a transient pose is never stored:
+        // grounded (physics + the jump sub-graph both clear), standing (not jogging, move weight fully decayed),
+        // not crouched, and fully raised (lock + arm-pose weights settled). Same stable-capture discipline as
+        // the stance-lock reference; the apply is always-on (vs the stance-lock's move/crouch gating) so it
+        // resets the gun from ANY body state, not just strafing/crouching. FPS dual-hand only.
+        let fpsLock = null;
+        if(dualHand){
+            const grounded = pc.IsGrounded && this.airState === null;
+            const capture = pc.aiming && !pc.crouching && this._crouchEased < 0.08
+                && !this.IsJogState(this.lowerState) && this._fpsMoveLockW < 0.1
+                && grounded && this._fpsAimLockW > 0.9 && this._fpsAimPoseW > 0.9;
+            this._fpsLockMsg = this._fpsLockMsg || { camera: null, weight: 0, capture: false, hipDrop: 0 };
+            this._fpsLockMsg.camera = this.camera;
+            this._fpsLockMsg.weight = this._fpsAimLockW;
+            this._fpsLockMsg.capture = capture;
+            // FootIK lowers modelRoot (the gun rides it) by _hipDrop AFTER the IK; the lock pre-lifts the gun
+            // by it so the drop lands the locked gun back on the calibrated pose (see WeaponAimIK lock).
+            this._fpsLockMsg.hipDrop = (this.footIK && this.footIK._hipDrop > 1e-4) ? this.footIK._hipDrop : 0;
+            fpsLock = this._fpsLockMsg;
+        }
+
         this.weaponAimIK.Update(t, {
             active,
             gripActive,
@@ -2269,6 +2327,7 @@ export default class PlayerBody extends Component{
             cameraForward: pc.aimDir,
             world: this._physicsWorld,   // muzzle wall-clearance sweep (keeps the barrel out of walls)
             dualHand,
+            fpsLock,
         });
     }
 
