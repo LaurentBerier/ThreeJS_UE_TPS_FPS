@@ -208,24 +208,12 @@ export default class WeaponAimIK{
         // feeds a raised pole here (player-left + up, eased in while aiming) so the elbow lifts into a
         // natural rifle-support "chicken wing" instead of caving in. null => fall back to _poleDown.
         this._supportPoleOverride = null;
-        this._dhGunMat = new THREE.Matrix4();   // the placed weapon world matrix (both hands grip THIS)
+        this._dhGunMat = new THREE.Matrix4();   // the desired weapon world matrix (both hands grip THIS)
         this._dhGunRot = new THREE.Quaternion();
         this._dhLocalMat = new THREE.Matrix4();  // scratch: the placed gun pose re-expressed local to the IK'd wrist
-
-        // --- FPS ADS camera-lock. Makes the first-person ADS gun an AUTHORITATIVE camera-relative viewmodel:
-        // the gun (and the hands gripping it) reset under the crosshair no matter what the body animation does
-        // — a jump, a hurt-flinch, a roll recovery — because the gun pose is taken from the CAMERA, not the
-        // animated arm. The calibrated pose is captured ONCE from a clean grounded-standing-steady aim (the
-        // pre-override gun pose IS the good pose then; PlayerBody gates the capture so a jump/flinch pose is
-        // never stored) and re-applied every frame carried by the LIVE camera, eased by the ADS weight, so any
-        // body deviation is overwritten. _updateDualHand reads this; PlayerBody fills _fpsLock each frame.
-        this._fpsLock = null;                       // { camera, weight, capture } from PlayerBody (FPS dual-hand only)
-        this._dhCamRefMat = new THREE.Matrix4();    // the calibrated gun pose, CAMERA-local (the reference)
-        this._dhCamRefValid = false;
-        this._dhTargetMat = new THREE.Matrix4();    // scratch: reference carried by the live camera (world)
-        this._dhCamInv = new THREE.Matrix4();       // scratch: camera world-inverse
+        // Scratch for the FPS camera-authoritative solve (SolveFpsViewmodel) + the dual-hand re-pin: the gun's
+        // decomposed world position/orientation/scale (scale is preserved across the camera-relative recompose).
         this._dhP = new THREE.Vector3(); this._dhQ = new THREE.Quaternion(); this._dhS = new THREE.Vector3();
-        this._dhP2 = new THREE.Vector3(); this._dhQ2 = new THREE.Quaternion(); this._dhS2 = new THREE.Vector3();
 
         // Shared two-bone IK solver (analytic, sign-safe). Owns its own scratch pool so the support-arm
         // solve never clobbers the leg solves' intermediates. The two-bone scratch declared above is now
@@ -379,10 +367,9 @@ export default class WeaponAimIK{
     // genuinely different rigged mesh supplies its own via ikConfig (SetWeaponConfig), applied on equip.
     OnWeaponChanged(){
         this._aimDirSeeded = false;
-        // Invalidate the FPS ADS camera-lock reference: a new weapon may have different grip/length geometry,
-        // so the calibrated camera-relative gun pose must be re-captured from a fresh grounded-standing aim
-        // before it can apply again (else the next ADS raise would settle onto the OLD weapon's framing).
-        this._dhCamRefValid = false;
+        // The FPS camera-authoritative viewmodel re-derives the gun pose from the camera every frame and the
+        // barrel/sockets are geometry-relative (re-resolved on the next Update), so there is no stored aim
+        // reference to invalidate here. PlayerBody re-derives its camera-relative seat offsets on a swap.
     }
 
     // Hard-reset the eased correction to fully OFF. Used when the body hands the whole pose off to a
@@ -394,9 +381,6 @@ export default class WeaponAimIK{
         this._gripAlpha = 0;
         this._aimAlpha = 0;
         this._aimDirSeeded = false;
-        // Drop the FPS ADS camera-lock reference too, so a roll recovery (or any hand-off) re-captures it
-        // from a fresh grounded-standing aim rather than re-applying a possibly-stale pose on the way back.
-        this._dhCamRefValid = false;
     }
 
     // Main solve. Call AFTER the mixer + spine lean each frame.
@@ -409,12 +393,11 @@ export default class WeaponAimIK{
     //   cameraForward : unit camera-forward (fallback aim direction for too-close / behind targets)
     //   world         : the Ammo physics world (for the muzzle wall-clearance sweep; optional)
     //   t             : delta seconds
-    Update(t, { active, gripActive = active, aimTarget, aimValid = true, cameraForward = null, world = null, dualHand = false, supportPole = null, fpsLock = null }){
+    Update(t, { active, gripActive = active, aimTarget, aimValid = true, cameraForward = null, world = null, dualHand = false, supportPole = null }){
         const pivot = this.weaponPivot;
         if(!pivot || !this.handBoneR){ return; }
-        // Stash the optional FPS support-elbow pole + ADS camera-lock for _updateDualHand.
+        // Stash the optional support-elbow pole for _updateDualHand.
         this._supportPoleOverride = (supportPole && supportPole.lengthSq() > 1e-8) ? supportPole : null;
-        this._fpsLock = fpsLock;
 
         // Ease the TWO blends independently (the split that kills the hand snap). Grip is always-on for
         // a held weapon (so the hands never release the gun); aim eases in/out with aiming/shooting.
@@ -576,58 +559,120 @@ export default class WeaponAimIK{
         d.handTarget.copy(this._leftTarget);
     }
 
-    // FPS DUAL-HAND GRIP. The first-person ADS seat floats the gun OFF the dominant wrist so it reads
-    // centred down the sights — which the wrist-rotation aim path can't grip (that only keeps the right
-    // hand on when the gun grips AT the wrist). Here BOTH arms IK onto the gun: it's left at its placed
-    // seat (relative to the animated hand), and the dominant + support arms reach for its captured grip
-    // sockets, so both hands land on the placed weapon. No barrel re-aim (FPS looks straight down the
-    // sights and the shot is a camera-centre ray regardless) — the gun points where the seat orients it.
-    // Weighted by the grip blend so the hands GLIDE on (spawn) and release for a reload, like the support
-    // hand. Reuses the same two-bone solver + wrist-lock as the TPS support hand, mirrored to the right.
+    // FPS DUAL-HAND GRIP (non-camera consumer). Both arms IK onto the gun at its placed seat: the gun is
+    // left where the clip seats it (relative to the animated hand) and the dominant + support arms reach
+    // for its captured grip sockets, so both hands land on it. The first-person PLAYER no longer uses this —
+    // its gun is camera-authoritative (SolveFpsViewmodel below) — but it stays for any dual-hand consumer
+    // that just wants the hands glued to the seated gun.
     _updateDualHand(){
         const pivot = this.weaponPivot;
-        // Reset the gun to its placed seat and refresh hand_r (from its animated ancestors) + the gun
-        // (its child). _dhGunMat is the placed weapon pose — both hands grip THIS.
+        // Reset the gun to its placed seat and refresh hand_r (from its animated ancestors) + the gun.
         pivot.quaternion.copy(this._baseQuat);
         pivot.position.copy(this._basePos);
         this.handBoneR.updateWorldMatrix(true, true);
-        this._dhGunMat.copy(pivot.matrixWorld);
+        this._dhGunMat.copy(pivot.matrixWorld);   // both hands grip THIS
         pivot.getWorldQuaternion(this._dhGunRot);
+        this._solveDualHandGrip();
+    }
 
-        // --- FPS ADS camera-lock (AUTHORITATIVE). Make the gun a calibrated camera-relative viewmodel so it
-        // — and the hands that grip it below — always reset under the crosshair, OVERWRITING the body
-        // animation. This runs AFTER the hurt-flinch and is the LAST thing that poses the gun, so a jump, a
-        // flinch jolt, or a roll recovery (none of which the per-bone corrections fully neutralise) can't
-        // leave the gun off the reticle. The pre-override pose (_dhGunMat = hand_r * placed seat) IS the good
-        // pose while standing still aiming, so CAPTURE it then — PlayerBody gates capture to a grounded-
-        // standing-steady aim, so a jump/flinch pose is never stored — and re-APPLY it carried by the LIVE
-        // camera, eased by the ADS weight. Standing-steady => the reference == the current pose => identity;
-        // any deviation => the gun eases back onto the calibrated pose. The dual-hand IK below re-grips THIS.
-        const L = this._fpsLock;
-        if(L && L.camera){
-            L.camera.updateMatrixWorld();
-            if(L.capture){
-                this._dhCamInv.copy(L.camera.matrixWorld).invert();
-                this._dhCamRefMat.multiplyMatrices(this._dhCamInv, this._dhGunMat);   // gun pose, camera-local
-                this._dhCamRefValid = true;
+    // FPS CAMERA-AUTHORITATIVE VIEWMODEL (first-person player only). The crosshair/camera is the SOURCE OF
+    // TRUTH: the gun's world pose is computed analytically from the camera every frame — its pivot placed at
+    // a camera-relative offset (PlayerBody: eye + camQuat·offset, blended hip<->ADS + procedural) and the
+    // barrel ROTATED so forwardLocal points exactly at the aim target — then both hands IK onto it. NO
+    // stored/animated pose feeds the result, so it is correct on frame 1 of ANY locomotion state
+    // (run/jump/crouch/strafe/land/enter-exit-aim): there is nothing to "drift" or "eventually correct".
+    // Must run as the LAST pose write (after FootIK + the final eye placement) so the body can move
+    // underneath while the gun stays on the reticle. PlayerBody.UpdateFpsViewmodel computes the inputs.
+    //   gunPosWorld  : desired gun-pivot world position (eye + camQuat·offset + procedural)
+    //   baseGunQuat  : desired gun-pivot world orientation BEFORE the barrel swing (camQuat·camLocalRest)
+    //   aimTarget    : world point under the crosshair (pc.aimTarget)
+    //   cameraForward: unit camera-forward (fallback for a too-close / behind-the-muzzle target)
+    //   recoilQuat   : optional world-space additive kick applied AFTER alignment (decaying), or null
+    //   raiseW       : 1 = raised & crosshair-aligned (aim/shoot); 0 = relaxed (gun follows the idle anim)
+    SolveFpsViewmodel(t, { gunPosWorld, baseGunQuat, aimTarget, aimValid = true, cameraForward = null, recoilQuat = null, raiseW = 1 }){
+        const pivot = this.weaponPivot;
+        if(!pivot || !this.handBoneR || !gunPosWorld || !baseGunQuat){ return; }
+        // Always-on grip blend (hands glued to the held gun). _aimAlpha tracks 1 for the FPS viewmodel (the
+        // gun is always aim-driven here); kept eased only for the debug overlay's alpha readout.
+        this._gripAlpha += (1 - this._gripAlpha) * (1 - Math.exp(-this.GripBlendSpeed * t));
+        this._aimAlpha  += (1 - this._aimAlpha)  * (1 - Math.exp(-this.AimAlignmentBlendSpeed * t));
+        // Lazy one-time resolves (need a posed frame — guaranteed, this runs after the mixer).
+        if(!this._baseCaptured){ this.CaptureBase(); }
+        if(!this._barrelResolved){ this.ResolveBarrel(); }
+        if(!this._socketsCaptured){ this.CaptureGripSockets(); }
+        this.model.updateMatrixWorld(true);
+
+        // Keep the gun's own world SCALE (the skeleton is ~0.01-scaled); position+orientation come from the
+        // camera. _dhS holds the scale, reused in every compose below.
+        pivot.matrixWorld.decompose(this._dhP, this._dhQ, this._dhS);
+
+        // Base gun pose: camera-relative position + the camera-relative rest orientation (PlayerBody blends
+        // hip<->ADS). The barrel is then swung onto the exact aim target.
+        this._dhGunRot.copy(baseGunQuat);
+        this._dhGunMat.compose(gunPosWorld, this._dhGunRot, this._dhS);
+
+        // --- Barrel alignment (authoritative). Rotate the gun about its pivot origin so forwardLocal points
+        // at the aim target. The aim socket moves as the gun rotates, so REFINE: realign from the recomputed
+        // socket so the muzzle ray converges exactly on the reticle (mirrors the TPS refine). The direction
+        // is low-passed on the FIRST pass only (a jittery crosshair raycast must not buzz the barrel); the
+        // refine passes use the raw recomputed direction. Falls back to camera-forward for a too-close /
+        // behind-the-muzzle target. ORIENTATION is never otherwise smoothed — the barrel is on target each frame.
+        for(let i = 0; i <= this.refineIterations; i++){
+            this._aimW.copy(this.aimSocketLocal).applyMatrix4(this._dhGunMat);     // aim socket (world)
+            this._rawDesired.copy(aimTarget).sub(this._aimW);
+            const dist = this._rawDesired.length();
+            const behind = cameraForward && this._rawDesired.dot(cameraForward) < 0;
+            if(dist < this.minAimDistance || behind || dist < 1e-4){
+                if(cameraForward){ this._rawDesired.copy(cameraForward); }
+                else { break; }
             }
-            if(this._dhCamRefValid && L.weight > 1e-3){
-                this._dhTargetMat.multiplyMatrices(L.camera.matrixWorld, this._dhCamRefMat);   // calibrated, live camera
-                this._dhGunMat.decompose(this._dhP, this._dhQ, this._dhS);                     // keep the gun's own scale
-                this._dhTargetMat.decompose(this._dhP2, this._dhQ2, this._dhS2);
-                this._dhP.lerp(this._dhP2, L.weight);
-                this._dhQ.slerp(this._dhQ2, L.weight);
-                // FootIK (UpdateFootIK) lowers modelRoot — and so the gun riding it — by _hipDrop AFTER this
-                // IK runs, to plant the feet on terrain. The lock just set the gun to an ABSOLUTE world pose,
-                // so that pending drop would sink it below the crosshair (the lock overrode the arm-based
-                // footLift that normally cancels it). Pre-lift the locked gun by the same _hipDrop so FootIK's
-                // drop lands it back exactly on the calibrated pose — terrain-independent, like the eye comp.
-                if(L.hipDrop > 1e-4){ this._dhP.y += L.hipDrop * L.weight; }
-                this._dhGunMat.compose(this._dhP, this._dhQ, this._dhS);
-                this._dhGunRot.copy(this._dhQ);
+            this._rawDesired.normalize();
+            if(i === 0){
+                if(!this._aimDirSeeded){ this._aimDir.copy(this._rawDesired); this._aimDirSeeded = true; }
+                else { this._aimDir.lerp(this._rawDesired, 1 - Math.exp(-this.AimSmoothingSpeed * t)).normalize(); }
+                this._desired.copy(this._aimDir);
+            }else{
+                this._desired.copy(this._rawDesired);
             }
+            this._fwdW.copy(this.forwardLocal).applyQuaternion(this._dhGunRot).normalize();   // gun forward (world)
+            this._qA.setFromUnitVectors(this._fwdW, this._desired);
+            this._dhGunRot.premultiply(this._qA);
+            this._dhGunMat.compose(gunPosWorld, this._dhGunRot, this._dhS);
         }
 
+        // Recoil: a decaying additive kick applied AFTER alignment, so the muzzle climbs off the reticle on
+        // a shot and returns — organic, on top of an otherwise on-target base (PlayerBody owns the decay).
+        if(recoilQuat){
+            this._dhGunRot.premultiply(recoilQuat);
+            this._dhGunMat.compose(gunPosWorld, this._dhGunRot, this._dhS);
+        }
+
+        // RELAX/RAISE blend: ease the whole gun pose between the RAISED camera-authoritative pose (raiseW=1,
+        // barrel on the reticle) and the RELAXED animated SEAT pose (raiseW=0 — the gun rides the idle clip
+        // at WEAPON_GRIP_FPS: lowered/sideways). _dhP/_dhQ still hold the animated seat pose decomposed at the
+        // top (untouched by the align/recoil above). The dual-hand IK then grips whatever blends out, so at
+        // idle the arms read as the idle animation, and aiming/shooting lifts the gun onto the crosshair.
+        if(raiseW < 0.999){
+            this._tmpV2.copy(gunPosWorld).lerp(this._dhP, 1 - raiseW);
+            this._dhGunRot.slerp(this._dhQ, 1 - raiseW);
+            this._dhGunMat.compose(this._tmpV2, this._dhGunRot, this._dhS);
+        }
+
+        // Hand the debug overlay the aim target/validity/range; _solveDualHandGrip fills the live barrel
+        // geometry + convergence direction off the re-pinned gun.
+        this._debug.aimTarget.copy(aimTarget);
+        this._debug.valid = aimValid;
+        this._debug.distance = this._tmpV.copy(aimTarget).sub(this._aimW).length();
+
+        // Both hands IK onto the placed gun (shared with _updateDualHand).
+        this._solveDualHandGrip();
+    }
+
+    // Plant BOTH hands on the gun whose desired world pose is in _dhGunMat / _dhGunRot: two-bone IK each arm
+    // onto its captured grip socket + wrist-lock, then re-pin the gun local to the IK'd dominant wrist so it
+    // sits EXACTLY at the desired pose while the hands grip it. Shared by _updateDualHand + SolveFpsViewmodel.
+    _solveDualHandGrip(){
+        const pivot = this.weaponPivot;
         const ikW = this._gripAlpha * this.WeaponIKBlendAlpha;
 
         // DOMINANT (right) hand -> the gun's right grip. Two-bone IK reaches the grip; the wrist lock
@@ -678,11 +723,15 @@ export default class WeaponAimIK{
             }
         }
 
-        // Debug snapshot (barrel/grip read off the live, grip-driven gun).
+        // Debug snapshot: barrel/grip read off the live, re-pinned gun. aimTarget/valid/distance are set by
+        // the caller (SolveFpsViewmodel) before this runs; correctedDir = muzzle->target lets the overlay
+        // compare the real barrel direction against the line to the reticle (the convergence readout).
         const d = this._debug;
-        d.active = true; d.alpha = this._aimAlpha; d.gripAlpha = this._gripAlpha; d.valid = true; d.distance = 0;
+        d.active = true; d.alpha = this._aimAlpha; d.gripAlpha = this._gripAlpha;
         d.muzzle.copy(this.muzzleLocal).applyMatrix4(pivot.matrixWorld);
         d.barrelFwd.copy(this.forwardLocal).applyQuaternion(pivot.getWorldQuaternion(this._weaponWQ)).normalize();
+        d.correctedDir.copy(d.aimTarget).sub(d.muzzle);
+        if(d.correctedDir.lengthSq() > 1e-8){ d.correctedDir.normalize(); }
         d.rightGrip.copy(this.rightGripLocal).add(this.RightHandOffset).applyMatrix4(pivot.matrixWorld);
         d.leftGrip.copy(this._leftTarget);
         d.handTarget.copy(this._leftTarget);

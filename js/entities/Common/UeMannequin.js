@@ -66,6 +66,10 @@ const WEAPON_GRIP = {
 // pose as TPS (the camera rides the head bone), this is SEEDED to the TPS grip so the right hand grips
 // the gun identically — re-tune with the panel and paste the FPS snippet here. Hand-local cm / degrees.
 const WEAPON_GRIP_FPS = {
+    // FPS reload / base seat (hand-local). The first-person IDLE/ADS framing is NO LONGER driven by this —
+    // it's the camera-local viewmodel constants in PlayerBody (fpsVmHipPos / fpsVmAdsPos). This seat now only
+    // positions the gun during a reload one-shot (where the camera-authoritative viewmodel steps aside so the
+    // reload-mag clip reads), so it keeps the original reload-tuned value.
     position: new THREE.Vector3(-21.2, -4.4, 0.7),
     rotationEuler: new THREE.Euler(
         THREE.MathUtils.degToRad(0),

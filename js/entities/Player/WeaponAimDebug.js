@@ -132,6 +132,14 @@ export default class WeaponAimDebug extends Component{
             const a = ik ? ik._aimAlpha : 0;
             const g = ik ? ik._gripAlpha : 0;
             const dbg = ik ? ik._debug : null;
+            // Convergence: angle between where the barrel ACTUALLY points (red) and the line to the reticle
+            // (green). This is the acceptance metric for the FPS rework — it must stay ~0° in every state
+            // (idle/walk/strafe/crouch/jump/land/ADS), spiking only briefly on a transition or recoil kick.
+            let conv = '—';
+            if(dbg && dbg.barrelFwd && dbg.correctedDir && dbg.correctedDir.lengthSq() > 1e-8){
+                conv = THREE.MathUtils.radToDeg(
+                    Math.acos(THREE.MathUtils.clamp(dbg.barrelFwd.dot(dbg.correctedDir), -1, 1))).toFixed(2) + '°';
+            }
             this.el.textContent =
 `WEAPON AIM IK  (K to close)
 ──────────────────────────
@@ -140,6 +148,7 @@ active      ${this.body._weaponAimActive ? 'YES' : 'no'}
 blend α     aim ${a.toFixed(3)}  grip ${g.toFixed(3)}
 aim valid   ${pc.aimTargetValid ? 'hit' : 'far'}
 aim dist    ${pc.aimDistance.toFixed(2)} m
+converge    ${conv}   (barrel vs reticle)
 maxAngle    ${THREE.MathUtils.radToDeg(ik ? ik.MaxAimCorrectionAngle : 0).toFixed(0)}°
 two-handed  ${ik && ik.twoHanded ? 'yes' : 'no'}
 ──────────────────────────

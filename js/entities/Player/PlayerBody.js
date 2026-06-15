@@ -222,78 +222,64 @@ export default class PlayerBody extends Component{
         // is unaffected; restored to its rest scale in TPS. Captured in Initialize.
         this._headRestScale = null;
 
-        // --- FPS viewmodel pitch. In first-person the body only tracks the look YAW, so the held gun
-        // stays flat as you look up/down and slides off the screen. Two regimes, blended by the ADS weight
-        // (_fpsAimLockW), both rotating BOTH upper arms (which carry the gun + the support hand) — NOT the
-        // spine — so the head bone (and the FPS eye that rides it) stays put:
-        //   * HIP (not aiming): orbit the arms about the EYE by a FRACTION of the look pitch (same sign +
-        //     same orbit as the lock below, just scaled by fpsLookPitchGain), so the gun + hands FOLLOW the
-        //     look up/down and stay centred on screen. Eased + clamped.
-        //   * AIMING (ADS): rigidly CAMERA-LOCK the whole viewmodel — orbit it about the EYE by the FULL
-        //     look pitch — so it keeps its EXACT straight-ahead pose relative to the camera at every
-        //     altitude. The gun is already aligned under the crosshair at level, so locking it to the
-        //     camera keeps it aligned looking up/down too, with NO camera move (see UpdateFpsViewmodelPitch).
-        this.fpsArmBones = [];                             // [upperarm_r, upperarm_l], filled in Initialize
-        this.fpsLookPitchGain = 0.8;                       // HIP: fraction of the look pitch the gun follows (orbited about the eye)
-        this.fpsLookPitchMax = THREE.MathUtils.degToRad(60); // HIP clamp on the weapon tilt
-        this._fpsPitchValue = 0;                           // eased current HIP arm pitch (rad)
-        this._fpsAimLockW = 0;                             // eased ADS camera-lock weight (0 hip -> 1 aiming)
-        this._fpsArmRestPos = null;                        // captured rest (bind) position of each fpsArmBone — the lift is applied on top
-        // Scratch for the camera-lock orbit (no per-frame allocation).
-        this._fpsLockQ = new THREE.Quaternion();           // R = look-pitch about body-right, scaled by the ADS weight
-        this._fpsCompB = new THREE.Vector3();              // v = shoulderRest - eye (the orbit lever arm)
-        this._fpsCompDelta = new THREE.Vector3();          // world translation that orbits the shoulder about the eye
-        this._fpsCompLocal = new THREE.Vector3();          // that delta in an arm's parent-local space
-        this._fpsCompScale = new THREE.Vector3();          // arm parent world scale (skeleton is 0.01-scaled — see UeMannequin)
+        // --- FPS viewmodel: the old pitch-orbit / camera-lock / stance-lock / recoil-hold machinery (which
+        // edited the arm bones with eased, capture-and-reapply corrections and drifted through transitions)
+        // has been REMOVED. The gun is now the camera-authoritative viewmodel — recomputed analytically from
+        // the camera every frame as the last pose write. See the "FPS CAMERA-AUTHORITATIVE VIEWMODEL" field
+        // block below + UpdateFpsViewmodel + WeaponAimIK.SolveFpsViewmodel.
 
-        // --- FPS ADS stance lock. The pitch-orbit above camera-locks the gun to whatever BASE pose the
-        // current STANCE gives — but a crouch poses the spine low + forward (the crouch-idle clip), so that
-        // base is itself off the crosshair (gun drops + points ~25° low + shifts sideways). The eye must
-        // stay low (you crouch to drop your view), so the spine can't be straightened — instead capture the
-        // gun's camera-relative pose while STANDING (where the seat is tuned to the reticle) and, while
-        // crouched, drive the gun back onto that captured pose with ONE rigid transform on both arms. The
-        // hands ride along (rigid), then the dual-hand IK re-plants them. Standing -> capture == live pose
-        // -> identity; only a crouch (or any spine deviation) moves anything. See UpdateFpsViewmodelPitch.
-        this._fpsAimGunCamPos = new THREE.Vector3();       // captured gun position in CAMERA-local space (standing aim)
-        this._fpsAimGunCamQuat = new THREE.Quaternion();   // ...and its orientation in camera-local space
-        this._fpsAimGunCamValid = false;                   // true once a standing-aim frame has calibrated the reference
-        // Stance-lock CORRECTION weight: the lock only does work when the live pose DEVIATES from the captured
-        // standing reference — i.e. while CROUCHED or MOVING. Standing + stationary it must be a NO-OP (0) so the
-        // ADS raise / look-swing is never pulled toward the reference (that was the ping-pong). It eases up with
-        // the crouch blend (_crouchEased) and with this move weight, so engaging/leaving a jog glides.
-        this._fpsMoveLockW = 0;                            // eased 0..1 "moving" weight for the stance-lock correction
-        this.fpsMoveLockLerp = 9;                          // ease rate (1/s) for the move weight in/out
-        this._fpsCamQInv = new THREE.Quaternion();         // camera world quat inverse (scratch)
-        this._fpsLockCurPos = new THREE.Vector3();         // live hand_r world position (post pitch-orbit)
-        this._fpsLockCurQuat = new THREE.Quaternion();     // ...and orientation
-        this._fpsLockCurQuatInv = new THREE.Quaternion();  // scratch
-        this._fpsLockDesPos = new THREE.Vector3();         // desired (camera-locked) hand_r world position
-        this._fpsLockDesQuat = new THREE.Quaternion();     // ...and orientation
-        this._fpsLockDRot = new THREE.Quaternion();        // rigid delta rotation mapping current -> desired
-        this._fpsLockOldOrigin = new THREE.Vector3();      // an arm's world origin before the stance-lock translate
-        this._fpsLockTmp = new THREE.Vector3();            // scratch
-        this._fpsLockTmp2 = new THREE.Vector3();           // scratch
-
-        // --- FPS ADS horizontal recoil hold. The shoot one-shot's recoil kicks the gun sideways (its
-        // animation has a horizontal component), so while ADS the gun + hands slide LEFT off the crosshair
-        // when firing. The muzzle flash + reticle bloom already read the shot, so hold the gun's CAMERA-X
-        // (horizontal screen position) at its steady, not-firing value while a burst plays — the VERTICAL
-        // recoil is left free, so the gun still kicks up. FPS ADS only; eased in/out so it never pops.
-        this._fpsAimRefX = 0;                              // steady camera-X offset of hand_r (tracked when not firing)
-        this._fpsAimRefXValid = false;
-        this._fpsRecoilHoldX = 0;                          // eased horizontal hold applied to the arms (camera-X metres)
-        this.fpsRecoilRefLerp = 10;                        // how fast the steady-X reference tracks when not firing (1/s)
-        this.fpsRecoilHoldLerp = 22;                       // how fast the hold engages/releases over a burst (1/s)
-        this._fpsRecoilTmp = new THREE.Vector3();          // scratch
-        // Deliberate ADS gun drop: lower the camera-locked gun along CAMERA-down so the crosshair sits JUST
-        // ABOVE the gun + sights (requested framing) rather than on/behind them. fpsAimGunDrop is the base
-        // (both stances). The ADS stance lock already re-centres the crouched gun onto the framing captured
-        // while STANDING, so no EXTRA crouch drop is needed — a positive one double-corrected and sank the
-        // crouch-ADS gun below the standing framing (the reported "crouch-aim gun too low"). With it at 0 the
-        // crouch-ADS gun holds the SAME framing as standing (verified: crouch-vs-stand screen delta ~0.01 NDC,
-        // muzzle right at the crosshair). Tune in metres (camera-down; NEGATIVE lifts the crouch gun higher).
-        this.fpsAimGunDrop = 0.03;
-        this.fpsAimGunDropCrouch = 0.0;                   // crouch ADS: no extra drop — the stance lock owns crouch alignment, so it holds the standing framing (was +0.045 = double-dropped the gun below the crosshair)
+        // === FPS CAMERA-AUTHORITATIVE VIEWMODEL (the crosshair is the SOURCE OF TRUTH) =================
+        // The gun's world pose is recomputed from the FINAL camera every frame as the LAST pose write
+        // (UpdateFpsViewmodel -> WeaponAimIK.SolveFpsViewmodel), so no locomotion/transition can offset it.
+        // The camera-RELATIVE seat is an EXPLICIT, DETERMINISTIC CONSTANT (NOT captured from a live frame —
+        // that baked in the spawn look-pitch + idle-breathing phase, making the gun differ every game and
+        // jump when the placement panel opened/closed). pos = gun-pivot offset in CAMERA space (x right,
+        // y up, z back/forward-negative); rot = the gun's rest orientation in camera space (the barrel is
+        // then swung onto the EXACT crosshair on top of this each frame). Edited live by the placement tool
+        // (backquote in FPS: not-aiming = hip, hold-right-click = ADS) which writes these via
+        // SetFpsViewmodelLive and prints a paste-ready snippet. Seeded from tools/diag_fpsseat.mjs.
+        this._fpsAdsW = 0;                                 // eased ADS weight (0 hip -> 1 aiming); uses aimPitchLerp
+        // RAISE weight: 0 = relaxed idle (gun follows the idle animation — lowered/sideways), 1 = raised &
+        // crosshair-aligned (aiming OR shooting). Eased so the gun lifts/lowers smoothly. When 0 the
+        // camera-authoritative pose is blended out entirely in favour of the animated seat (see
+        // SolveFpsViewmodel), so an idle player carries the weapon at a natural low-ready instead of
+        // force-pointing it at the reticle.
+        this._fpsRaiseW = 0;
+        this.fpsRaiseLerp = 13;                            // ease rate (1/s) for raising/lowering the gun
+        this.fpsVmHipPos = new THREE.Vector3(0.112, -0.243, -0.440);   // hip seat (camera-local)
+        this.fpsVmHipRot = new THREE.Euler(THREE.MathUtils.degToRad(-89.49), THREE.MathUtils.degToRad(1.64), THREE.MathUtils.degToRad(-179.76));
+        this.fpsVmAdsPos = new THREE.Vector3(0, -0.108, -0.448);       // ADS seat (camera-local, centred down the sights) — tuned via placement tool
+        this.fpsVmAdsRot = new THREE.Euler(THREE.MathUtils.degToRad(-89.66), THREE.MathUtils.degToRad(0.35), THREE.MathUtils.degToRad(-179.94));
+        // Subtle procedural layer (camera-space, added to the offset; never affects the barrel alignment).
+        this.fpsVmBobAmpX = 0.007;                         // lateral walk/run bob amplitude (m) at run speed
+        this.fpsVmBobAmpY = 0.005;                         // vertical bob amplitude (m) at run speed
+        this.fpsVmBobSpeed = 9.0;                          // bob phase rate (rad/s) at run speed
+        this._fpsVmBobPhase = 0;
+        this.fpsVmSwayGain = 0.010;                        // look-sway: gun lags look (m per rad/s of look velocity)
+        this.fpsVmSwayMax = 0.028;                         // sway clamp (m)
+        this._fpsVmSway = new THREE.Vector3();
+        this._fpsPrevYaw = 0; this._fpsPrevPitch = 0; this._fpsLookSeeded = false;
+        this.fpsVmLandDipMax = 0.045;                      // landing dip depth (m, camera-down)
+        this.fpsVmLandDipDecay = 7.0;                      // dip recovery rate (1/s)
+        this._fpsVmLandDip = 0;
+        this._fpsWasGrounded = true;
+        // Recoil: a decaying additive muzzle kick (pitch up), applied AFTER the barrel alignment so the
+        // muzzle climbs off the reticle on a shot and returns. The shoot clip no longer reaches the gun
+        // (it is camera-computed), so this is the sole recoil source.
+        this.fpsVmRecoilKick = THREE.MathUtils.degToRad(0.9);  // per-shot pitch-up impulse (rad)
+        this.fpsVmRecoilMax  = THREE.MathUtils.degToRad(3.2);  // cap so full-auto doesn't stack to the moon
+        this.fpsVmRecoilDecay = 9.0;                       // recoil return rate (1/s)
+        this._fpsVmRecoilPitch = 0;
+        // Scratch (no per-frame allocation).
+        this._fpsEye = new THREE.Vector3();
+        this._fpsCamQ = new THREE.Quaternion();
+        this._fpsVmPos = new THREE.Vector3();
+        this._fpsVmOffset = new THREE.Vector3();
+        this._fpsVmQuat = new THREE.Quaternion();
+        this._fpsVmQHip = new THREE.Quaternion();
+        this._fpsVmQAds = new THREE.Quaternion();
+        this._fpsVmRecoilQuat = new THREE.Quaternion();
+        this._fpsVmRight = new THREE.Vector3();
 
         // --- FPS aim arm pose (authored). Procedurally posing the FPS support elbow with an IK pole
         // never read right, so instead we drive the ARMS from the real A_Rifle_Aim animation while ADS
@@ -305,12 +291,10 @@ export default class PlayerBody extends Component{
         // while aiming so it doesn't override the authored bend; hip-fire keeps the firmer down-pole.
         this._fpsAimArmPose = [];                          // [{bone, quat}] captured authored aim arm pose
         this._fpsAimPoseW = 0;                             // eased 0..1 aim-pose blend weight
-        // Rate-matched to the ADS lock weight (aimPitchLerp=12) so the authored arm pose REACHES the aim pose
-        // at the same time the camera-lock engages. At the old slow rate (5) the arms were still mid-blend
-        // when the stance lock captured + pinned hand_r, so the gun snapped to a half-raised pose and then
-        // crept on — the reported idle->aim "ping-pong". With the rates matched (and the capture gated on a
-        // settled pose, see UpdateFpsViewmodelPitch) the raise is one continuous, monotonic move.
-        this.fpsAimPoseLerp = 12;                         // ease rate (1/s) for the aim pose in/out (was 5 — caused the ADS ping-pong)
+        // Rate-matched to the ADS weight ease (aimPitchLerp=12). This poses the cosmetic ADS elbow/shoulder;
+        // the gun itself is camera-authoritative (UpdateFpsViewmodel) so the arm-pose blend rate no longer
+        // affects gun framing — it just controls how fast the elbow tucks in/out of ADS.
+        this.fpsAimPoseLerp = 12;                         // ease rate (1/s) for the aim pose in/out
         this.fpsSupportElbowStabilize = 0.92;              // FPS HIP support elbow: firm down-pole (not aiming)
         this.fpsAimSupportStabilize = 0.15;                // FPS AIM: gentle, so the authored elbow is preserved
         // The support-elbow stabilize used to HARD-FLIP between the two values above on the raw aiming flag,
@@ -745,15 +729,6 @@ export default class PlayerBody extends Component{
             if(spineBones[n]){ this.aimBones.push({ bone: spineBones[n], weight: spineWeights[n] }); }
         });
 
-        // Upper-arm bones for the FPS weapon look-pitch (carry the gun + support hand without moving
-        // the head/eye). Each pitches by the FULL look angle so the gun's orientation tracks the look.
-        const armBones = { upperarm_r: null, upperarm_l: null };
-        this.model.traverse(o => { if(o.isBone && (o.name in armBones) && !armBones[o.name]){ armBones[o.name] = o; } });
-        ['upperarm_r', 'upperarm_l'].forEach(n => { if(armBones[n]){ this.fpsArmBones.push(armBones[n]); } });
-        // Snapshot the arm roots' rest (bind) translation; the FPS gun-position screen-lock re-applies its
-        // slide on top of this each frame so it never accumulates (arm bones don't translate in the clips).
-        this._fpsArmRestPos = this.fpsArmBones.map(b => b.position.clone());
-
         // Pre-seed the head-aim gaze axis from the rig's REST pose (the bones are still at bind here —
         // no mixer update has run). _headFwdLocal is the head-bone-LOCAL axis that points along the
         // character's forward (modelRoot-local +Z) at rest; carrying it by the head's live world quat
@@ -882,9 +857,9 @@ export default class PlayerBody extends Component{
     OnReload = () => {
         // Play the full body reload one-shot (arms work the mag) PLUS the in-hand magazine drop/reseat, in
         // BOTH camera modes. The reload reads on the body + gun: over the shoulder in TPS, and down the
-        // view in FPS (the eye stays put — no pullback — and UpdateFpsViewmodelPitch / the dual-hand grip
-        // step aside for the reload so the raw clip plays in frame; see UpdateFpsViewmodelPitch + the
-        // reload gates in UpdateWeaponAim). The one-shot's finish broadcasts 'reload.done' (the ammo refill).
+        // view in FPS — the camera-authoritative viewmodel (UpdateFpsViewmodel) early-outs on oneShot==='reload'
+        // so the gun follows the raw reload clip in frame instead of being pinned to the crosshair.
+        // The one-shot's finish broadcasts 'reload.done' (the ammo refill).
         this.PlayOneShot('reload');
         this.PlayGunReload();
     }
@@ -892,7 +867,18 @@ export default class PlayerBody extends Component{
     // no-ops while rolling), and a held trigger firing through the roll would otherwise keep _shootHold
     // alive so the aim-IK/aim-pose snap on at recovery instead of easing in. ResetAimPoseAccumulators
     // clears it on roll exit too.
-    OnShoot = () => { this.PlayOneShot('shoot'); if(!this.rolling){ this._shootHold = this.shootHoldTime; } }
+    OnShoot = () => {
+        this.PlayOneShot('shoot');
+        if(!this.rolling){
+            this._shootHold = this.shootHoldTime;
+            // FPS camera-authoritative viewmodel recoil: a per-shot muzzle-up impulse (capped for full-auto)
+            // that decays back to the crosshair. The shoot clip no longer reaches the gun, so this is the
+            // sole recoil source (see UpdateFpsViewmodel / WeaponAimIK.SolveFpsViewmodel).
+            if(this.cameraMode === 'FPS'){
+                this._fpsVmRecoilPitch = Math.min(this.fpsVmRecoilMax, this._fpsVmRecoilPitch + this.fpsVmRecoilKick);
+            }
+        }
+    }
     // Take-off. Re-arm the jump sub-graph and reset the foot IK (so the crouch knee-bend/plant doesn't
     // bleed into the first airborne frame — mirrors the roll's ResetAimPoseAccumulators idiom).
     // NOTE: we deliberately do NOT snap _crouchEased to 0 here. Snapping teleported the body UP by the full
@@ -996,7 +982,6 @@ export default class PlayerBody extends Component{
     ResetAimPoseAccumulators(){
         this._aimPitchWeight = 0;
         this._aimPitchValue = 0;
-        this._fpsPitchValue = 0;        // FPS weapon look-pitch — ease back in cleanly after a roll
         this._aimYawValue = 0;
         this._runAimYawValue = 0;
         this._hipAimYawValue = 0;
@@ -1010,6 +995,14 @@ export default class PlayerBody extends Component{
         // the roll (Update skipped), snapping the gun/support-hand on in one frame at recovery. Zeroing
         // both makes the IK ease back in from nothing if you're still firing out of the roll.
         this._shootHold = 0;
+        // FPS camera-authoritative viewmodel: ease the ADS weight + procedural/recoil back from 0 on roll
+        // exit (the roll skipped UpdateFpsViewmodel) so they don't thaw at a frozen value and pop. The
+        // captured seat is a constant — left intact. Reseed the look-sway so it doesn't spike on recovery.
+        this._fpsAdsW = 0;
+        this._fpsRaiseW = 0;
+        this._fpsVmRecoilPitch = 0;
+        this._fpsVmLandDip = 0;
+        this._fpsLookSeeded = false;
         if(this.weaponAimIK){ this.weaponAimIK.Reset(); }
         // Crouch + foot IK ease back in from zero after a roll (the roll owns the whole body and skips
         // them, so without this they'd thaw at their frozen pre-roll values and pop the pelvis/legs).
@@ -1746,6 +1739,10 @@ export default class PlayerBody extends Component{
             // smooth=true + the frame dt: this authoritative re-call advances the eye-height low-pass
             // (the Controls start-of-frame call places raw and is overwritten here this same frame).
             this.playerControls.PlaceFpsEyePosition(this.parent.Position, t, true);
+            // The gun is the VERY LAST pose write: recompute it from the FINAL camera (just placed) so it
+            // stays locked to the crosshair while the body moves underneath it. Skipped during a roll (the
+            // roll owns the whole body and the non-roll branch — incl. FootIK — didn't run this frame).
+            if(!this.rolling){ this.UpdateFpsViewmodel(t); }
         }
     }
 
@@ -1894,7 +1891,9 @@ export default class PlayerBody extends Component{
         // FPS: tilt the held weapon up/down with the look pitch so it stays on screen — even when NOT
         // aiming. Handled separately because it rotates the ARMS (not the spine), so the head bone and
         // the FPS eye that rides it don't move. None of the TPS spine yaw twists below apply in FPS.
-        if(this.cameraMode === 'FPS'){ this.ApplyFpsAimArmPose(t); this.UpdateFpsViewmodelPitch(t); return; }
+        // FPS: pose the arms toward the authored aim elbow (cosmetic); the gun itself is the camera-
+        // authoritative viewmodel, driven as the LAST pose write (UpdateFpsViewmodel) — not here.
+        if(this.cameraMode === 'FPS'){ this.ApplyFpsAimArmPose(t); return; }
         if(!this.aimBones.length){ return; }
         // Apply the additive gun lean when AIMING, or — the close-camera HIP-FIRE case — when the
         // camera is close (proximity) AND you're shooting: the collapsed close framing leaves the
@@ -2016,10 +2015,10 @@ export default class PlayerBody extends Component{
     }
 
     // FPS ADS: blend the arms from their current (locomotion) pose toward the captured authored aim pose
-    // by an eased aim weight, so first-person aiming holds the real A_Rifle_Aim arm/elbow pose. Arm bones
-    // only (the FPS eye, riding the head bone, is untouched). The camera-lock pitch (UpdateFpsViewmodelPitch)
-    // and the dual-hand IK then compose on top — the IK runs gently while aiming (fpsAimSupportStabilize)
-    // so it just plants the hands on the current gun seat without undoing this elbow.
+    // by an eased aim weight, so first-person aiming holds the real A_Rifle_Aim arm/elbow pose (cosmetic).
+    // Arm bones only (the FPS eye, riding the head bone, is untouched). The camera-authoritative viewmodel
+    // (UpdateFpsViewmodel) then computes the gun from the camera and the dual-hand IK re-plants both hands
+    // gently (fpsAimSupportStabilize) so it preserves this elbow while gripping the placed gun.
     ApplyFpsAimArmPose(t){
         // Suspended during a reload so the authored aim pose doesn't fight the reload clip — the arms
         // (and the gun riding them) play the real reload motion in view instead.
@@ -2032,217 +2031,134 @@ export default class PlayerBody extends Component{
         }
     }
 
-    // FPS viewmodel pitch — keep the held gun framed (hip) and crosshair-aligned (ADS) as you look up/
-    // down, WITHOUT moving the camera. The FPS body only tracks the look YAW, so the gun rides a yaw-only
-    // frame while the camera pitches about the eye — looking up/down slides the gun off the crosshair.
-    // Two regimes, blended by the eased ADS weight (_fpsAimLockW); both rotate BOTH upper arms (which
-    // carry the gun + the support hand), NOT the spine, so the FPS eye on the head bone never moves:
-    //   * HIP (w→0): cosmetic tilt about the body-right axis by a fraction of the look pitch, rotating
-    //     the gun about the SHOULDER. Just enough to keep the hip gun in frame.
-    //   * ADS (w→1): rigidly CAMERA-LOCK the viewmodel — ORBIT it about the EYE by the FULL look pitch —
-    //     so it holds its EXACT straight-ahead pose relative to the camera at every altitude. The gun is
-    //     already aligned under the crosshair at level, so a camera-lock keeps it aligned looking up/down
-    //     too. The orbit = rotate the arm orientation about body-right (so the barrel tilts with the look)
-    //     PLUS translate the shoulder to its eye-orbited spot ((R−I)·(shoulder−eye)); together those are a
-    //     rigid orbit of the whole arm+gun about the eye. The dual-hand IK runs AFTER and re-plants both
-    //     hands on the rigidly-moved gun, so nothing detaches.
-    // A final ADS STANCE LOCK (below) then corrects the CROUCH base: the crouch-idle clip poses the spine
-    // low + forward, so the camera-locked gun sits off the crosshair until it's driven back onto the
-    // captured STANDING camera-relative pose. Suspended during a reload / placement so the raw reload clip
-    // (and the edited seat) read untouched.
-    UpdateFpsViewmodelPitch(t){
+    // FPS CAMERA-AUTHORITATIVE VIEWMODEL. The crosshair/camera is the source of truth: the gun's world pose
+    // is recomputed from the FINAL camera every frame, as the LAST pose write (called after FootIK + the
+    // final eye placement). The gun pivot is placed at a camera-relative seat (blended hip<->ADS + subtle
+    // procedural bob/sway/land), the barrel is swung onto the EXACT crosshair, a decaying recoil kick is
+    // added, then both hands IK onto it (WeaponAimIK.SolveFpsViewmodel). Nothing about the animation STATE
+    // feeds the result, so it is correct on frame 1 of any state (run/jump/crouch/strafe/land/enter-exit-aim)
+    // — the body moves underneath while the gun stays on the reticle. FPS dual-hand only; TPS is untouched.
+    UpdateFpsViewmodel(t){
         const pc = this.playerControls;
-        if(!pc || !this.fpsArmBones.length || !this._fpsArmRestPos){ return; }
+        if(!pc || !this.weaponAimIK || !this.weaponPivot) return;
+        if(this.cameraMode !== 'FPS' || this.fpsUseTpsGrip) return;
+        const cam = this.camera;
+        if(!cam) return;
+        // Dev free-cam / reload: let the free-fly view / the reload-mag clip own the gun. NOTE: the placement
+        // panel does NOT step aside — the viewmodel keeps running with the live camera-local seat the tool
+        // edits, so the gun shows exactly its gameplay pose while you nudge it (no jump on open/close).
+        if(pc.cameraOverride || this.oneShot === 'reload') return;
 
-        // Placement WHILE AIMING keeps the camera-lock running so the gun holds its EXACT ADS pose as you
-        // nudge the seat (opening the panel used to drop the lock and snap the gun to the raw seat — the
-        // reported "reset to a random position"). HIP placement (and the TPS free-fly cam) still drop the
-        // lock and show the raw seat at rest. _placementAim is the aim state latched when the panel opened.
-        const aimPlacement = pc.placementHold && pc._placementAim;
+        // Ease the ADS weight (0 hip -> 1 aiming) — only blends the camera-relative seat, never the barrel.
+        const aiming = !!pc.aiming;
+        this._fpsAdsW += ((aiming ? 1 : 0) - this._fpsAdsW) * (1 - Math.exp(-this.aimPitchLerp * t));
+        const adsW = this._fpsAdsW;
+        // Ease the RAISE weight: 1 while aiming OR shooting (gun up + crosshair-aligned), 0 at idle (relaxed,
+        // gun follows the idle animation). Held up briefly after a shot via _shootHold so a burst doesn't bob.
+        const raised = aiming || this._shootHold > 0;
+        this._fpsRaiseW += ((raised ? 1 : 0) - this._fpsRaiseW) * (1 - Math.exp(-this.fpsRaiseLerp * t));
+        const raiseW = this._fpsRaiseW;
 
-        // ADS camera-lock weight: eases 0 (hip) -> 1 (aiming) so ADS in/out glides between the regimes.
-        const locking = !!pc.aiming && this.oneShot !== 'reload' && !pc.cameraOverride && (!pc.placementHold || aimPlacement);
-        this._fpsAimLockW += ((locking ? 1 : 0) - this._fpsAimLockW) * (1 - Math.exp(-this.aimPitchLerp * t));
-        const w = this._fpsAimLockW;
+        cam.updateMatrixWorld();
+        this._fpsEye.copy(cam.position);
+        this._fpsCamQ.copy(cam.quaternion);
+        this.model.updateMatrixWorld(true);
 
-        // Reload / hip-placement / free-fly: leave the arms at rest translation; the mixer rewrites their
-        // rotation each frame, so the reload clip (or the raw placement seat) shows through with no lock.
-        // Aiming-placement is excluded so its camera-lock (above) keeps the ADS framing while you nudge.
-        if(this.oneShot === 'reload' || pc.cameraOverride || (pc.placementHold && !aimPlacement)){
-            for(let i = 0; i < this.fpsArmBones.length; i++){ this.fpsArmBones[i].position.copy(this._fpsArmRestPos[i]); }
-            return;
-        }
+        // Camera-local seat (DETERMINISTIC constants), blended hip<->ADS. pos lerp, rest-orientation slerp.
+        this._fpsVmOffset.copy(this.fpsVmHipPos).lerp(this.fpsVmAdsPos, adsW);
+        this._fpsVmQHip.setFromEuler(this.fpsVmHipRot);
+        this._fpsVmQAds.setFromEuler(this.fpsVmAdsRot);
+        this._fpsVmQuat.copy(this._fpsVmQHip).slerp(this._fpsVmQAds, adsW);
 
-        // HIP follow (eased), faded OUT as the camera-lock fades in (so the two don't double up). Uses the
-        // SAME sign AND the SAME orbit-about-the-eye as the ADS lock below — just a FRACTION of the look
-        // pitch (fpsLookPitchGain) — so when NOT aiming the gun + hands FOLLOW the look up/down and stay
-        // centred on screen. (Previously this tilted the arms about the SHOULDER by the NEGATED pitch with
-        // NO eye-orbit, which both inverted the motion AND swung the whole viewmodel off screen — the
-        // reported bug. The aiming path already worked because it orbits the eye with the +pitch sign.)
-        const hipTarget = THREE.MathUtils.clamp(pc.angles.x * this.fpsLookPitchGain, -this.fpsLookPitchMax, this.fpsLookPitchMax);
-        this._fpsPitchValue += (hipTarget - this._fpsPitchValue) * (1 - Math.exp(-this.aimPitchLerp * t));
-        const hipAngle = this._fpsPitchValue * (1 - w);
-        // CAMERA-LOCK pitch = the camera's OWN pitch (angles.x about body-right), faded IN by the ADS weight.
-        const lockAngle = pc.angles.x * w;
-        // Total arm pitch: hip-follow (not aiming) + ADS lock (aiming) are both about body-right with the
-        // same sign, so they sum, and the whole arm+gun rigidly orbits the eye by it. When aiming (w→1)
-        // hipAngle→0 so this equals the old lockAngle — the working aim behaviour is unchanged.
-        const pitchAngle = hipAngle + lockAngle;
+        // Subtle procedural layer (camera-space, position only) — skipped while the placement panel holds, so
+        // the gun is dead steady to position. The barrel re-aligns to the crosshair after this regardless.
+        const placing = pc.placementHold;
+        if(!placing){ this.AddFpsViewmodelProcedural(t, adsW, this._fpsVmOffset); }
 
-        // Camera-right axis under the look YAW — the axis the camera pitches about; the eye = the live camera.
-        this._aimRight.set(Math.cos(pc.angles.y), 0, -Math.sin(pc.angles.y));
-        const eye = this.camera ? this.camera.position : null;
-        this._fpsLockQ.setFromAxisAngle(this._aimRight, pitchAngle);
+        // World gun-pivot pose: position = eye + camQ * offset ; baseGunQuat = camQ * camLocalRest (the
+        // barrel swing in SolveFpsViewmodel then points it at the exact crosshair).
+        this._fpsVmPos.copy(this._fpsVmOffset).applyQuaternion(this._fpsCamQ).add(this._fpsEye);
+        this._fpsVmQuat.premultiply(this._fpsCamQ);
 
-        for(let i = 0; i < this.fpsArmBones.length; i++){
-            const bone = this.fpsArmBones[i];
-            bone.parent.getWorldQuaternion(this._aimPW);   // also refreshes bone.parent.matrixWorld (used below)
-            this._aimPWInv.copy(this._aimPW).invert();
-
-            // Orientation: one rotation about body-right by the total pitch, applied in world about the
-            // bone (newLocal = parentW^-1 * R * parentW * oldLocal).
-            this._aimR.setFromAxisAngle(this._aimRight, pitchAngle);
-            this._aimDelta.copy(this._aimPWInv).multiply(this._aimR).multiply(this._aimPW);
-            bone.quaternion.premultiply(this._aimDelta);
-
-            // Position: orbit the shoulder about the EYE by the same total pitch (hip + lock alike), so the
-            // gun stays centred under the crosshair as it pitches — rotating the arm about the shoulder
-            // alone would swing the gun off screen. worldΔ = (R − I)·(shoulderRest − eye), re-expressed in
-            // the arm's parent-local space (strip the parent world rotation, then its 0.01 world scale).
-            bone.position.copy(this._fpsArmRestPos[i]);
-            if(eye && Math.abs(pitchAngle) > 1e-5){
-                this._fpsCompB.copy(this._fpsArmRestPos[i]).applyMatrix4(bone.parent.matrixWorld).sub(eye); // v = shoulder - eye
-                this._fpsCompDelta.copy(this._fpsCompB).applyQuaternion(this._fpsLockQ).sub(this._fpsCompB); // (R-I)v
-                bone.parent.getWorldScale(this._fpsCompScale);
-                this._fpsCompLocal.copy(this._fpsCompDelta).applyQuaternion(this._aimPWInv).divide(this._fpsCompScale);
-                bone.position.add(this._fpsCompLocal);
+        // Recoil: decay the per-shot kick; build the additive muzzle-up rotation about camera-right (off while placing).
+        let recoilQuat = null;
+        if(!placing){
+            this._fpsVmRecoilPitch *= Math.exp(-this.fpsVmRecoilDecay * t);
+            if(this._fpsVmRecoilPitch > 1e-4){
+                this._fpsVmRight.set(1, 0, 0).applyQuaternion(this._fpsCamQ);
+                this._fpsVmRecoilQuat.setFromAxisAngle(this._fpsVmRight, this._fpsVmRecoilPitch);
+                recoilQuat = this._fpsVmRecoilQuat;
             }
         }
 
-        // --- ADS STANCE LOCK (crouch alignment). The orbit above camera-locked the gun to the current
-        // STANCE's base pose, but a crouch's spine pose puts that base off the crosshair. Carry hand_r (the
-        // bone the gun rides) as the viewmodel proxy: capture its camera-relative pose while STANDING, then
-        // drive it back onto that captured pose with one rigid delta on both arms. Standing -> identity;
-        // crouched -> the correction that re-centres the gun on the (lowered) crosshair. FPS dual-hand only.
-        const handR = this.weaponPivot ? this.weaponPivot.parent : null;   // gun is parented to hand_r
-        if(w > 1e-3 && eye && handR && !this.fpsUseTpsGrip){
-            handR.updateWorldMatrix(true, false);                          // hand_r world AFTER the pitch-orbit
-            handR.matrixWorld.decompose(this._fpsLockCurPos, this._fpsLockCurQuat, this._fpsCompScale);
-            // COMMIT the reference only from a SETTLED, STANDING, STATIONARY, aiming pose, and re-commit every
-            // such frame so it tracks the current standing look-pitch. The settle gate (w/poseW > 0.9) is what
-            // keeps a half-raised pose from ever being stored: pressing crouch DURING the ADS raise no longer
-            // freezes a partial reference (it keeps the last fully-settled standing one). pc.aiming (not w)
-            // gates it so the ref is never taken from the ADS release tail; !crouching/!jog freeze it the
-            // instant the stance changes so the stored framing is pure standing.
-            // _fpsMoveLockW < 0.1 (genuinely settled, ~0.3 s stopped) is CRITICAL: strafing back and forth
-            // crosses speed 0 on every reversal, dropping lowerState to 'idle' for a few frames — !IsJogState
-            // alone then RE-COMMITTED the reference from that mid-reversal transient pose (gun swung), so the
-            // gun locked to a corrupt framing and stuck ~0.15 NDC + 15° off the crosshair, drifting worse each
-            // reversal (diag_bones.mjs trace). Requiring the eased move weight to have fully decayed first means
-            // a brief reversal blip can't re-commit — the clean last-standing reference is preserved throughout.
-            if(pc.aiming && !pc.crouching && this._crouchEased < 0.08 && !this.IsJogState(this.lowerState)
-                && this._fpsMoveLockW < 0.1 && w > 0.9 && this._fpsAimPoseW > 0.9){
-                this._fpsCamQInv.copy(this.camera.quaternion).invert();
-                this._fpsAimGunCamPos.copy(this._fpsLockCurPos).sub(eye).applyQuaternion(this._fpsCamQInv);
-                this._fpsAimGunCamQuat.copy(this._fpsCamQInv).multiply(this._fpsLockCurQuat);
-                this._fpsAimGunCamValid = true;
-            }
-            // CORRECTION weight: only correct toward the reference when the live pose DEVIATES from it —
-            // crouched (_crouchEased) or moving (_fpsMoveLockW, eased so a jog start/stop glides). Standing +
-            // stationary this is 0, so the desired below resolves to == current (identity) and the ADS raise /
-            // look-swing is left entirely to the orbit + arm pose — NO ping-pong and NO stale-reference jump,
-            // regardless of what the stored reference is. The reference only "bites" once you crouch or move,
-            // which is exactly when the gun must be re-centred on the standing framing.
-            const moveTarget = this.IsJogState(this.lowerState) ? 1 : 0;
-            this._fpsMoveLockW += (moveTarget - this._fpsMoveLockW) * (1 - Math.exp(-this.fpsMoveLockLerp * t));
-            const corrW = Math.min(1, Math.max(this._crouchEased, this._fpsMoveLockW));
-            if(this._fpsAimGunCamValid && corrW > 1e-3){
-                // Desired hand_r world = the captured camera-local pose carried by the live camera, eased to the
-                // current pose by (1 - w·corrW): corrW scales the whole correction by the deviation weight, and
-                // the (1-w) factor still releases it smoothly as you leave ADS.
-                this._fpsLockDesPos.copy(this._fpsAimGunCamPos).applyQuaternion(this.camera.quaternion).add(eye);
-                this._fpsLockDesQuat.copy(this.camera.quaternion).multiply(this._fpsAimGunCamQuat);
-                this._fpsLockDesPos.lerp(this._fpsLockCurPos, 1 - w * corrW);
-                this._fpsLockDesQuat.slerp(this._fpsLockCurQuat, 1 - w * corrW);
-                // Rigid delta mapping current hand_r -> desired: Drot = des * cur⁻¹; every arm point p maps
-                // p -> Drot·p + (desPos − Drot·curPos). Applied to both upper arms, it rigidly carries the
-                // whole arm + gun (+ hands) onto the desired pose; the dual-hand IK re-plants the hands after.
-                this._fpsLockCurQuatInv.copy(this._fpsLockCurQuat).invert();
-                this._fpsLockDRot.copy(this._fpsLockDesQuat).multiply(this._fpsLockCurQuatInv);
-                for(let i = 0; i < this.fpsArmBones.length; i++){
-                    const bone = this.fpsArmBones[i];
-                    bone.getWorldPosition(this._fpsLockOldOrigin);                 // arm world origin (pre stance-lock)
-                    bone.parent.getWorldQuaternion(this._aimPW);
-                    this._aimPWInv.copy(this._aimPW).invert();
-                    // Orientation: premultiply the world delta rotation about the bone.
-                    this._aimDelta.copy(this._aimPWInv).multiply(this._fpsLockDRot).multiply(this._aimPW);
-                    bone.quaternion.premultiply(this._aimDelta);
-                    // Position: newOrigin = Drot·oldOrigin + (desPos − Drot·curPos); write the world delta in local.
-                    this._fpsLockTmp.copy(this._fpsLockOldOrigin).applyQuaternion(this._fpsLockDRot);
-                    this._fpsLockTmp2.copy(this._fpsLockCurPos).applyQuaternion(this._fpsLockDRot);
-                    this._fpsLockTmp.sub(this._fpsLockTmp2).add(this._fpsLockDesPos).sub(this._fpsLockOldOrigin); // world Δ
-                    bone.parent.getWorldScale(this._fpsCompScale);
-                    this._fpsLockTmp.applyQuaternion(this._aimPWInv).divide(this._fpsCompScale);
-                    bone.position.add(this._fpsLockTmp);
-                }
-            }
-        }
+        // Support-elbow stabilize: gentle while ADS (so the authored elbow reads), firmer at hip. Eased so it
+        // glides between the two on aim press/release.
+        const stabTarget = aiming ? this.fpsAimSupportStabilize : this.fpsSupportElbowStabilize;
+        this._fpsSupportStabEased += (stabTarget - this._fpsSupportStabEased)
+            * (1 - Math.exp(-this.fpsSupportStabLerp * t));
+        this.weaponAimIK.supportElbowStabilizeDual = this._fpsSupportStabEased;
+        this._weaponAimActive = true;
 
-        // Vertical ADS arm offsets, applied as one world delta to both upper arms:
-        //  (1) FootIK terrain/crouch compensation (world UP). FootIK lowers modelRoot (arms + gun ride it)
-        //      AFTER the viewmodel is posed, to plant the feet; the eye the gun is camera-locked to already
-        //      carries that drop from the PRIOR frame, so the fresh per-frame drop would sink the gun below
-        //      the crosshair (worst in a deep crouch). Pre-lift by the pending hip-drop so FootIK's drop
-        //      lands the gun back on the lock. _hipDrop is eased, so last frame's value is effectively current.
-        //  (2) Deliberate gun drop (CAMERA down) so the crosshair sits just above the gun/sights.
-        // Both scale with the ADS weight (w); the hip gun rides the body normally.
-        if(w > 1e-3){
-            const footLift = (this.footIK && this.footIK._hipDrop > 1e-4) ? this.footIK._hipDrop : 0;
-            this._fpsCompB.set(0, footLift * w, 0);                                        // (1) world up
-            const gunDrop = this.fpsAimGunDrop + this.fpsAimGunDropCrouch * this._crouchEased;
-            if(gunDrop > 1e-4 && this.camera){
-                this._fpsCompDelta.set(0, -1, 0).applyQuaternion(this.camera.quaternion);  // camera-down (world)
-                this._fpsCompB.addScaledVector(this._fpsCompDelta, gunDrop * w);           // (2) screen down
-            }
-            if(this._fpsCompB.lengthSq() > 1e-10){
-                for(let i = 0; i < this.fpsArmBones.length; i++){
-                    const bone = this.fpsArmBones[i];
-                    bone.parent.getWorldQuaternion(this._aimPW);
-                    this._aimPWInv.copy(this._aimPW).invert();
-                    bone.parent.getWorldScale(this._fpsCompScale);
-                    this._fpsCompLocal.copy(this._fpsCompB).applyQuaternion(this._aimPWInv).divide(this._fpsCompScale);
-                    bone.position.add(this._fpsCompLocal);
-                }
-            }
-        }
+        this.weaponAimIK.SolveFpsViewmodel(t, {
+            gunPosWorld: this._fpsVmPos,
+            baseGunQuat: this._fpsVmQuat,
+            aimTarget: pc.aimTarget,
+            aimValid: pc.aimTargetValid,
+            cameraForward: pc.aimDir,
+            recoilQuat,
+            raiseW,
+        });
+    }
 
-        // ADS horizontal recoil hold (see field comments). _aimRight is the camera-RIGHT axis under the
-        // look yaw (set above). Track the gun's steady horizontal screen position when NOT firing, then
-        // hold it there through a burst — cancelling the shoot clip's sideways kick while leaving the
-        // vertical recoil free. Only meaningful while down the sights (w high); fades with the ADS weight.
-        if(w > 0.5 && eye && handR){
-            handR.updateWorldMatrix(true, false);
-            handR.getWorldPosition(this._fpsRecoilTmp);
-            const curX = this._fpsRecoilTmp.sub(eye).dot(this._aimRight);   // gun horizontal offset from the eye
-            const firing = this._shootHold > 0;
-            if(!firing){
-                // Not firing: let the reference follow the live steady position so it's current when a burst starts.
-                if(!this._fpsAimRefXValid){ this._fpsAimRefX = curX; this._fpsAimRefXValid = true; }
-                else { this._fpsAimRefX += (curX - this._fpsAimRefX) * (1 - Math.exp(-this.fpsRecoilRefLerp * t)); }
-            }
-            const target = firing ? (this._fpsAimRefX - curX) * w : 0;   // push back to the steady X while firing
-            this._fpsRecoilHoldX += (target - this._fpsRecoilHoldX) * (1 - Math.exp(-this.fpsRecoilHoldLerp * t));
-            if(Math.abs(this._fpsRecoilHoldX) > 1e-5){
-                for(let i = 0; i < this.fpsArmBones.length; i++){
-                    const bone = this.fpsArmBones[i];
-                    bone.parent.getWorldQuaternion(this._aimPW);
-                    this._aimPWInv.copy(this._aimPW).invert();
-                    bone.parent.getWorldScale(this._fpsCompScale);
-                    this._fpsCompLocal.copy(this._aimRight).multiplyScalar(this._fpsRecoilHoldX)
-                        .applyQuaternion(this._aimPWInv).divide(this._fpsCompScale);
-                    bone.position.add(this._fpsCompLocal);
-                }
-            }
+    // The camera-local viewmodel seat for a mode ('FPS' hip / 'FPS_AIM' ADS), in the placement tool's shape
+    // ({position, rotationEuler}) so it can seed + reset its editor from the live constants.
+    GetFpsViewmodelGrip(mode){
+        const pos = mode === 'FPS_AIM' ? this.fpsVmAdsPos : this.fpsVmHipPos;
+        const rot = mode === 'FPS_AIM' ? this.fpsVmAdsRot : this.fpsVmHipRot;
+        return { position: pos, rotationEuler: rot };
+    }
+
+    // Live edit from the placement tool: write the camera-local viewmodel seat (metres + degree Euler) for a
+    // mode. Applied immediately because UpdateFpsViewmodel reads these constants every frame.
+    SetFpsViewmodelLive(mode, pos, rotDeg){
+        const P = mode === 'FPS_AIM' ? this.fpsVmAdsPos : this.fpsVmHipPos;
+        const R = mode === 'FPS_AIM' ? this.fpsVmAdsRot : this.fpsVmHipRot;
+        P.set(pos.x, pos.y, pos.z);
+        R.set(THREE.MathUtils.degToRad(rotDeg.x), THREE.MathUtils.degToRad(rotDeg.y), THREE.MathUtils.degToRad(rotDeg.z));
+    }
+
+    // Subtle camera-space procedural motion added to the gun offset (position only): walk/run bob, look sway,
+    // landing dip. Damped while ADS so the sights stay calm. Never affects the barrel alignment (which
+    // re-points at the crosshair afterwards), so it reads as organic weapon motion, not aim error.
+    AddFpsViewmodelProcedural(t, adsW, offset){
+        const pc = this.playerControls;
+        const calm = 1 - 0.75 * adsW;                              // damp procedural while aiming
+        const grounded = pc.IsGrounded && this.airState === null;
+        // Walk/run bob: phase advances with horizontal speed; lateral at half the vertical rate (figure-8).
+        const speedN = THREE.MathUtils.clamp((pc.HorizontalSpeed || 0) / (pc.walkSpeed || 1), 0, 1.3);
+        if(grounded && speedN > 0.05){
+            this._fpsVmBobPhase += this.fpsVmBobSpeed * speedN * t;
+            offset.x += Math.sin(this._fpsVmBobPhase) * this.fpsVmBobAmpX * speedN * calm;
+            offset.y += Math.cos(this._fpsVmBobPhase * 2) * this.fpsVmBobAmpY * speedN * calm;
+        }
+        // Look sway: the gun lags the look — offset opposite the look angular velocity, clamped + eased.
+        if(!this._fpsLookSeeded){ this._fpsPrevYaw = pc.angles.y; this._fpsPrevPitch = pc.angles.x; this._fpsLookSeeded = true; }
+        let dYaw = pc.angles.y - this._fpsPrevYaw; dYaw = Math.atan2(Math.sin(dYaw), Math.cos(dYaw));
+        const dPitch = pc.angles.x - this._fpsPrevPitch;
+        this._fpsPrevYaw = pc.angles.y; this._fpsPrevPitch = pc.angles.x;
+        const inv = t > 1e-5 ? 1 / t : 0;
+        const swayX = THREE.MathUtils.clamp(-dYaw * inv * this.fpsVmSwayGain, -this.fpsVmSwayMax, this.fpsVmSwayMax);
+        const swayY = THREE.MathUtils.clamp(dPitch * inv * this.fpsVmSwayGain, -this.fpsVmSwayMax, this.fpsVmSwayMax);
+        this._fpsVmSway.x += (swayX - this._fpsVmSway.x) * (1 - Math.exp(-12 * t));
+        this._fpsVmSway.y += (swayY - this._fpsVmSway.y) * (1 - Math.exp(-12 * t));
+        offset.x += this._fpsVmSway.x * calm;
+        offset.y += this._fpsVmSway.y * calm;
+        // Landing dip: on airborne->grounded, kick the gun down; decay back up.
+        if(grounded && !this._fpsWasGrounded){ this._fpsVmLandDip = this.fpsVmLandDipMax; }
+        this._fpsWasGrounded = grounded;
+        if(this._fpsVmLandDip > 1e-4){
+            offset.y -= this._fpsVmLandDip * calm;
+            this._fpsVmLandDip *= Math.exp(-this.fpsVmLandDipDecay * t);
         }
     }
 
@@ -2262,62 +2178,22 @@ export default class PlayerBody extends Component{
     // camera-forward fallback for too-close / behind-the-muzzle aim.
     UpdateWeaponAim(t){
         if(!this.weaponAimIK || !this.playerControls){ return; }
+        // FPS is camera-authoritative: its gun is driven by UpdateFpsViewmodel as the LAST pose write (after
+        // FootIK + the final eye), NOT by this TPS barrel/IK path. Skip it entirely in FPS so the two never
+        // both write the gun. (fpsUseTpsGrip — the dev fallback where FPS reuses the TPS wrist grip — keeps
+        // this path.)
+        if(this.cameraMode === 'FPS' && !this.fpsUseTpsGrip){ return; }
         const pc = this.playerControls;
         // Suppress the IK while the placement tool owns the view — the free-fly cam (cameraOverride, TPS)
         // OR the FPS placement-hold — so the gun sits stable at the RAW grip you're nudging instead of
         // re-aiming at the crosshair as you edit the seat.
         const placing = pc.cameraOverride || pc.placementHold;
         const active = this.IsAimingOrShooting() && this.oneShot !== 'reload' && !placing;
-        // FPS seats float the gun off the wrist (the independent FPS / FPS_AIM grips), so IK BOTH arms
-        // onto it instead of the wrist-rotation aim path. TPS — and FPS while it reuses the TPS grip
-        // (fpsUseTpsGrip) — keeps the wrist-rotation path, where the gun grips AT the wrist so the
-        // dominant hand stays attached for free.
-        const dualHand = this.cameraMode === 'FPS' && !this.fpsUseTpsGrip;
-        // ALWAYS-ON GRIP: the support hand stays glued to the gun whenever a weapon is held — NOT only
-        // while aiming. This is what kills the aim<->idle<->shoot hand snap (the hand never releases the
-        // foregrip and re-grabs). Dropped during a reload (BOTH modes now) so the hands follow the reload
-        // clip and the off-hand visibly works the mag — in FPS that plays the reload down the view (the
-        // camera holds; see OnReload + UpdateFpsViewmodelPitch). Also dropped while placing the weapon.
-        // The barrel still only swings while `active`.
+        // ALWAYS-ON GRIP: the support hand stays glued to the gun whenever a weapon is held — NOT only while
+        // aiming (kills the aim<->idle<->shoot hand snap). Dropped during a reload so the hands follow the
+        // reload clip, and while placing. The barrel still only swings while `active`.
         const gripActive = this.oneShot !== 'reload' && !placing;
         this._weaponAimActive = active;
-
-        // FPS support-elbow: while AIMING the authored A_Rifle_Aim arm pose (applied in UpdateAimPose)
-        // already sets a correct two-handed grip, so keep the dual-hand IK GENTLE (low stabilize) so it
-        // only plants the hands on the gun without overriding that animated elbow. Hip-fire (not aiming)
-        // has no authored pose, so keep the firmer down-pole stabilize so the support arm doesn't flail.
-        // EASED (not hard-flipped) so the elbow bend-plane glides between the hip and ADS values in lockstep
-        // with the authored arm pose, instead of popping ~0.77 in one frame on every aim press/release.
-        if(dualHand){
-            const stabTarget = pc.aiming ? this.fpsAimSupportStabilize : this.fpsSupportElbowStabilize;
-            this._fpsSupportStabEased += (stabTarget - this._fpsSupportStabEased)
-                * (1 - Math.exp(-this.fpsSupportStabLerp * t));
-            this.weaponAimIK.supportElbowStabilizeDual = this._fpsSupportStabEased;
-        }
-
-        // FPS ADS camera-lock (see WeaponAimIK._updateDualHand): hand the IK the live camera + the eased ADS
-        // weight so it drives the gun (and the gripping hands) onto a CALIBRATED camera-relative pose every
-        // frame, OVERWRITING whatever the body animation does — a jump, a hurt-flinch, a roll recovery. The
-        // reference is CAPTURED only from a grounded-standing-steady aim so a transient pose is never stored:
-        // grounded (physics + the jump sub-graph both clear), standing (not jogging, move weight fully decayed),
-        // not crouched, and fully raised (lock + arm-pose weights settled). Same stable-capture discipline as
-        // the stance-lock reference; the apply is always-on (vs the stance-lock's move/crouch gating) so it
-        // resets the gun from ANY body state, not just strafing/crouching. FPS dual-hand only.
-        let fpsLock = null;
-        if(dualHand){
-            const grounded = pc.IsGrounded && this.airState === null;
-            const capture = pc.aiming && !pc.crouching && this._crouchEased < 0.08
-                && !this.IsJogState(this.lowerState) && this._fpsMoveLockW < 0.1
-                && grounded && this._fpsAimLockW > 0.9 && this._fpsAimPoseW > 0.9;
-            this._fpsLockMsg = this._fpsLockMsg || { camera: null, weight: 0, capture: false, hipDrop: 0 };
-            this._fpsLockMsg.camera = this.camera;
-            this._fpsLockMsg.weight = this._fpsAimLockW;
-            this._fpsLockMsg.capture = capture;
-            // FootIK lowers modelRoot (the gun rides it) by _hipDrop AFTER the IK; the lock pre-lifts the gun
-            // by it so the drop lands the locked gun back on the calibrated pose (see WeaponAimIK lock).
-            this._fpsLockMsg.hipDrop = (this.footIK && this.footIK._hipDrop > 1e-4) ? this.footIK._hipDrop : 0;
-            fpsLock = this._fpsLockMsg;
-        }
 
         this.weaponAimIK.Update(t, {
             active,
@@ -2326,8 +2202,6 @@ export default class PlayerBody extends Component{
             aimValid: pc.aimTargetValid,
             cameraForward: pc.aimDir,
             world: this._physicsWorld,   // muzzle wall-clearance sweep (keeps the barrel out of walls)
-            dualHand,
-            fpsLock,
         });
     }
 

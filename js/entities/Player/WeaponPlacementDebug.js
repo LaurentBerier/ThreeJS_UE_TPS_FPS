@@ -51,10 +51,12 @@ export default class WeaponPlacementDebug extends Component{
         this.fields = ['posX', 'posY', 'posZ', 'rotX', 'rotY', 'rotZ'];
         this.selected = 0;
 
-        // Shared step index maps to a position step (cm) and a rotation step (deg).
+        // Shared step index maps to a position step + a rotation step (deg). TPS edits the hand-local seat
+        // in cm (posSteps); FPS edits the CAMERA-LOCAL viewmodel seat in metres (fpsPosSteps, much finer).
         this.posSteps = [0.1, 0.5, 1, 2, 5];
+        this.fpsPosSteps = [0.002, 0.005, 0.01, 0.02, 0.05];
         this.rotSteps = [1, 5, 15, 45, 90];
-        this.stepIndex = 2;   // 1 cm / 15 deg
+        this.stepIndex = 2;   // TPS: 1 cm / 15 deg ; FPS: 1 cm (0.01 m) / 15 deg
 
         // Free-fly camera while the panel is open: WASD to move, Q/E down/up, mouse to
         // look (Shift = faster). PlayerControls yields the camera and freezes the
@@ -79,11 +81,19 @@ export default class WeaponPlacementDebug extends Component{
         this.controls = this.GetComponent('PlayerControls');
         this.camera = this.controls ? this.controls.camera : null;
 
-        // Seed each mode's editable state from its code default so the readout shows clean numbers
-        // (e.g. 90, not a quaternion round-trip).
+        // Seed each mode's editable state. TPS edits the hand-local seat (code default). FPS hip/ADS edit the
+        // CAMERA-LOCAL viewmodel constants live on PlayerBody (the deterministic gameplay framing) — seed
+        // from there so the panel shows exactly what's in play. Snapshot the seeds for the reset key.
         this.modes.TPS = this.FromGrip(WEAPON_GRIP_DEFAULT);
-        this.modes.FPS = this.FromGrip(WEAPON_GRIP_FPS_DEFAULT);
-        this.modes.FPS_AIM = this.FromGrip(WEAPON_GRIP_FPS_AIM_DEFAULT);
+        this.modes.FPS = this.body && this.body.GetFpsViewmodelGrip
+            ? this.FromGrip(this.body.GetFpsViewmodelGrip('FPS')) : this.FromGrip(WEAPON_GRIP_FPS_DEFAULT);
+        this.modes.FPS_AIM = this.body && this.body.GetFpsViewmodelGrip
+            ? this.FromGrip(this.body.GetFpsViewmodelGrip('FPS_AIM')) : this.FromGrip(WEAPON_GRIP_FPS_AIM_DEFAULT);
+        this._defaults = {
+            TPS: this.FromGrip(WEAPON_GRIP_DEFAULT),
+            FPS: this.Clone(this.modes.FPS),
+            FPS_AIM: this.Clone(this.modes.FPS_AIM),
+        };
 
         this.BuildPanel();
         Input.AddKeyDownListner(this.OnKeyDown);
@@ -110,6 +120,10 @@ export default class WeaponPlacementDebug extends Component{
         return (this.controls && this.controls.cameraMode) || 'TPS';
     }
     Cur(){ return this.modes[this.Mode()] || this.modes.TPS; }
+    // FPS hip/ADS edit the camera-local viewmodel constants (metres); TPS edits the hand-local seat (cm).
+    IsFps(){ const m = this.Mode(); return m === 'FPS' || m === 'FPS_AIM'; }
+    PosSteps(){ return this.IsFps() ? this.fpsPosSteps : this.posSteps; }
+    Clone(s){ return { pos: { ...s.pos }, rotDeg: { ...s.rotDeg } }; }
 
     // Mouse drives the free-fly look only while the panel is open and the pointer is
     // locked; otherwise PlayerControls owns the mouse as usual.
@@ -156,27 +170,31 @@ export default class WeaponPlacementDebug extends Component{
     Nudge(sign){
         const cur = this.Cur();
         const isRot = this.selected >= 3;
-        const step = sign * (isRot ? this.rotSteps[this.stepIndex] : this.posSteps[this.stepIndex]);
+        const step = sign * (isRot ? this.rotSteps[this.stepIndex] : this.PosSteps()[this.stepIndex]);
         const axis = ['x', 'y', 'z'][this.selected % 3];
         if(isRot){ cur.rotDeg[axis] = +(cur.rotDeg[axis] + step).toFixed(3); }
-        else      { cur.pos[axis]    = +(cur.pos[axis] + step).toFixed(3); }
+        else      { cur.pos[axis]    = +(cur.pos[axis] + step).toFixed(4); }
     }
 
     Reset(){
         const m = this.Mode();
-        const def = m === 'FPS_AIM' ? WEAPON_GRIP_FPS_AIM_DEFAULT
-                  : m === 'FPS'     ? WEAPON_GRIP_FPS_DEFAULT
-                  :                   WEAPON_GRIP_DEFAULT;
-        this.modes[m] = this.FromGrip(def);
+        // FPS hip/ADS reset to the baked PlayerBody constants (snapshot at open); TPS to its code default.
+        if(m === 'FPS' || m === 'FPS_AIM'){ this.modes[m] = this.Clone(this._defaults[m]); }
+        else { this.modes[m] = this.FromGrip(WEAPON_GRIP_DEFAULT); }
     }
 
-    // Push the active mode's grip to PlayerBody, which seats the pivot for that mode and re-syncs the
-    // aim IK base — so the nudge shows live whether or not the gun is currently aim-corrected.
+    // Push the active mode's transform to PlayerBody so the nudge shows live. FPS hip/ADS write the
+    // camera-local viewmodel constants (the actual gameplay framing — WYSIWYG, no calibration); TPS writes
+    // the hand-local seat.
     Apply(){
         if(!this.body){ return; }
         const m = this.Mode();
         const s = this.modes[m];
-        this.body.SetWeaponGripLive(m, s.pos, s.rotDeg);
+        if((m === 'FPS' || m === 'FPS_AIM') && this.body.SetFpsViewmodelLive){
+            this.body.SetFpsViewmodelLive(m, s.pos, s.rotDeg);
+        }else{
+            this.body.SetWeaponGripLive(m, s.pos, s.rotDeg);
+        }
     }
 
     Toggle(){
@@ -248,18 +266,25 @@ export default class WeaponPlacementDebug extends Component{
     Snippet(){
         const cur = this.Cur();
         const p = cur.pos, r = cur.rotDeg;
-        const n = v => Number.isInteger(v) ? v : +v.toFixed(3);
+        const n = v => Number.isInteger(v) ? v : +v.toFixed(4);
+        const nd = v => Number.isInteger(v) ? v : +v.toFixed(2);
         const m = this.Mode();
-        const name = m === 'FPS_AIM' ? 'WEAPON_GRIP_FPS_AIM'
-                   : m === 'FPS'     ? 'WEAPON_GRIP_FPS'
-                   :                   'WEAPON_GRIP';
+        // FPS hip/ADS are the camera-local viewmodel constants — print a PlayerBody-constructor paste.
+        if(m === 'FPS' || m === 'FPS_AIM'){
+            const pf = m === 'FPS_AIM' ? 'fpsVmAdsPos' : 'fpsVmHipPos';
+            const rf = m === 'FPS_AIM' ? 'fpsVmAdsRot' : 'fpsVmHipRot';
+            return (
+`// FPS viewmodel ${m} (camera-local) — paste into PlayerBody constructor:
+this.${pf} = new THREE.Vector3(${n(p.x)}, ${n(p.y)}, ${n(p.z)});
+this.${rf} = new THREE.Euler(THREE.MathUtils.degToRad(${nd(r.x)}), THREE.MathUtils.degToRad(${nd(r.y)}), THREE.MathUtils.degToRad(${nd(r.z)}));`);
+        }
         return (
-`const ${name} = {
+`const WEAPON_GRIP = {
     position: new THREE.Vector3(${n(p.x)}, ${n(p.y)}, ${n(p.z)}),
     rotationEuler: new THREE.Euler(
-        THREE.MathUtils.degToRad(${n(r.x)}),
-        THREE.MathUtils.degToRad(${n(r.y)}),
-        THREE.MathUtils.degToRad(${n(r.z)}),
+        THREE.MathUtils.degToRad(${nd(r.x)}),
+        THREE.MathUtils.degToRad(${nd(r.y)}),
+        THREE.MathUtils.degToRad(${nd(r.z)}),
     ),
 };`);
     }
@@ -292,12 +317,14 @@ export default class WeaponPlacementDebug extends Component{
         }
         const cur = this.Cur();
         const isRot = this.selected >= 3;
-        const step = isRot ? this.rotSteps[this.stepIndex] : this.posSteps[this.stepIndex];
+        const fps = this.IsFps();
+        const posU = fps ? 'm' : 'cm';
+        const step = isRot ? this.rotSteps[this.stepIndex] : this.PosSteps()[this.stepIndex];
         const vals = [cur.pos.x, cur.pos.y, cur.pos.z, cur.rotDeg.x, cur.rotDeg.y, cur.rotDeg.z];
-        const units = ['cm', 'cm', 'cm', '°', '°', '°'];
+        const units = [posU, posU, posU, '°', '°', '°'];
         const rows = this.fields.map((f, i) => {
             const cursor = i === this.selected ? '▶' : ' ';
-            const v = Number.isInteger(vals[i]) ? vals[i] : vals[i].toFixed(3);
+            const v = Number.isInteger(vals[i]) ? vals[i] : vals[i].toFixed(fps && i < 3 ? 4 : 3);
             return `${cursor} ${f.padEnd(5)} ${String(v).padStart(8)} ${units[i]}`;
         }).join('\n');
 
@@ -306,7 +333,7 @@ export default class WeaponPlacementDebug extends Component{
 ──────────────────────────
 ${rows}
 ──────────────────────────
-step  ${String(step).padStart(5)} ${isRot ? '°' : 'cm'}   (←/→ change)
+step  ${String(step).padStart(6)} ${isRot ? '°' : posU}   (←/→ change)
 [ ]=field  ↑/↓=adjust
 Enter=copy snippet  ⌫=reset
 editing the ${this.Mode()} grip (V swaps TPS/FPS
