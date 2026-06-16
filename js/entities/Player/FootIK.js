@@ -73,6 +73,21 @@ export default class FootIK{
         // ease the attack over a few frames instead (still fast — the shallow crouch-walk drop can't visibly
         // clip in 3-4 frames), blended in by the crouch amount so standing terrain safety is untouched.
         this.guardCrouchAttackLerp = opts.guardCrouchAttackLerp ?? 22;
+        // TOE-GROUND CONFORM. The leg solve plants the ANKLE (foot bone) but the toe (ball bone) is a LEAF
+        // the solve never touches, so the clip's toe angle is carried rigidly. On this UE rig the foot plants
+        // with the ANKLE ~0.12 m up and a steep ~33° metatarsal (ankle->ball), and the pointed boot toe —
+        // modelled hanging BELOW the toe bone's near-horizontal forward axis — droops THROUGH the floor (the
+        // reported "toes not aligned with the feet and the ground"). A bone-axis toe-tip plant is a no-op here
+        // (the bone toe is already flat); the VISIBLE droop tracks the metatarsal. So this pass, run LAST,
+        // measures the metatarsal pitch (foot->ball, from two bone positions — robust, no leaf axis to resolve)
+        // and pitches the BALL bone up about its side axis until the toe sits at a natural rest pitch
+        // (toeTargetPitch) below horizontal, lifting the boot's pointed toe out of the ground. Clamped +
+        // weighted by the master plant weight AND a tighter speed fade so a moving foot keeps its toe-off.
+        this.toeFlatten     = opts.toeFlatten     ?? 1.0;  // master strength of the toe-ground conform (0 = off)
+        this.toeTargetPitch = opts.toeTargetPitch ?? THREE.MathUtils.degToRad(8);  // toe rest angle below horizontal (boot toe lands just on the ground)
+        this.toeMaxAngle    = opts.toeMaxAngle    ?? THREE.MathUtils.degToRad(40); // clamp on the toe pitch correction
+        this.toeFadeLow     = opts.toeFadeLow     ?? 0.6;  // full toe conform at/below this ground speed (m/s)
+        this.toeFadeHigh    = opts.toeFadeHigh    ?? 1.9;  // ...fading to OFF by here so the walk toe-off reads naturally
         this._ball = new THREE.Vector3();
         this._toe  = new THREE.Vector3();
         this._flatQ = new THREE.Quaternion();
@@ -115,6 +130,13 @@ export default class FootIK{
         this._orientQ = new THREE.Quaternion();
         this._orientApplied = new THREE.Quaternion();
         this._hit = { intersectionPoint: new THREE.Vector3(), intersectionNormal: new THREE.Vector3() };
+        // Toe-conform scratch (no per-frame allocation).
+        this._toeDir     = new THREE.Vector3();      // current metatarsal dir (foot->ball, world)
+        this._ballPos    = new THREE.Vector3();      // ball (toe base) world pos
+        this._toeHeading = new THREE.Vector3();      // horizontal heading of the metatarsal
+        this._toeTarget  = new THREE.Vector3();      // desired toe-forward (world, rest-pitched)
+        this._toeRot     = new THREE.Quaternion();   // current -> target rotation
+        this._toeApplied = new THREE.Quaternion();   // weighted, clamped toe rotation
     }
 
     // Resolve the two leg chains by UE bone name. Ball (toe) is optional (used only as a reference).
@@ -328,6 +350,15 @@ export default class FootIK{
         // weight) didn't fully re-seat — the residual mid-stride ground-clip at walk-start. One-sided +
         // attack-instant (standing); crouch eases the attack so footfalls don't snap the knee. ---
         if(guard){ this._guardPenetration(t, bodyYaw, kneeAlign, poleStab, crouchAmt); }
+
+        // --- TOE-GROUND CONFORM (absolute last foot write). The foot bone is now planted + oriented; the
+        // ball/toe leaf still carries the clip's (drooping) toe angle. Pitch it so the toe tip plants on the
+        // ground. Faded by the master weight AND a tighter speed taper, so it flattens the toe on a planted
+        // (idle / crouch-idle / slow) foot but releases for a moving foot's natural toe-off. ---
+        const toeFade = (1 - THREE.MathUtils.smoothstep(speed, this.toeFadeLow, this.toeFadeHigh)) * this.toeFlatten;
+        if(toeFade > 1e-3){
+            for(const leg of this.legs){ if(leg.hit){ this._conformToe(leg, this._weight * toeFade); } }
+        }
     }
 
     // Knee bend direction (pole) for one leg, written into `out`. STANDING: the fixed body-forward
@@ -431,5 +462,33 @@ export default class FootIK{
         if(angle > this.footOrientMax && angle > 1e-5){ s *= this.footOrientMax / angle; }
         this._orientApplied.copy(this._idQ).slerp(this._orientQ, s);
         this.ik.applyWorldQuat(leg.foot, this._orientApplied);
+    }
+
+    // Toe-ground conform: pitch the ball (toe) bone up so the pointed boot toe stops drooping through the
+    // floor. The bone's own forward axis sits nearly flat already, but the boot MESH toe hangs below it and
+    // tracks the steep metatarsal (ankle->ball); so we measure the metatarsal direction (two bone positions,
+    // robust + mirror-safe) and rotate the ball so it sits at toeTargetPitch below horizontal — i.e. lift the
+    // toe by (metatarsalPitch - toeTargetPitch). The rotation keeps the toe HEADING (pure pitch about the
+    // side axis: source and target share their horizontal heading), is clamped to toeMaxAngle, weighted by
+    // `w`, and applied about the ball's origin (the toe base doesn't move, only the toe lifts). No-op before
+    // calibration. A metatarsal already flatter than the target yields a ~0 rotation (won't force the toe down).
+    _conformToe(leg, w){
+        if(w < 1e-3 || !this._calibrated || !leg.ball){ return; }
+        leg.foot.getWorldPosition(this._footPos);
+        leg.ball.getWorldPosition(this._ballPos);
+        this._toeDir.copy(this._ballPos).sub(this._footPos);           // metatarsal (ankle->ball), world
+        this._toeHeading.set(this._toeDir.x, 0, this._toeDir.z);
+        if(this._toeDir.lengthSq() < 1e-8 || this._toeHeading.lengthSq() < 1e-8){ return; }
+        this._toeDir.normalize(); this._toeHeading.normalize();
+        // Desired direction: same heading, pitched toeTargetPitch below horizontal. The short-arc rotation
+        // from the (steeper) metatarsal to this is a pure lift about the side axis.
+        const cp = Math.cos(this.toeTargetPitch), sp = Math.sin(this.toeTargetPitch);
+        this._toeTarget.set(this._toeHeading.x * cp, -sp, this._toeHeading.z * cp).normalize();
+        this._toeRot.setFromUnitVectors(this._toeDir, this._toeTarget);
+        const angle = 2 * Math.acos(THREE.MathUtils.clamp(this._toeRot.w, -1, 1));
+        let s = w;
+        if(angle > this.toeMaxAngle && angle > 1e-5){ s *= this.toeMaxAngle / angle; }
+        this._toeApplied.copy(this._idQ).slerp(this._toeRot, s);
+        this.ik.applyWorldQuat(leg.ball, this._toeApplied);
     }
 }
