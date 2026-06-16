@@ -112,7 +112,7 @@ export default class PlayerControls extends Component{
         // shoulder, the FOV zooms, and the mouse slows for finer aim. Targets are
         // eased toward each frame so entering/leaving aim glides rather than snaps.
         this.aiming = false;
-        // Physical right-button state, tracked so a dodge roll (which force-drops aim, see TryStartRoll)
+        // Physical right-button state, tracked so a committed move (which force-drops aim, see TryStartSlide)
         // can RESTORE aim when it ends if the button is still held — otherwise aiming stays stuck off
         // until you release and re-press, which read as "I'm holding aim but nothing's aiming".
         this._aimHeld = false;
@@ -383,38 +383,45 @@ export default class PlayerControls extends Component{
         this._wobbleEuler = new THREE.Euler();
         this._wobbleQuat = new THREE.Quaternion();
 
-        // --- Directional dodge roll (double-tap a movement key: W/A/S/D). A short, committed burst in
-        // the tapped key's direction with an invulnerability window, driven by the roll animation on
-        // PlayerBody. Maintains momentum (drives the capsule at rollSpeed, eased out near the end) and
-        // ALWAYS releases control when the timer elapses, so it can never lock the player. Works in TPS
-        // and FPS (same body anim; the FP camera rides the head bone through the roll). See UpdateRoll.
-        // (Moved OFF double-tap Ctrl: that collides with OS-level shortcuts — PowerToys "Find My
-        // Mouse", IME/accessibility toggles — which a web page can't suppress.)
+        // --- Committed GROUND MOVE: shared by the directional dodge SLIDE (double-tap W/A/S/D) and the
+        // hard-landing ROLL. A short, control-locked burst that drives the capsule along a fixed
+        // direction (eased out near the end) with an optional i-frame window, then ALWAYS releases
+        // control when the timer elapses — so it can never lock the player. The body plays the matching
+        // clip and conforms it to the terrain (PlayerBody.StartGroundMove, via 'player.slide' /
+        // 'player.landroll'). Works in TPS and FPS (the FP camera rides the head bone through the move).
+        // (Off double-tap Ctrl — that collides with OS shortcuts a web page can't suppress.)
         this.rolling = false;
+        this._moveKind = 'slide';        // 'slide' (double-tap dodge) | 'landroll' (hard landing)
         this.rollTimer = 0.0;
-        this.rollDuration = 0.78;        // s of locked roll movement (~ the 0.97s clip at 1.25x)
-        this.rollSpeed = 10.0;           // forward m/s at the start of the roll (boosted momentum)
-        this.rollEndSpeedFactor = 0.55;  // speed multiplier by the end of the roll (eases out)
-        // Front-loaded impulse: a short, fast surge of EXTRA speed in the very first slice of the roll
-        // so it kicks off with a satisfying pop/lunge, then settles into the normal eased momentum
-        // within ~0.1 s. Shapes the per-frame roll velocity (a one-shot velocity impulse would be
-        // overwritten next frame, since UpdateRoll re-sets the linear velocity each tick).
-        this.rollImpulseBoost = 0.6;     // peak extra fraction of rollSpeed at the very start (u=0)
-        this.rollImpulseDecay = 9.0;     // how fast the surge decays over normalized roll progress u
-        this.rollCooldown = 0.18;        // s after a roll before another can start (prevents chaining)
+        this.rollDuration = 0.78;        // s of locked movement (recomputed from the active clip on start)
+        this._committedSpeed = 10.0;     // start m/s of the active move (set per-kind on start)
         this._rollCooldownTimer = 0.0;
-        this.rollDir = new THREE.Vector3();   // world-horizontal roll direction (camera forward)
-        this._rollResidual = new THREE.Vector3();   // scratch: world roll velocity
+        this.rollDir = new THREE.Vector3();   // world-horizontal travel direction
+        this._rollResidual = new THREE.Vector3();   // scratch: world move velocity
         this._yawInv = new THREE.Quaternion();      // scratch: inverse look-yaw (world->local)
-        // Invulnerability window. Because the whole roll is a COMMITTED, control-locked dodge (you
-        // can't act until it releases), i-frames cover essentially the entire window: they start on
-        // the very first frame (0.0) so a reactive roll into an incoming hit is trustworthy, and run
-        // to rollIFrameEnd — just shy of the release — leaving only a tiny actionable recovery sliver
-        // vulnerable. PlayerHealth checks this.invulnerable. Not exploitable: the double-tap + cooldown
-        // + grounded checks gate it. 0..rollDuration.
+        // PlayerHealth checks this.invulnerable; the committed move sets it across its i-frame window.
         this.invulnerable = false;
-        this.rollIFrameStart = 0.0;
-        this.rollIFrameEnd = 0.70;
+        // Per-kind tuning. speed: start m/s (the slide uses this; the land-roll overrides it with the
+        // captured landing speed). endFactor: speed multiplier by the end (eases out). boost/decay: a
+        // front-loaded launch surge — the slide kicks off with a pop; the land-roll just CONTINUES the
+        // landing momentum, so no surge. iStart/iEnd: i-frame window (s into the move; the slide is a
+        // dodge so it's nearly fully invulnerable, the land-roll only briefly). cooldown: s before
+        // another move can start. (A one-shot impulse would be overwritten — UpdateRoll re-sets the
+        // velocity each tick — so the surge is shaped per frame here.)
+        this.moveCfg = {
+            slide:    { speed: 8.5, endFactor: 0.45, boost: 0.6, decay: 9.0, iStart: 0.0, iEnd: 0.70, cooldown: 0.18 },
+            landroll: { speed: 6.0, endFactor: 0.45, boost: 0.0, decay: 9.0, iStart: 0.0, iEnd: 0.35, cooldown: 0.15 },
+        };
+        // --- Hard-landing detection -> the land-roll. Track the PEAK descent speed across an airborne
+        // stretch; on regrounding after falling faster than landRollFallSpeed, fire a forward roll that
+        // carries the landing momentum (UpdateLandingDetect). Set just above a flat in-place jump's landing
+        // (~5 m/s = jumpVelocity) so jumping on the spot doesn't roll, but any real drop/ledge does — tuned
+        // low (5.5) so the roll shows up often on the uneven terrain. Spawn drop (~3.2 m/s) won't trigger it.
+        this.landRollFallSpeed = 5.5;    // min peak descent speed (m/s) for a hard landing
+        this.landRollMinSpeed = 5.0;     // floor on the roll-out speed (a straight drop still rolls forward)
+        this.landRollMaxSpeed = 11.0;    // cap on the roll-out speed (a fast run-off-a-cliff won't over-shoot)
+        this._maxFallSpeed = 0.0;        // peak descent speed seen this airborne stretch (m/s, +down)
+        this._landWasGrounded = true;    // grounded state last frame, to edge-detect the touchdown
         // Double-tap detection for a MOVEMENT key (W/A/S/D). Input only reports held state, so we
         // edge-detect each key; a second tap of the SAME key inside doubleTapWindow fires a roll in
         // that key's (camera-relative) direction. Kept fairly tight so an ordinary quick re-tap while
@@ -990,7 +997,7 @@ export default class PlayerControls extends Component{
     OnReloadStart = () => { this._reloading = true; }
     OnReloadEnd = () => { this._reloading = false; }
 
-    // Edge-detect the movement keys and start a directional roll on a double-tap of the SAME key
+    // Edge-detect the movement keys and start a directional SLIDE on a double-tap of the SAME key
     // inside doubleTapWindow. Input only reports HELD state, so we track each key's previous frame to
     // find press edges and time the gap.
     UpdateRollInput(){
@@ -999,7 +1006,7 @@ export default class PlayerControls extends Component{
             if(down && !this._moveKeyPrev[code]){
                 if(this._lastTapKey === code && (this._tapClock - this._lastTapTime) <= this.doubleTapWindow){
                     this._lastTapKey = null;                 // consume the pair so a third tap can't re-fire
-                    this.TryStartRoll(code);
+                    this.TryStartSlide(code);
                 }else{
                     this._lastTapKey = code;                 // first tap (or a different key): arm it
                     this._lastTapTime = this._tapClock;
@@ -1009,27 +1016,13 @@ export default class PlayerControls extends Component{
         }
     }
 
-    // Start a roll only from the ground and outside the cooldown (no air-dodge / no chaining). The
-    // roll travels in the double-tapped key's direction, in the camera's horizontal frame: W forward,
+    // Start a SLIDE only from the ground and outside the cooldown (no air-dodge / no chaining). The
+    // slide travels in the double-tapped key's direction, in the camera's horizontal frame: W forward,
     // S back, D/A strafe; falls back to camera-forward.
-    TryStartRoll(dirCode){
+    TryStartSlide(dirCode){
         if(this.rolling || this._rollCooldownTimer > 0 || !this.IsGrounded){ return; }
-        // Couple the control-lock length to the ACTUAL roll clip length at its played-back rate, so
-        // retuning the body's rollTimeScale or swapping RollForward.glb keeps movement, i-frames and
-        // animation in lockstep (instead of a hand-tuned constant silently drifting from the clip).
-        if(this.body && this.body._rollDuration > 0 && this.body.rollTimeScale > 0){
-            this.rollDuration = this.body._rollDuration / this.body.rollTimeScale;
-        }
-        this.rolling = true;
-        this.rollTimer = 0.0;
-        this.aiming = false;                                 // a roll drops precise-aim
-        // A roll force-stands: the roll clip assumes a standing body, and the crouch input block is
-        // skipped while rolling, so clear the toggle and stand the capsule now (best-effort — if blocked
-        // by low cover SetCrouched keeps it crouched, which the roll tolerates). Post-roll stays standing.
-        this._crouchToggle = false;
-        this.physicsComponent.SetCrouched(false);
-        // Roll direction from the tapped key, in the camera's horizontal frame (tempVec/moveDir are
-        // free scratch here: a rolling frame returns before the normal movement path uses them).
+        // Slide direction from the tapped key, in the camera's horizontal frame (tempVec/moveDir are
+        // free scratch here: a moving frame returns before the normal movement path uses them).
         const fwd = this.tempVec.set(0, 0, -1).applyQuaternion(this.yaw);
         const right = this.moveDir.set(1, 0, 0).applyQuaternion(this.yaw);
         if(dirCode === 'KeyS'){ this.rollDir.copy(fwd).negate(); }
@@ -1039,30 +1032,97 @@ export default class PlayerControls extends Component{
         this.rollDir.y = 0;
         if(this.rollDir.lengthSq() < 1e-6){ this.rollDir.copy(fwd); this.rollDir.y = 0; }
         this.rollDir.normalize();
-        this.Broadcast({topic: 'player.roll'});              // PlayerBody plays the roll animation
+        // Couple the control-lock length to the ACTUAL slide clip at its played-back rate (so retuning
+        // slideTimeScale / swapping Slide.glb keeps movement, i-frames and animation in lockstep).
+        const dur = (this.body && this.body._slideDuration > 0 && this.body.slideTimeScale > 0)
+            ? this.body._slideDuration / this.body.slideTimeScale : 0.78;
+        this._beginCommittedMove('slide', dur);
+        this.Broadcast({topic: 'player.slide'});             // PlayerBody plays the slide animation
     }
 
-    // Drive the roll each frame: a forward velocity burst (eased out toward the end) with an
-    // i-frame window, then release control back to the normal movement path. ALWAYS ends on the
-    // timer so the player can never get locked. Mirrors the normal capsule/camera placement.
+    // Start the HARD-LANDING roll: a committed forward roll-out that carries the landing momentum. Fired
+    // by UpdateLandingDetect on a fast touchdown (NOT player input), so it bypasses the cooldown/ground
+    // guards the slide uses. Direction = the current horizontal travel (or facing if landing dead-stop).
+    TryStartLandRoll(){
+        if(this.rolling){ return; }
+        // Direction: the live horizontal velocity if moving, else the camera-forward (a straight drop
+        // still rolls forward rather than picking a random heading).
+        const vel = this.physicsBody.getLinearVelocity();
+        this.rollDir.set(vel.x(), 0, vel.z());
+        const horiz = this.rollDir.length();
+        if(horiz < 0.5){ this.rollDir.copy(this.tempVec.set(0, 0, -1).applyQuaternion(this.yaw)); this.rollDir.y = 0; }
+        this.rollDir.normalize();
+        // Roll-out speed carries the landing momentum, clamped so a straight drop still rolls and a
+        // run-off-a-cliff doesn't shoot across the map.
+        this._committedSpeed = THREE.MathUtils.clamp(
+            Math.max(horiz, this.landRollMinSpeed), this.landRollMinSpeed, this.landRollMaxSpeed);
+        const dur = (this.body && this.body._rollDuration > 0 && this.body.rollTimeScale > 0)
+            ? this.body._rollDuration / this.body.rollTimeScale : 0.78;
+        this._beginCommittedMove('landroll', dur);
+        this.Broadcast({topic: 'player.landroll'});          // PlayerBody plays the roll animation
+    }
+
+    // Shared committed-move startup (slide + land-roll): lock control, force-stand, seed the timer +
+    // per-kind speed. The body is force-stood because both clips assume a standing body and the crouch
+    // input block is skipped while moving (best-effort — low cover keeps it crouched). AIM: the SLIDE
+    // PRESERVES it (you can ADS/fire mid-slide — PlayerBody keeps the gun on the crosshair via the aim IK),
+    // so it tracks the held button; the land-roll drops it (you can't aim through a tumble). Either way the
+    // mouse listeners keep `aiming` live on press/release during the move, and UpdateRoll restores
+    // _aimHeld on completion.
+    _beginCommittedMove(kind, duration){
+        this._moveKind = kind;
+        this.rolling = true;
+        this.rollTimer = 0.0;
+        this.rollDuration = duration;
+        this.aiming = (kind === 'slide') ? this._aimHeld : false;
+        if(kind === 'slide'){ this._committedSpeed = this.moveCfg.slide.speed; }   // land-roll set its own speed
+        this._crouchToggle = false;
+        this.physicsComponent.SetCrouched(false);
+    }
+
+    // Hard-landing watch: accumulate the PEAK descent speed while airborne, and on the airborne->grounded
+    // edge fire a land-roll if that peak exceeded landRollFallSpeed. Gated on !rolling so a slide that
+    // sails off a ledge doesn't immediately re-trigger on touchdown. Cheap; runs once per frame.
+    UpdateLandingDetect(){
+        const grounded = this.IsGrounded;
+        if(!grounded){
+            const vy = this.physicsBody.getLinearVelocity().y();
+            if(-vy > this._maxFallSpeed){ this._maxFallSpeed = -vy; }   // track fastest DESCENT (+down)
+        }else{
+            // Touchdown edge: if we fell hard and aren't already in a move, roll out of the landing.
+            if(!this._landWasGrounded && !this.rolling && this._rollCooldownTimer <= 0
+               && this._maxFallSpeed >= this.landRollFallSpeed){
+                this.TryStartLandRoll();
+            }
+            this._maxFallSpeed = 0.0;                       // reset the peak once grounded
+        }
+        this._landWasGrounded = grounded;
+    }
+
+    // Drive the active committed move (slide / land-roll) each frame: a forward velocity burst (eased
+    // out toward the end) with an i-frame window, then release control back to the normal movement path.
+    // ALWAYS ends on the timer so the player can never get locked. Mirrors the normal capsule/camera
+    // placement. Tuning comes from moveCfg[_moveKind]; _committedSpeed is the per-move start speed.
     UpdateRoll(t){
+        const cfg = this.moveCfg[this._moveKind] || this.moveCfg.slide;
         this.rollTimer += t;
         const u = Math.min(1.0, this.rollTimer / this.rollDuration);
-        this.invulnerable = (this.rollTimer >= this.rollIFrameStart && this.rollTimer <= this.rollIFrameEnd);
+        this.invulnerable = (this.rollTimer >= cfg.iStart && this.rollTimer <= cfg.iEnd);
 
-        // Forward momentum from rollSpeed easing down to rollSpeed*endFactor across the roll, with a
-        // brief front-loaded surge (decays over the first ~0.1 s of u) so the roll launches with a pop.
-        const burst = 1 + this.rollImpulseBoost * Math.exp(-this.rollImpulseDecay * u);
-        const speed = this.rollSpeed * (1 - (1 - this.rollEndSpeedFactor) * u) * burst;
+        // Momentum from _committedSpeed easing down to *endFactor across the move, with an optional
+        // front-loaded surge (decays over the first ~0.1 s of u) so the slide launches with a pop. The
+        // land-roll sets boost 0, so it just continues the captured landing momentum, eased out.
+        const burst = 1 + cfg.boost * Math.exp(-cfg.decay * u);
+        const speed = this._committedSpeed * (1 - (1 - cfg.endFactor) * u) * burst;
         const velocity = this.physicsBody.getLinearVelocity();
         velocity.setX(this.rollDir.x * speed);
         velocity.setZ(this.rollDir.z * speed);
         this.physicsBody.setLinearVelocity(velocity);
         this.physicsBody.setAngularVelocity(this.zeroVec);
-        // Mirror the roll velocity into the LOCAL (pre-yaw) speed so HorizontalSpeed reports the
+        // Mirror the move velocity into the LOCAL (pre-yaw) speed so HorizontalSpeed reports the
         // motion AND the residual handed to the normal decel path continues along the ACTUAL world
         // travel direction (rollDir) — not a stale local vector reinterpreted against a camera the
-        // player may have spun mid-roll. speed_local = yaw⁻¹ · (rollDir * speed).
+        // player may have spun mid-move. speed_local = yaw⁻¹ · (rollDir * speed).
         this._rollResidual.copy(this.rollDir).multiplyScalar(speed);
         this._yawInv.copy(this.yaw).invert();
         this.speed.copy(this._rollResidual).applyQuaternion(this._yawInv);
@@ -1080,9 +1140,9 @@ export default class PlayerControls extends Component{
         if(this.rollTimer >= this.rollDuration){
             this.rolling = false;
             this.invulnerable = false;
-            this._rollCooldownTimer = this.rollCooldown;
-            // Roll over: if right-click is still held, resume precise-aim (the roll dropped it in
-            // TryStartRoll). Without this the camera stays un-aimed even though the button is down.
+            this._rollCooldownTimer = cfg.cooldown;
+            // Move over: if right-click is still held, resume precise-aim (the move dropped it on start).
+            // Without this the camera stays un-aimed even though the button is down.
             this.aiming = this._aimHeld;
         }
     }
@@ -1111,10 +1171,13 @@ export default class PlayerControls extends Component{
             this._vLatch = false;
         }
 
-        // Dodge roll: watch for the double-tap, and while a roll is in progress let it OWN movement
-        // (forward burst + i-frames + camera) and skip the normal input path entirely this frame.
+        // Committed ground moves: the double-tap dodge SLIDE and the hard-landing ROLL. Either one OWNS
+        // movement while it runs (forward burst + i-frames + camera), skipping the normal input path.
         this._tapClock += t;
         if(this._rollCooldownTimer > 0){ this._rollCooldownTimer = Math.max(0, this._rollCooldownTimer - t); }
+        // Hard-landing watch (may start a land-roll THIS frame) before the double-tap slide; while any
+        // committed move runs let it OWN movement (burst + i-frames + camera) and skip the normal path.
+        this.UpdateLandingDetect();
         this.UpdateRollInput();
         if(this.rolling){
             this.UpdateRoll(t);

@@ -70,6 +70,14 @@ const ueClipsSrc = 'assets/characters/ue/SK_Mannequin.glb'
 // double-tap-Ctrl dodge roll in both TPS and FPS.
 const ueRollSrc = 'assets/characters/ue/RollForward.glb'
 
+// Forward SLIDE clip, baked the SAME way as the roll (FBX -> GLB, since r127's FBXLoader can't parse
+// these UE2020 anim takes). A small skeleton-only GLB carrying ONE clip named 'slide'; the game pulls
+// animations[0] and adapts it onto the pre-oriented rig like every other clip. Drives the player's
+// double-tap-direction dodge (which used to play the roll). Baked IN PLACE (the source's horizontal
+// pelvis drift is neutralized at bake time, keeping the vertical body-drop), so PlayerControls owns
+// the travel exactly like the roll. See d:/tmp/jogcheck/bake_slide.mjs / tools/slide_to_glb.html.
+const ueSlideSrc = 'assets/characters/ue/Slide.glb'
+
 // Crouch-idle clip, baked the SAME way as the roll (FBX -> GLB via tools/run_crouchidle_bake.mjs,
 // since r127's FBXLoader can't parse A_Rifle_Crouch_Idle.fbx — it throws in parseAnimationLayers).
 // A small skeleton-only GLB carrying ONE clip named 'crouch_idle'; the game pulls animations[0] and
@@ -301,6 +309,7 @@ class FPSGameApp{
     promises.push(this.AddAsset(ueChar, gltfLoader, "ueChar"));
     promises.push(this.AddAsset(ueClipsSrc, gltfLoader, "ueClips"));
     promises.push(this.AddAsset(ueRollSrc, gltfLoader, "ueRoll"));
+    promises.push(this.AddAsset(ueSlideSrc, gltfLoader, "ueSlide"));
     promises.push(this.AddAsset(ueCrouchIdleSrc, gltfLoader, "ueCrouchIdle"));
     //Third-person AK
     promises.push(this.AddAsset(ak47Tps, akFbxLoader, "ak47Tps"));
@@ -366,6 +375,12 @@ class FPSGameApp{
     const rollSrcClips = this.assets['ueRoll'] ? this.assets['ueRoll'].animations : [];
     const rollRaw = rollSrcClips.find(c => c.name === 'roll') || rollSrcClips[0];
     const rollClip = rollRaw ? adaptClipToPreOriented(rollRaw) : undefined;
+    // The forward SLIDE ships in its own GLB (ueSlide), baked in place the same way as the roll.
+    // Adapt it onto the pre-oriented rig like every other clip; drives the double-tap dodge (the
+    // roll now serves the hard-landing animation instead). Player-only.
+    const slideSrcClips = this.assets['ueSlide'] ? this.assets['ueSlide'].animations : [];
+    const slideRaw = slideSrcClips.find(c => c.name === 'slide') || slideSrcClips[0];
+    const slideClip = slideRaw ? adaptClipToPreOriented(slideRaw) : undefined;
     // Crouch-idle ships in its own GLB (ueCrouchIdle), baked from A_Rifle_Crouch_Idle.fbx the same
     // way as the roll. Adapt it onto the pre-oriented rig like every other clip; player-only.
     const crouchSrcClips = this.assets['ueCrouchIdle'] ? this.assets['ueCrouchIdle'].animations : [];
@@ -396,8 +411,11 @@ class FPSGameApp{
       jogR: byName('jog_right'),
       jumpStart: byName('jump_start'),
       jumpFall: byName('jump_fall'),
-      // Directional dodge roll (double-tap a movement key). Player-only; the soldier ignores unknown clips.
+      // Directional dodge SLIDE (double-tap a movement key) + the forward ROLL, now repurposed as the
+      // hard-landing recovery. Both are full-body ground moves that conform to terrain (see PlayerBody).
+      // Player-only; the soldier ignores unknown clips.
       roll: rollClip,
+      slide: slideClip,
       // Authored crouch-idle pose (player-only; soldier ignores it). Drives the crouch-idle legs+torso.
       crouchIdle: crouchIdleClip,
     };

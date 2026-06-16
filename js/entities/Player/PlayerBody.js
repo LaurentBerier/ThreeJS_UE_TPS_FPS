@@ -4,6 +4,7 @@ import { buildUeMannequin, UE_BODY_LAYER, collectUpperBoneNames, splitClipByBone
 import WeaponAimIK from './WeaponAimIK.js'
 import FootIK from './FootIK.js'
 import HurtFlinch from '../Common/HurtFlinch.js'
+import { AmmoHelper, CollisionFilterGroups } from '../../AmmoLib.js'
 
 
 // Force a clip to loop with ZERO seam: overwrite each track's LAST keyframe with a copy of its
@@ -84,13 +85,22 @@ export default class PlayerBody extends Component{
         // loop). _groundedTimer debounces ground re-detection so the 1-frame contact flicker on
         // take-off can't abort the jump and a brief mid-air graze can't snap the legs to idle.
         this.airState = null;
-        // Forward dodge roll: a FULL-BODY one-shot (both layers) that overrides locomotion AND any
-        // upper one-shot for its duration, then blends straight back to locomotion. Driven by the
-        // 'player.roll' event from PlayerControls (which owns the input, momentum + i-frames). The
-        // root motion is stripped like every clip, so the physical displacement is the capsule's —
-        // the animation just sells the roll in place. Works in TPS and FPS (FP camera rides the head).
+        // Full-body GROUND MOVE: a one-shot (both layers) that overrides locomotion AND any upper
+        // one-shot for its duration, then blends straight back to locomotion. TWO flavours share this
+        // machinery — the double-tap DODGE plays the 'slide' clip, and a HARD LANDING plays the 'roll'
+        // clip (the dodge used to roll). PlayerControls owns the input/trigger, momentum + i-frames and
+        // fires 'player.slide' / 'player.landroll'. Root motion is stripped like every clip, so the
+        // physical displacement is the capsule's — the animation sells the move in place, while
+        // UpdateGroundConform tilts + height-locks the whole avatar to the terrain underfoot (the
+        // "follow the ground topology" pass). `this.rolling` is the umbrella "a ground move owns the
+        // body" flag for BOTH; `_moveType` / `_moveActionKey` pick the clip + tuning. Works in TPS+FPS.
         this.rolling = false;
-        this._rollDuration = 0;        // seconds (read from the clip in SetupAnimations)
+        this._moveType = null;         // 'slide' (dodge) | 'landRoll' (hard landing) | null
+        this._moveActionKey = 'roll';  // which lower/upperActions entry the active move drives ('slide'/'roll')
+        this._moveAimActive = false;   // true while SLIDING + aiming RIGHT NOW (drives the keep-gun-on-crosshair)
+        this._moveAimEngaged = false;  // latched once aim is used during a slide, so the IK keeps running to ease OUT
+                                       // (not just in) if you release mid-slide — non-aim slides never set it
+        this._rollDuration = 0;        // seconds (read from the roll clip in SetupAnimations)
         this.rollTimeScale = 1.25;     // play the ~0.97s roll a touch faster so it reads snappy/responsive
         // Cut the last few frames of the roll's stand-up and instead ease into idle/locomotion over a
         // longer crossfade, so the recovery blends smoothly into the resting pose rather than snapping
@@ -113,6 +123,43 @@ export default class PlayerBody extends Component{
         // held idle/locomotion pose over most of the roll. rollUpperLead is CLIP seconds before the
         // clip end at which that upper blend kicks off (vs rollEndLead for the legs). Bigger = earlier.
         this.rollUpperLead = 0.5;      // ~half the ~0.97s roll: gun recovery begins around the midpoint
+        // --- SLIDE (the double-tap dodge). Its own tuning, mirroring the roll's but for the longer
+        // ~1.43s slide take: a slide GLIDES rather than tumbles, so the legs hold the slide pose for
+        // most of the clip and only the tail eases into the stand-up. _slideDuration is read from the
+        // clip; PlayerControls couples the control-lock to _slideDuration / slideTimeScale.
+        this._slideDuration = 0;
+        this.slideTimeScale = 1.25;    // play the ~1.43s slide a touch faster (~1.15s lock) so it stays responsive
+        this.slideEndLead = 6 / 30;    // cut the last ~6 frames of the stand-up and ease into locomotion
+        this.slideBlendOut = 0.30;     // legs -> idle when the slide settles to a stop
+        this.slideLandFade = 0.12;     // legs -> jog when the slide ends still moving (anti-skate, like the roll)
+        this.slideUpperBlendOut = 0.45;// torso + gun arms -> idle gun-hold (ease the rifle back up)
+        this.slideUpperLead = 0.6;     // gun recovery begins ~0.6s before the clip end
+        // --- GROUND-TOPOLOGY CONFORM (slide + land-roll). While a ground move owns the body the legs
+        // follow the clip (FootIK is off), so the avatar would slide/roll along a FLAT plane through a
+        // slope. This pass raycasts the terrain under the body each frame and (a) height-locks the
+        // avatar onto the surface and (b) PITCHES the whole avatar about its right axis to lie along the
+        // slope in the travel direction — so a slide down a ramp hugs the ramp and a roll over a crest
+        // follows the crest. Eased in/out (targets fall to 0 when no move is active) so it never pops at
+        // the hand-off back to locomotion. modelRoot.position/rotation are rebuilt from scratch each
+        // frame (capsule + UpdateBodyYaw), so this is a per-frame ADD with no accumulation.
+        this.conformPitchMax = THREE.MathUtils.degToRad(38); // clamp on the slope pitch (rad)
+        this.conformDropMax  = 0.6;     // clamp on the surface height correction (m, ±)
+        this.conformSample   = 0.55;    // fore/aft ground-sample half-distance along travel (m) for the slope
+        this.conformRayUp    = 1.2;     // ground ray starts this far above the body (m)
+        this.conformRayDown  = 2.2;     // ...and reaches this far below it (m) — deep for fast moves over dips
+        this.conformEaseIn   = 12;      // ease rate (1/s) toward the live slope/height while a move runs
+        this.conformEaseOut  = 9;       // ease rate (1/s) back to flat when the move ends (bleed-out, no pop)
+        this._conformPitch   = 0;       // eased slope pitch (rad)
+        this._conformDrop    = 0;       // eased surface height correction (m)
+        // Conform scratch (no per-frame allocation).
+        this._conformFwd   = new THREE.Vector3();
+        this._conformRight = new THREE.Vector3();
+        this._conformUp    = new THREE.Vector3(0, 1, 0);
+        this._conformOrigin= new THREE.Vector3();
+        this._conformDest  = new THREE.Vector3();
+        this._conformQYaw  = new THREE.Quaternion();
+        this._conformQPitch= new THREE.Quaternion();
+        this._conformHit   = { intersectionPoint: new THREE.Vector3(), intersectionNormal: new THREE.Vector3() };
         this._upperBlendStarted = false;
         this._groundedTimer = 0;
         this.airExitDebounce = 0.1;    // ground must be stable this long (s) before we leave the air state
@@ -649,6 +696,19 @@ export default class PlayerBody extends Component{
             this._rollDuration = rollClip.duration;
         }
 
+        // Forward SLIDE: the dodge's full-body one-shot (baked in place), set up exactly like the roll
+        // (LoopOnce + clamp so it holds the recovered pose until EndGroundMove blends out). The dodge
+        // drives this instead of the roll; the roll is now the hard-landing recovery.
+        const slideClip = this.clips['slide'];
+        if(slideClip){
+            const { upper, lower } = splitClipByBones(slideClip, upperBones);
+            const lo = this.mixer.clipAction(lower); lo.setLoop(THREE.LoopOnce); lo.clampWhenFinished = true;
+            const up = this.mixer.clipAction(upper); up.setLoop(THREE.LoopOnce); up.clampWhenFinished = true;
+            this.lowerActions['slide'] = lo;
+            this.upperActions['slide'] = up;
+            this._slideDuration = slideClip.duration;
+        }
+
         // reload/shoot are UPPER-body overlays that layer over the torso while the legs keep their
         // locomotion. Only the upper half of each clip is used. RELOAD is a one-shot (clamps + the
         // 'finished' event hands back). SHOOT instead LOOPS while the trigger is held: re-triggering a
@@ -843,8 +903,10 @@ export default class PlayerBody extends Component{
         // Take-off: PlayerControls fires this the frame a jump is issued (see its comment for why
         // IsGrounded can't be used). We re-arm the jump sub-graph so the jumpStart pop always plays.
         this.parent.RegisterEventHandler(this.OnJump, 'player.jump');
-        // Dodge roll: PlayerControls fires this on a double-tap of a movement key.
-        this.parent.RegisterEventHandler(this.OnRoll, 'player.roll');
+        // Dodge SLIDE (double-tap a movement key) and the HARD-LANDING roll: PlayerControls owns the
+        // input/trigger + momentum and fires these; both start a full-body ground move (see StartGroundMove).
+        this.parent.RegisterEventHandler(this.OnSlide, 'player.slide');
+        this.parent.RegisterEventHandler(this.OnLandRoll, 'player.landroll');
         // Taking damage: trigger the additive hurt flinch (PlayerHealth handles the health bookkeeping).
         this.parent.RegisterEventHandler(this.OnHurt, 'hit');
     }
@@ -890,7 +952,8 @@ export default class PlayerBody extends Component{
         this._jumpRequested = true;
         if(this.footIK){ this.footIK.Reset(); }
     }
-    OnRoll = () => { this.StartRoll(); }
+    OnSlide = () => { this.StartGroundMove('slide'); }
+    OnLandRoll = () => { this.StartGroundMove('landRoll'); }
     // Hit reaction. A dodge roll's i-frames negate the damage, so don't flinch then (and the roll owns
     // the whole body anyway). Scale the jolt by the damage so a beast melee rocks harder than an AK round.
     OnHurt = (msg) => {
@@ -899,73 +962,89 @@ export default class PlayerBody extends Component{
         this.hurtFlinch.Trigger(amount / 12);
     }
 
-    // Begin the full-body forward roll: snap both layers onto the roll one-shot, fading out whatever
-    // locomotion / upper one-shot was playing so neither layer is ever left empty (no bind-pose flash).
-    StartRoll(){
-        const lo = this.lowerActions['roll'];
-        const up = this.upperActions['roll'];
+    // Begin a full-body GROUND MOVE — the dodge SLIDE ('slide') or the hard-landing ROLL ('landRoll').
+    // Snaps both layers onto the chosen one-shot, fading out whatever locomotion / upper one-shot was
+    // playing so neither layer is ever left empty (no bind-pose flash). PlayerControls has already set
+    // rollDir (the travel direction) and owns the momentum + i-frames.
+    StartGroundMove(type){
+        const key = type === 'slide' ? 'slide' : 'roll';
+        const lo = this.lowerActions[key];
+        const up = this.upperActions[key];
         if(!lo || !up || this.rolling){ return; }
         this.rolling = true;
-        this.oneShot = null;                                   // the roll owns the upper layer now
-        // Face the body along the roll direction so the forward-somersault clip travels the dodged way
-        // (directional double-tap dodge). Snap to it now (the somersault sells the turn) and hold it in
-        // UpdateBodyYaw for the roll's duration; it eases back to the look direction once the roll ends.
+        this._moveType = type;
+        this._moveActionKey = key;
+        // Per-move tuning: a slide GLIDES (longer clip, gun recovers earlier); the land-roll tumbles like
+        // the old dodge. Cached here so UpdateRoll / EndRoll stay generic.
+        const slide = type === 'slide';
+        this._moveTimeScale     = slide ? this.slideTimeScale     : this.rollTimeScale;
+        this._moveEndLead       = slide ? this.slideEndLead       : this.rollEndLead;
+        this._moveUpperLead     = slide ? this.slideUpperLead     : this.rollUpperLead;
+        this._moveUpperBlendOut = slide ? this.slideUpperBlendOut : this.rollUpperBlendOut;
+        this._moveBlendOut      = slide ? this.slideBlendOut      : this.rollBlendOut;
+        this._moveLandFade      = slide ? this.slideLandFade      : this.rollLandFade;
+        this.oneShot = null;                                   // the move owns the upper layer now
+        // Face the body along the travel direction so the clip travels the dodged/landing way. Snap to it
+        // now (sells the turn) and hold it in UpdateBodyYaw for the move; it eases back to look on exit.
         const rd = this.playerControls ? this.playerControls.rollDir : null;
         this._rollYaw = (rd && (rd.x * rd.x + rd.z * rd.z) > 1e-6)
             ? Math.atan2(rd.x, rd.z)
             : (this._bodyYaw !== null ? this._bodyYaw : 0);
         this._bodyYaw = this._rollYaw;
-        // The roll branch in Update skips UpdateLocomotion, which is the only place airState/_groundedTimer
-        // are maintained — so clear the jump sub-graph to a known-grounded state now. Otherwise a roll
-        // started just after landing (still inside airExitDebounce) would leave airState='fall' frozen and
-        // flash the jumpFall pose for a frame when EndRoll hands back to locomotion.
+        // This branch skips UpdateLocomotion (the only place airState/_groundedTimer are maintained), so
+        // clear the jump sub-graph to a known-grounded state now. Otherwise the air pose can flash for a
+        // frame when EndRoll hands back to locomotion (matters most for a land-roll out of a real fall).
         this.airState = null;
         this._groundedTimer = this.airExitDebounce;
         this._airborneTimer = 0;
         this._launchArmed = false;
+        // Re-arm the terrain conform so it eases IN from flat (no first-frame slope-pitch snap).
+        this._conformPitch = 0;
+        this._conformDrop = 0;
+        this._moveAimEngaged = false;   // aim-while-sliding latch is per-move (see the rolling branch)
 
-        // Lower layer: crossfade the legs from their current locomotion into the roll.
+        // Lower layer: crossfade the legs from their current locomotion into the move.
         const prevLo = this.lowerState ? this.lowerActions[this.lowerState] : null;
         lo.reset();
-        lo.setEffectiveTimeScale(this.rollTimeScale);
+        lo.setEffectiveTimeScale(this._moveTimeScale);
         lo.setEffectiveWeight(1.0);
         lo.play();
         if(prevLo && prevLo !== lo){ lo.crossFadeFrom(prevLo, 0.08, false); }
         this.lowerState = null;                                // normal loco no longer drives the legs
 
-        // Upper layer: make the roll the sole full-weight upper action (fades out loco + any one-shot).
+        // Upper layer: make the move the sole full-weight upper action (fades out loco + any one-shot).
         up.reset();
-        up.setEffectiveTimeScale(this.rollTimeScale);
+        up.setEffectiveTimeScale(this._moveTimeScale);
         up.play();
         this.SetUpperPrimary(up, 0.08);
         this.upperState = null;
         this._upperBlendStarted = false;                       // re-arm the early upper-body blend
     }
 
-    // Advance the roll. The UPPER body (torso + gun) starts blending into the following locomotion/idle
-    // a LOT earlier than the legs (rollUpperLead), so the rifle eases back to its held pose over most
-    // of the roll; the legs keep rolling until rollEndLead, then EndRoll settles the lower half. Both
-    // roll actions keep playing (and clamp) THROUGH their fades, so nothing hard-cuts.
+    // Advance the active ground move (slide/land-roll). The UPPER body (torso + gun) starts blending into
+    // the following locomotion/idle a LOT earlier than the legs (_moveUpperLead), so the rifle eases back
+    // to its held pose over most of the move; the legs keep going until _moveEndLead, then EndRoll settles
+    // the lower half. Both actions keep playing (and clamp) THROUGH their fades, so nothing hard-cuts.
     UpdateRoll(){
-        const lo = this.lowerActions['roll'];
+        const lo = this.lowerActions[this._moveActionKey];
         if(!lo){ this.rolling = false; this.ResetAimPoseAccumulators(); return; }
         const dur = lo.getClip().duration;
 
         // Early UPPER-body hand-off: torso + gun arms blend to the following anim well before the end.
-        if(!this._upperBlendStarted && lo.time >= dur - this.rollUpperLead){
+        if(!this._upperBlendStarted && lo.time >= dur - this._moveUpperLead){
             this.StartUpperRollBlend();
         }
 
-        const end = Math.max(0.05, dur - this.rollEndLead);
+        const end = Math.max(0.05, dur - this._moveEndLead);
         if(lo.time >= end){ this.EndRoll(); }
     }
 
-    // Begin the long upper-body crossfade from the roll into the gun-holding idle (or matching
-    // locomotion). The roll keeps driving the LEGS until EndRoll; this only re-homes the torso+arms.
+    // Begin the long upper-body crossfade from the move into the gun-holding idle (or matching
+    // locomotion). The move keeps driving the LEGS until EndRoll; this only re-homes the torso+arms.
     StartUpperRollBlend(){
         const loco = this.DesiredLocoState();
-        this.upperState = 'roll';
-        this.PlayUpperLocomotion(this.DesiredUpperState(loco), this.rollUpperBlendOut);
+        this.upperState = this._moveActionKey;
+        this.PlayUpperLocomotion(this.DesiredUpperState(loco), this._moveUpperBlendOut);
         this._upperBlendStarted = true;
     }
 
@@ -979,7 +1058,7 @@ export default class PlayerBody extends Component{
     // pelvis pop. Zeroing the weights lets each early-return guard fire on frame 1 so the whole pose
     // eases back in coherently (in lockstep), not half-snapped/half-eased; clearing _hipRefSeeded makes
     // StabilizeHips re-acquire its settled-pelvis reference from the live post-roll stand-up pose.
-    ResetAimPoseAccumulators(){
+    ResetAimPoseAccumulators(keepAim = false){
         this._aimPitchWeight = 0;
         this._aimPitchValue = 0;
         this._aimYawValue = 0;
@@ -990,20 +1069,23 @@ export default class PlayerBody extends Component{
         this._hipRefSeeded = false;
         this._aimIdleStab = 0;          // re-ease the steady-aim settle in from scratch after a roll
         this._aimIdleRefSeeded = false; // re-acquire the settled spine reference from the post-roll pose
-        // Also clear the recently-fired window and hard-reset the weapon aim-IK blend: if you rolled
-        // while HOLDING fire, _shootHold stays re-armed and the IK's master blend freezes near 1 through
-        // the roll (Update skipped), snapping the gun/support-hand on in one frame at recovery. Zeroing
-        // both makes the IK ease back in from nothing if you're still firing out of the roll.
+        // Clear the recently-fired window (the shoot anim is suppressed during a move, so it has decayed).
         this._shootHold = 0;
-        // FPS camera-authoritative viewmodel: ease the ADS weight + procedural/recoil back from 0 on roll
-        // exit (the roll skipped UpdateFpsViewmodel) so they don't thaw at a frozen value and pop. The
-        // captured seat is a constant — left intact. Reseed the look-sway so it doesn't spike on recovery.
-        this._fpsAdsW = 0;
-        this._fpsRaiseW = 0;
-        this._fpsVmRecoilPitch = 0;
-        this._fpsVmLandDip = 0;
-        this._fpsLookSeeded = false;
-        if(this.weaponAimIK){ this.weaponAimIK.Reset(); }
+        // FPS camera-authoritative viewmodel + the weapon aim-IK blend. NORMALLY zeroed so they ease back
+        // in from 0 after a move (the move skipped them, so they'd thaw at a frozen value and snap the gun/
+        // support-hand on in one frame). But when the move KEPT the aim live (slide + aim, keepAim=true)
+        // they're already mid-blend and on-target — zeroing here would snap the gun OFF the crosshair for a
+        // frame then re-ease, the exact pop we keep them live to avoid. So leave them. (The spine-lean
+        // accumulators above ARE still zeroed: the lean wasn't run during the slide, and the gun stays put
+        // as the weapon IK re-corrects it onto the crosshair every frame while the lean eases back in.)
+        if(!keepAim){
+            this._fpsAdsW = 0;
+            this._fpsRaiseW = 0;
+            this._fpsVmRecoilPitch = 0;
+            this._fpsVmLandDip = 0;
+            this._fpsLookSeeded = false;
+            if(this.weaponAimIK){ this.weaponAimIK.Reset(); }
+        }
         // Crouch + foot IK ease back in from zero after a roll (the roll owns the whole body and skips
         // them, so without this they'd thaw at their frozen pre-roll values and pop the pelvis/legs).
         this._crouchEased = 0;
@@ -1013,23 +1095,93 @@ export default class PlayerBody extends Component{
 
     EndRoll(){
         this.rolling = false;
-        this.ResetAimPoseAccumulators();
+        // Keep the weapon aim live across the hand-off if aim was used during the slide, so the gun's IK /
+        // FPS viewmodel state carries straight into the normal pipeline (no snap off the crosshair, and no
+        // snap to bind for the ease-out if you released mid-slide). Full reset otherwise.
+        this.ResetAimPoseAccumulators(this._moveAimEngaged);
         const loco = this.DesiredLocoState();
-        // Fade the legs from the roll into the resolved locomotion: a FAST blend into a jog when
-        // landing in motion (so the feet are walking immediately and don't slide), a moderate one when
-        // settling to a stop. The jog is foot-synced to the ground speed from the first frame.
-        this.lowerState = 'roll';
-        const landFade = this.IsJogState(loco) ? this.rollLandFade : this.rollBlendOut;
+        // Fade the legs from the move into the resolved locomotion: a FAST blend into a jog when landing
+        // in motion (so the feet are walking immediately and don't slide), a moderate one when settling
+        // to a stop. The jog is foot-synced to the ground speed from the first frame.
+        this.lowerState = this._moveActionKey;
+        const landFade = this.IsJogState(loco) ? this._moveLandFade : this._moveBlendOut;
         this.SetLowerState(loco, landFade);
         // If the torso already homed to this SAME jog during the early upper blend, phase-match the
-        // legs to it so the torso bob and the footfalls don't run out of sync coming out of the roll.
+        // legs to it so the torso bob and the footfalls don't run out of sync coming out of the move.
         if(this._upperBlendStarted && this.upperState === loco && this.IsJogState(loco)){
             const up = this.upperActions[loco], lo = this.lowerActions[loco];
             if(up && lo){ lo.time = up.time; }
         }
-        // The torso + gun arms already began easing back to the held pose at rollUpperLead; only start
+        // The torso + gun arms already began easing back to the held pose at _moveUpperLead; only start
         // it here as a fallback if that early hand-off never fired (e.g. a very short clip).
         if(!this._upperBlendStarted){ this.StartUpperRollBlend(); }
+        this._moveType = null;   // move over: the terrain conform now eases back to flat (this.rolling=false)
+    }
+
+    // --- GROUND-TOPOLOGY CONFORM (the "follow the ground" pass for the slide + land-roll). While a
+    // ground move owns the body the legs follow the clip and FootIK is OFF, so without this the avatar
+    // would slide/roll along a FLAT plane straight through a slope. Each frame a move runs, this raycasts
+    // the terrain under the body centre and under two samples fore/aft along the travel direction, then
+    // (a) drops the avatar's ROOT onto the surface and (b) PITCHES the whole avatar about its right axis
+    // to lie along the slope. Targets ease to 0 when no move is active, so it bleeds out with no pop and
+    // is a true no-op the rest of the time. Composes a pitch onto the yaw UpdateBodyYaw already applied.
+    UpdateGroundConform(t){
+        // Fast path: nothing to do when idle and already flat — keeps normal (non-move) frames untouched.
+        if(!this.rolling && Math.abs(this._conformPitch) < 1e-4 && Math.abs(this._conformDrop) < 1e-4){ return; }
+
+        let targetPitch = 0, targetDrop = 0, haveTarget = false;
+        if(this.rolling && this._physicsWorld){
+            const cx = this.modelRoot.position.x, cz = this.modelRoot.position.z;
+            const baseY = this.modelRoot.position.y;
+            const groundC = this._sampleGroundY(cx, cz, baseY);
+            if(groundC !== null){
+                // Height: pull the root onto the surface under its centre (clamped; relative, so on flat
+                // ground where groundC ≈ baseY it stays ~0 and never fights the capsule).
+                targetDrop = THREE.MathUtils.clamp(groundC - baseY, -this.conformDropMax, this.conformDropMax);
+                // Slope along travel: sample the ground a little AHEAD and BEHIND in the body's facing.
+                this._conformFwd.set(Math.sin(this._bodyYaw), 0, Math.cos(this._bodyYaw));
+                const d = this.conformSample;
+                const gF = this._sampleGroundY(cx + this._conformFwd.x * d, cz + this._conformFwd.z * d, baseY);
+                const gB = this._sampleGroundY(cx - this._conformFwd.x * d, cz - this._conformFwd.z * d, baseY);
+                if(gF !== null && gB !== null){
+                    // Ground ahead lower than behind (downhill) => nose-DOWN (positive pitch about right).
+                    targetPitch = THREE.MathUtils.clamp(
+                        Math.atan2(gB - gF, 2 * d), -this.conformPitchMax, this.conformPitchMax);
+                }
+                haveTarget = true;
+            }
+        }
+
+        // Ease toward the live slope/height while a move runs; bleed back to flat (target 0) when it ends.
+        const rate = haveTarget ? this.conformEaseIn : this.conformEaseOut;
+        const k = 1 - Math.exp(-rate * t);
+        this._conformPitch += (targetPitch - this._conformPitch) * k;
+        this._conformDrop  += (targetDrop  - this._conformDrop ) * k;
+        if(Math.abs(this._conformPitch) < 1e-4 && Math.abs(this._conformDrop) < 1e-4){
+            this._conformPitch = 0; this._conformDrop = 0; return;   // settled flat: leave the root as-is
+        }
+
+        // Apply: drop the root onto the surface, then pitch it about the body-RIGHT axis so the tilt runs
+        // fore/aft along travel. Right = (cos,0,-sin) of the facing; quaternion = qPitch * qYaw applies the
+        // facing (UpdateBodyYaw set it) first, then the slope pitch about that world-space right axis.
+        this.modelRoot.position.y += this._conformDrop;
+        this._conformQYaw.setFromAxisAngle(this._conformUp, this._bodyYaw);
+        this._conformRight.set(Math.cos(this._bodyYaw), 0, -Math.sin(this._bodyYaw));
+        this._conformQPitch.setFromAxisAngle(this._conformRight, this._conformPitch);
+        this.modelRoot.quaternion.copy(this._conformQPitch).multiply(this._conformQYaw);
+    }
+
+    // Raycast straight down for the terrain Y under (x,z): from conformRayUp above `nearY` to
+    // conformRayDown below it. Returns the hit Y, or null if nothing's there. StaticFilter = the level
+    // colliders (the same group FootIK raycasts), so it follows the same heightmap terrain.
+    _sampleGroundY(x, z, nearY){
+        this._conformOrigin.set(x, nearY + this.conformRayUp, z);
+        this._conformDest.set(x, nearY - this.conformRayDown, z);
+        if(AmmoHelper.CastRay(this._physicsWorld, this._conformOrigin, this._conformDest,
+                this._conformHit, CollisionFilterGroups.StaticFilter)){
+            return this._conformHit.intersectionPoint.y;
+        }
+        return null;
     }
 
     // The same full-body avatar is rendered in BOTH camera modes now: in TPS the
@@ -1679,13 +1831,34 @@ export default class PlayerBody extends Component{
         }
         // Re-seat the in-hand gun if the FPS aim state flipped (FPS hip <-> FPS ADS grip).
         this.UpdateActiveGrip(t);
+        // Terrain-topology conform for the active ground move (slide / land-roll): height-lock + slope-
+        // pitch the whole avatar onto the surface, eased IN while a move runs and bled back to flat after
+        // (so the hand-off to locomotion never pops). Runs every frame but is a true no-op when idle/flat.
+        // Sits after UpdateBodyYaw (it composes a slope pitch onto the yaw that set the facing) and before
+        // the pose pipeline / FootIK so they read the conformed root.
+        this.UpdateGroundConform(t);
         if(this.rolling){
-            // The roll owns the WHOLE body while it plays: no hip stabilization, no aim lean and no
-            // locomotion graph (any of which would fight the roll). Just advance it and, when the
-            // clamped clip finishes, blend straight back to locomotion (EndRoll) — a clean hand-off
-            // that prevents the animation locking or snapping.
-            this.UpdateRoll();
+            // The move owns the WHOLE body while it plays: no hip stabilization, no spine aim-lean and no
+            // locomotion graph (any of which would fight it). Just advance it and, when the clamped clip
+            // finishes, blend straight back to locomotion (EndRoll). UpdateGroundConform (above) keeps it
+            // glued to the terrain. EXCEPTION — SLIDE + AIM: keep the gun ON THE CROSSHAIR via the EXISTING
+            // aim IK so you can aim/fire mid-slide. TPS runs the in-hand weapon-aim IK here (barrel swing +
+            // support-hand grip, layered on the slide pose); FPS runs the camera-authoritative viewmodel in
+            // the FPS block below. SLIDE-ONLY — the land-roll tumbles, so aiming through it would contort the
+            // arms. The IK eases its OWN correction in/out, so it blends on cleanly; EndRoll then keeps it
+            // live on exit if you're still aiming (no snap back to the animation pose).
+            this._moveAimActive = (this._moveType === 'slide')
+                && !!(this.playerControls && this.playerControls.aiming);
+            if(this._moveAimActive){ this._moveAimEngaged = true; }   // latch on first aim of this slide
+            this.UpdateRoll();   // may EndRoll (which reads _moveAimEngaged to keep the aim live on exit)
+            // Once aim has engaged this slide, KEEP running the aim IK every frame so it eases the gun ON
+            // when you ADS and OFF (back to the slide pose) when you release — never a one-frame snap. The
+            // IK's own active flag (pc.aiming) drives the in/out. TPS = the in-hand weapon-aim IK here; FPS
+            // = the camera-authoritative viewmodel in the FPS block below. A slide where you never aim never
+            // sets _moveAimEngaged, so non-aim slides are byte-for-byte unchanged.
+            if(this._moveAimEngaged){ this.UpdateWeaponAim(t); }   // TPS gun-to-crosshair (FPS no-ops here)
         }else{
+            this._moveAimActive = false;
             // Damp the hip bob when the camera is close (aim / collision) so the character is stable in
             // front of the lens. Runs after the mixer/root-lock and BEFORE the spine aim lean, since the
             // lean reads the (now-stabilized) pelvis as its parent.
@@ -1740,9 +1913,12 @@ export default class PlayerBody extends Component{
             // (the Controls start-of-frame call places raw and is overwritten here this same frame).
             this.playerControls.PlaceFpsEyePosition(this.parent.Position, t, true);
             // The gun is the VERY LAST pose write: recompute it from the FINAL camera (just placed) so it
-            // stays locked to the crosshair while the body moves underneath it. Skipped during a roll (the
-            // roll owns the whole body and the non-roll branch — incl. FootIK — didn't run this frame).
-            if(!this.rolling){ this.UpdateFpsViewmodel(t); }
+            // stays locked to the crosshair while the body moves underneath it. Skipped during a move EXCEPT
+            // once aim has engaged this slide (_moveAimEngaged) — there the camera-authoritative viewmodel
+            // keeps the gun on the crosshair as the slide carries the view underneath it, and keeps running
+            // so it eases back to the hip pose if you release (the FPS half of aim-while-sliding; the TPS
+            // half is UpdateWeaponAim in the rolling branch).
+            if(!this.rolling || this._moveAimEngaged){ this.UpdateFpsViewmodel(t); }
         }
     }
 
@@ -2309,8 +2485,8 @@ export default class PlayerBody extends Component{
         const target = this.playerControls.angles.y + this.yawOffset;
         if(this._bodyYaw === null){ this._bodyYaw = target; }
 
-        // Dodge roll: hold the body on the roll direction (snapped in StartRoll) so the forward
-        // somersault travels the way the player dodged, regardless of where the camera looks.
+        // Ground move (slide / land-roll): hold the body on the travel direction (snapped in
+        // StartGroundMove) so the move travels the way the player dodged/landed, ignoring the camera look.
         if(this.rolling){
             const dR = Math.atan2(Math.sin(this._rollYaw - this._bodyYaw), Math.cos(this._rollYaw - this._bodyYaw));
             this._bodyYaw += dR * (1 - Math.exp(-this.rollYawLerp * t));
