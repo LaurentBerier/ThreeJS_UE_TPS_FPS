@@ -246,6 +246,7 @@ export default class UeSoldierController extends Component{
 
         this.parent.RegisterEventHandler(this.TakeHit, 'hit');
         this.blood = this.FindEntity('Level').GetComponent('BloodFx');   // shared blood-splatter burst
+        this.bloodDecals = this.FindEntity('Level').GetComponent('BloodDecals');   // shared body blood decals
 
         // Build the shared UE avatar: import fix, textured material, AK in hand.
         const built = buildUeMannequin(this.model, { textures: this.textures, weapon: this.weapon, preOriented: this.preOriented });
@@ -1196,6 +1197,8 @@ export default class UeSoldierController extends Component{
                 if(out.lengthSq() > 1e-6){ out.normalize(); origin = hp.clone().addScaledVector(out, 0.12); }
             }
             this.blood.Emit(origin, out, { scale: 0.6, count: 12, spread: 0.7 });
+            // Stamp a blood decal on the body where the bullet landed (rides the animation + ragdoll).
+            this.bloodDecals && this.bloodDecals.Splat(hp, msg.hitResult.intersectionNormal, this.skinnedmesh);
         }
 
         this.health = Math.max(0, this.health - (msg.amount ?? 0));

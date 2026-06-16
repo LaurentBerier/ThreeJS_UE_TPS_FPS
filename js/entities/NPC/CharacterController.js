@@ -157,6 +157,7 @@ export default class CharacterController extends Component{
 
         this.parent.RegisterEventHandler(this.TakeHit, 'hit');
         this.blood = this.FindEntity('Level').GetComponent('BloodFx');   // shared blood-splatter burst
+        this.bloodDecals = this.FindEntity('Level').GetComponent('BloodDecals');   // shared body blood decals
 
         const scene = this.model;
 
@@ -345,6 +346,8 @@ export default class CharacterController extends Component{
                 if(out.lengthSq() > 1e-6){ out.normalize(); origin = hp.clone().addScaledVector(out, 0.22); }
             }
             this.blood.Emit(origin, out, { scale: 1.1, count: 16, speed: 3.8, spread: 0.7 });
+            // Stamp a blood decal on the beast's body where the bullet landed (rides the animation + ragdoll).
+            this.bloodDecals && this.bloodDecals.Splat(hp, msg.hitResult.intersectionNormal, this.skinnedmesh, { size: 0.22 + Math.random() * 0.26 });
         }
 
         // `?? 0` guard: a hit that ever omits amount would otherwise NaN the health and the

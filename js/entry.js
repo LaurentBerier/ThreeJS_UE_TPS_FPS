@@ -110,6 +110,14 @@ const decalColor = 'assets/decals/decal_c.jpg'
 const decalNormal = 'assets/decals/decal_n.jpg'
 const decalAlpha = 'assets/decals/decal_a.jpg'
 
+// Blood decals (sprayed onto the ENEMY geometry where a bullet lands — see BloodDecals). Two authored
+// RGBA splatter shapes, picked at random per hit for variety.
+const bloodDecal1 = 'assets/decals/Blood_decal_1.png'
+const bloodDecal2 = 'assets/decals/Blood_Decal_2.png'
+// Animated blood-splash spritesheet (8 frames in a horizontal strip) that replaces the procedural
+// droplet burst as the hero impact VFX — see BloodFx.
+const bloodSheet = 'assets/VFX/Blood_SpriteSheet.png'
+
 //Sky
 const skyTex = 'assets/sky.jpg'
 
@@ -132,6 +140,7 @@ import UIManager from './entities/UI/UIManager.js'
 import AmmoBox from './entities/AmmoBox/AmmoBox.js'
 import LevelBulletDecals from './entities/Level/BulletDecals.js'
 import BloodFx from './entities/Common/BloodFx.js'
+import BloodDecals from './entities/Common/BloodDecals.js'
 import PlayerHealth from './entities/Player/PlayerHealth.js'
 import UeExporter from './export/UeExporter.js'
 
@@ -312,6 +321,10 @@ class FPSGameApp{
     promises.push(this.AddAsset(decalColor, texLoader, "decalColor"));
     promises.push(this.AddAsset(decalNormal, texLoader, "decalNormal"));
     promises.push(this.AddAsset(decalAlpha, texLoader, "decalAlpha"));
+    //Blood decals + blood-splash spritesheet
+    promises.push(this.AddAsset(bloodDecal1, texLoader, "bloodDecal1"));
+    promises.push(this.AddAsset(bloodDecal2, texLoader, "bloodDecal2"));
+    promises.push(this.AddAsset(bloodSheet, texLoader, "bloodSheet"));
 
     promises.push(this.AddAsset(skyTex, texLoader, "skyTex"));
     //Heightmap (uneven terrain)
@@ -321,6 +334,14 @@ class FPSGameApp{
 
     this.assets['level'] = this.assets['level'].scene;
     this.assets['muzzleFlash'] = this.assets['muzzleFlash'].scene;
+
+    // Blood textures are authored colour (sRGB) — tag them so they read at the right colour under the
+    // sRGB output pass (untagged they'd render washed-out/pink). The spritesheet additionally keeps its
+    // default clamp-to-edge wrap so a frame's UV window never bleeds the neighbouring frame.
+    for(const k of ['bloodDecal1', 'bloodDecal2', 'bloodSheet']){
+      const t = this.assets[k];
+      if(t){ t.encoding = THREE.sRGBEncoding; t.needsUpdate = true; }
+    }
 
     //Extract mutant anims (enemy NPC)
     this.mutantAnims = {};
@@ -449,8 +470,12 @@ class FPSGameApp{
     levelEntity.AddComponent(new LevelSetup(this.assets['level'], this.scene, this.physicsWorld, terrain));
     levelEntity.AddComponent(new Navmesh(this.scene, this.assets['navmesh']));
     levelEntity.AddComponent(new LevelBulletDecals(this.scene, this.assets['decalColor'], this.assets['decalNormal'], this.assets['decalAlpha']));
-    // Shared blood-splatter burst (pooled sprites). One instance; combatants fetch it on hit.
-    levelEntity.AddComponent(new BloodFx(this.scene));
+    // Shared blood-splatter burst — spritesheet-animated splash cards + a fine droplet mist (pooled).
+    // One instance; combatants fetch it on hit (FindEntity('Level').GetComponent('BloodFx')).
+    levelEntity.AddComponent(new BloodFx(this.scene, this.camera, this.assets['bloodSheet']));
+    // Shared blood DECALS sprayed onto the enemy body geometry where a bullet lands (bone-attached, so
+    // they ride the animation + ragdoll). Combatants fetch it on hit, like BloodFx.
+    levelEntity.AddComponent(new BloodDecals(this.scene, this.assets['bloodDecal1'], this.assets['bloodDecal2']));
     this.entityManager.Add(levelEntity);
 
     const skyEntity = new Entity();
@@ -544,6 +569,13 @@ class FPSGameApp{
     });
 
     this.entityManager.EndSetup();
+
+    // Pre-warm the blood-decal projection path (cold V8 JIT + DecalGeometry is ~1.5s on its first calls)
+    // behind the loading screen, using a freshly-built enemy mesh, so the first in-combat hit doesn't hitch.
+    const warmSoldier = this.entityManager.Get('UeSoldier0');
+    const warmCtrl = warmSoldier && warmSoldier.GetComponent('UeSoldierController');
+    const bloodDecals = levelEntity.GetComponent('BloodDecals');
+    if(warmCtrl && warmCtrl.skinnedmesh && bloodDecals){ bloodDecals.Prewarm(warmCtrl.skinnedmesh); }
 
     this.scene.add(this.camera);
     this.animFrameId = window.requestAnimationFrame(this.OnAnimationFrameHandler);
