@@ -71,6 +71,31 @@ export default class CharacterController extends Component{
         this.steerFrom = new THREE.Vector3();        // scratch: look-ahead walk cursor
         this.steerDir = new THREE.Vector3();         // scratch: final steer direction
 
+        // 4) Turn-gated motion (corner anticipation) — the single biggest "stops grinding corners" win.
+        //    When the heading is far from where the path wants to go (a sharp corner / hairpin), the
+        //    beast THROTTLES its forward root motion and pivots more in place, then powers out once it's
+        //    lined up — a planted, deliberate heavy-creature turn instead of a truck understeering wide
+        //    into the wall on the outside of the bend (which is what wedged it and triggered the
+        //    teleport "respawn"). moveGate is recomputed each frame in MoveAlongPath from how aligned
+        //    the facing is with the steer direction, and applied to the root displacement in
+        //    ApplyRootMotion.
+        this.moveGate = 1.0;            // 0..1 forward-motion scale from heading alignment
+        this.turnGateMin = 0.25;        // floor: still inch forward mid-turn (so a TRUE wedge still reads as stuck)
+        this.curForward = new THREE.Vector3();   // scratch: the model's current forward (for the gate)
+
+        // 5) Predictive interception (lead the target). The beast estimates the player's velocity and
+        //    paths a short time AHEAD of them, so it cuts the corner to head you off instead of forever
+        //    chasing the spot you just left — a smarter, more AAA hunt. Only kicks in at range; up close
+        //    it makes a straight beeline. The lead point is snapped back onto the navmesh so we never
+        //    path to an off-mesh prediction.
+        this.playerPrevPos = new THREE.Vector3();
+        this.playerVel = new THREE.Vector3();        // low-passed player velocity (m/s, horizontal)
+        this._havePlayerPrev = false;
+        this.leadTime = 0.45;          // seconds of player velocity to lead by
+        this.leadDistanceMax = 4.0;    // cap the lead so a sprinting player can't fling the aim point away
+        this.leadMinDistance = 4.0;    // only lead when the player is at least this far (close => beeline)
+        this.leadVec = new THREE.Vector3();          // scratch: the computed lead offset
+
         // Stuck detection & recovery — WAYPOINT-CENTRIC. Progress is anchor-based and oscillation
         // proof: it's only credited once we travel progressRadius AWAY from an anchor dropped the
         // moment we last advanced, so jittering/sliding against a wall can never look like progress
@@ -95,7 +120,10 @@ export default class CharacterController extends Component{
         this.detourTimer = 0.0;                   // time still committed to a detour (suppresses target repaths)
         this.detourDuration = 1.2;                // how long to commit to a detour so it isn't instantly overwritten
         this.detourAttempts = 0;                  // consecutive detours that failed to free us
-        this.maxDetours = 3;                      // after this many failed detours => last-resort teleport
+        // The teleport is the visible "respawn" the beast used to do; with turn-gated cornering it
+        // should almost never wedge, so give it MANY more navmesh detours to wriggle free before ever
+        // falling back to a hop (was 3). In practice the gate keeps it moving and this is rarely reached.
+        this.maxDetours = 5;                      // after this many failed detours => last-resort teleport
 
         // Death ragdoll (built on death; drives the skinned mesh in place of the mixer).
         this.dead = false;
@@ -169,7 +197,7 @@ export default class CharacterController extends Component{
         // spot that's buried in static collision before placing the model. Valid spawns are left put.
         this.navmesh.FindClearSpawn(this.parent.position, this.physicsWorld, this.parent.position);
         // Re-seat on the terrain at the (possibly relocated) clear spawn so the feet start on the ground.
-        if(this.terrain){ this.parent.position.y = this.terrain.HeightAt(this.parent.position.x, this.parent.position.z); }
+        if(this.terrain){ this.parent.position.y = this.terrain.StanceHeightAt(this.parent.position.x, this.parent.position.z, 0.55); }
         scene.position.copy(this.parent.position);
         
         this.mixer = new THREE.AnimationMixer( scene );
@@ -238,10 +266,16 @@ export default class CharacterController extends Component{
             return false;
         }
 
-        // Line of sight LAST (most expensive): the ray must reach the player unobstructed.
+        // Line of sight LAST (most expensive): the ray must reach the player unobstructed. Aim at the
+        // player capsule CENTRE (body origin), not player.Position: the latter is the tracked EYE, which
+        // PlayerControls holds at STANDING height while crouched, so the shrunk capsule sits below it and
+        // a ray to the eye sails OVER a crouched player (the "crouch = the beast loses me" bug). The body
+        // origin is always inside the capsule; reuse senseVec (its earlier direction value is done with).
         const rayInfo = {};
         const collisionMask = CollisionFilterGroups.AllFilter & ~CollisionFilterGroups.SensorTrigger;
-        if(AmmoHelper.CastRay(this.physicsWorld, modelPos, this.player.Position, rayInfo, collisionMask)){
+        const pOrigin = this.player.GetComponent('PlayerPhysics').body.getWorldTransform().getOrigin();
+        const aimPlayer = this.senseVec.set(pOrigin.x(), pOrigin.y() + 0.35, pOrigin.z());
+        if(AmmoHelper.CastRay(this.physicsWorld, modelPos, aimPlayer, rayInfo, collisionMask)){
             const body = Ammo.castObject( rayInfo.collisionObject, Ammo.btRigidBody );
 
             if(body == this.player.GetComponent('PlayerPhysics').body){
@@ -264,19 +298,45 @@ export default class CharacterController extends Component{
         this.SetPath(this.navmesh.FindPath(this.model.position, node));
     }
 
-    NavigateToPlayer(){
-        this.tempVec.copy(this.player.Position);
-        this.tempVec.y = 0.5;
-        this.SetPath(this.navmesh.FindPath(this.model.position, this.tempVec));
-
-        /*
-        if(this.path){
-            this.pathDebug.Clear();
-            for(const point of this.path){
-                this.pathDebug.AddPoint(point, "blue");
-            }
+    // Estimate the player's velocity (low-passed) so NavigateToPlayer can LEAD the target. Called once
+    // per frame before the chase logic repaths.
+    UpdatePlayerTracking(t){
+        if(t <= 1e-6){ return; }
+        const p = this.player.Position;
+        if(this._havePlayerPrev){
+            this.tempVec.copy(p).sub(this.playerPrevPos).divideScalar(t);
+            this.tempVec.y = 0.0;
+            // Low-pass so a single jittery frame (or a physics snap) doesn't swing the lead around.
+            this.playerVel.lerp(this.tempVec, 0.25);
         }
-        */
+        this.playerPrevPos.copy(p);
+        this._havePlayerPrev = true;
+    }
+
+    NavigateToPlayer(){
+        // Predictive interception: aim a short time AHEAD of the player along their current velocity so
+        // the beast cuts the corner to head you off, rather than forever pathing to the spot you just
+        // left. Only when you're far enough that leading helps (up close it makes a straight beeline),
+        // and the lead point is snapped back onto the navmesh so we never path to an off-mesh prediction.
+        this.tempVec.copy(this.player.Position);
+        const dx = this.tempVec.x - this.model.position.x, dz = this.tempVec.z - this.model.position.z;
+        const farEnough = (dx * dx + dz * dz) >= (this.leadMinDistance * this.leadMinDistance);
+        if(farEnough && this.playerVel.lengthSq() > 0.25){
+            this.leadVec.copy(this.playerVel).multiplyScalar(this.leadTime);
+            const leadLen = this.leadVec.length();
+            if(leadLen > this.leadDistanceMax){ this.leadVec.multiplyScalar(this.leadDistanceMax / leadLen); }
+            this.tempVec.add(this.leadVec);
+            // Drop the prediction to the ground BEFORE the on-mesh snap: the walkable-point lookup
+            // has a narrow vertical window, and the player's Position is its capsule centre.
+            if(this.terrain){ this.tempVec.y = this.terrain.HeightAt(this.tempVec.x, this.tempVec.z) + 0.15; }
+            this.navmesh.NearestWalkablePoint(this.tempVec, this.tempVec);   // keep the prediction on the mesh
+        }
+        // Navigation destinations must sit AT the navmesh surface (see UeSoldierController.NavY —
+        // on the flat depot that surface was the historical hard-coded y=0.5; on the journey
+        // terrain it hugs the ground).
+        this.tempVec.y = this.terrain
+            ? this.terrain.HeightAt(this.tempVec.x, this.tempVec.z) + 0.15 : 0.5;
+        this.SetPath(this.navmesh.FindPath(this.model.position, this.tempVec));
     }
 
     // Build a yaw-only orientation (about world up) that points the model's
@@ -417,6 +477,16 @@ export default class CharacterController extends Component{
             this.steerDir.normalize();
             this.YawToward(this.steerDir, this.tempRot);
             this.model.quaternion.slerp(this.tempRot, this.turnRate * t);
+
+            // Corner anticipation: gate forward motion by how aligned our (now-rotated) facing is with
+            // the steer direction. A sharp turn (alignment near 0 / negative) throttles down so we pivot
+            // in place; once lined up, full speed. Squared for a crisper slow-into / power-out of corners.
+            this.curForward.copy(this.forwardVec).applyQuaternion(this.model.quaternion);
+            const align = this.curForward.x * this.steerDir.x + this.curForward.z * this.steerDir.z;
+            const a = Math.max(0, align);
+            this.moveGate = this.turnGateMin + (1 - this.turnGateMin) * a * a;
+        }else{
+            this.moveGate = 1.0;
         }
 
         // Advance past every waypoint we've reached this frame (root motion can skip several when
@@ -585,7 +655,9 @@ export default class CharacterController extends Component{
     SubtleTeleport(){
         const px = this.player.Position.x, pz = this.player.Position.z;
         let best = null, bestScore = Infinity;
-        for(const range of [2.0, 3.5, 5.0]){
+        // Keep the hop SMALL (was up to 5 m) so on the rare occasion it does fire it reads as the beast
+        // shrugging loose, not blinking across the room.
+        for(const range of [1.5, 2.5, 3.5]){
             for(let i = 0; i < 3; i++){
                 const node = this.navmesh.GetRandomNode(this.model.position, range);
                 if(!node){ continue; }
@@ -684,6 +756,11 @@ export default class CharacterController extends Component{
 
             // Reject only the clip-loop spike (scale-relative cap); normal run steps pass.
             if(vel.lengthSq() < this.rootMotionMaxStepSq){
+                // Corner anticipation: throttle the forward step when mid-turn (moveGate from heading
+                // alignment, set in MoveAlongPath) so the beast pivots into corners instead of arcing
+                // wide into the wall. Applied AFTER the clip-loop spike rejection above so a legitimate
+                // run step is never mistaken for the loop spike.
+                vel.multiplyScalar(this.moveGate);
                 if(this.navNode && this.navGroup !== null){
                     // Constrain the move to the navmesh so the agent can't clip
                     // through collisions and wander off the walkable surface.
@@ -693,8 +770,10 @@ export default class CharacterController extends Component{
                     );
                     // clampStep projects onto the mesh plane; take Y from the terrain under the clamped
                     // (x,z) so the beast rides the hills (no terrain => keep the original height as before).
+                    // STANCE height (wide radius — the beast's spread stance is ~1.2 m): a point sample
+                    // leaves the downhill half of the body airborne on slopes (the floating-enemy bug).
                     this.clampTarget.y = this.terrain
-                        ? this.terrain.HeightAt(this.clampTarget.x, this.clampTarget.z) : this.desiredPos.y;
+                        ? this.terrain.StanceHeightAt(this.clampTarget.x, this.clampTarget.z, 0.55) : this.desiredPos.y;
 
                     // Wall-contact test: how much of the intended horizontal step survived the
                     // navmesh clamp? If the clamp slid us along a boundary and ate most of the
@@ -763,6 +842,7 @@ export default class CharacterController extends Component{
         }
 
         this.mixer && this.mixer.update(t);
+        this.UpdatePlayerTracking(t);   // estimate player velocity so the chase can LEAD the target
         this.ApplyRootMotion();
 
         this.UpdateDirection();

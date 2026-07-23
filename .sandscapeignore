@@ -1,0 +1,37 @@
+# Excluded from Sandscape uploads but kept on disk / in git.
+# Same syntax as .gitignore. The Sandscape CLI honors BOTH this file and
+# .gitignore. Everything NOT ignored round-trips to the platform verbatim and is
+# served as a static bundle, so the rule of thumb is: keep exactly what the game
+# fetches at runtime (index.html + js/ + assets/), drop everything that is only
+# used offline on a developer's machine.
+
+# --- Local dev servers + launchers (Sandscape hosts the bundle statically) ---
+serve.py
+Start-Server.bat
+start-server.command
+__pycache__/
+
+# --- Offline asset-baking tools (FBX->GLB converters, reload/slide/crouch bakers).
+# These are standalone browser utilities that pull three r160 from unpkg — the ONLY
+# remaining external-CDN references in the tree, and never loaded by the game. ---
+tools/
+
+# --- Docs / project metadata — not game content, not fetched at runtime. ---
+docs/
+README.md
+package.json
+
+# --- In-game UE exporter OUTPUT (produced by the P key; regenerated on demand). ---
+level_ue.glb
+mechanics.json
+
+# --- Oversized RAW source model kept on disk but never loaded at runtime. The game uses
+# Sandscape_Liz_decimated.glb (6 MB); this is the pre-decimation Tripo export (100 MB) and
+# exceeds Sandscape's 50 MB/file limit anyway. ---
+assets/characters/Sandscape_Liz.glb
+
+# --- Editor / OS cruft ---
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp

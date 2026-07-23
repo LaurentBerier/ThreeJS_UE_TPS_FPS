@@ -293,7 +293,15 @@ export function splitClipByBones(clip, upperBoneNames){
 const PELVIS_FIX = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
 export function adaptClipToPreOriented(clip){
     const out = clip.clone();
-    out.tracks = out.tracks.filter(t => !t.name.startsWith('root.'));
+    // Drop the 'root.' armature track (above) AND every '.scale' track. The UE clips bake
+    // constant-1.0 scale channels which, applied to a retargeted rig, OVERWRITE its per-bone
+    // REST scales. Harmless on the mannequin (rest scale 1.0 everywhere), but the Tripo rigs
+    // (Liz, Frog) fit their bodies to the shared skeleton with COMPENSATING per-bone rest
+    // scales — e.g. the Frog's big head is head=1.25 offset by neck_01=0.8585 * spine_03=0.9318
+    // (product ~1.0). Resetting the compensating PARENTS to 1.0 while the leaf head keeps 1.25
+    // blew the head up ~25% in-game. These clips never actually animate scale, so dropping the
+    // channels (each rig keeps its own rest scales) is the correct retarget for all of them.
+    out.tracks = out.tracks.filter(t => !t.name.startsWith('root.') && !t.name.endsWith('.scale'));
     const q = new THREE.Quaternion();
     const p = new THREE.Vector3();
     for(const track of out.tracks){

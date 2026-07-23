@@ -2,7 +2,9 @@
 body {
   margin: 0;
   overflow: hidden;
-  font-family: 'Roboto', sans-serif;
+  /* System stack (was Google-hosted Roboto): the game must be fully self-contained for
+     Sandscape hosting — no CDN fetches. Roboto still wins on Android/ChromeOS. */
+  font-family: Roboto, 'Segoe UI', system-ui, -apple-system, Helvetica, Arial, sans-serif;
   color: white;
   background: #000;
 }
@@ -180,20 +182,16 @@ canvas {
   position: absolute;
   width: 100%;
   height: 100%;
-  background-color: black;
-  /* Splashscreen art shown in full (contain) and scaled down to fit, so the
-     whole 3:2 image stays visible whatever the window aspect — the title reads
-     horizontally centered and the Unreal Engine logo at the bottom is never
-     cropped; black fills the side bars. No overlay, so it renders fully bright.
-     Path is relative to this stylesheet. */
-  background-image: url('../TPS_FPS_Template_Spashscreen1.png');
-  background-size: contain;
-  /* The Unreal Engine logo is baked into the art (centered in the PNG), so it can
-     only move by moving the art. Shift the art 30px right so the logo lands 30px
-     right of centre; the NEW GAME button and keyboard hint below are shifted the
-     same 30px so all three stay aligned on one vertical axis. */
-  background-position: calc(50% + 30px) center;
-  background-repeat: no-repeat;
+  background-color: #0e1018;
+  /* Unbranded menu backdrop: the splashscreen art carried a logo, a title and an engine mark, all
+     of which the brief strips. This is the same golden-hour world painted in pure CSS — storm-lit
+     dusk sky, the sun burning low, dark dune silhouettes — with not a letter on it. Layer order is
+     top-to-bottom: near dune, far dune, sun glow, sky bands. */
+  background-image:
+    radial-gradient(130% 30% at 26% 101%, #140d07 0 54%, transparent 55%),
+    radial-gradient(150% 26% at 78% 103%, #1d1209 0 56%, transparent 57%),
+    radial-gradient(46% 34% at 66% 44%, rgba(255, 152, 70, 0.55), rgba(255, 118, 40, 0.15) 55%, transparent 78%),
+    linear-gradient(180deg, #10131f 0%, #262c48 22%, #55405c 38%, #b06a3c 52%, #cf8f52 58%, #7c4d2c 68%, #33231a 82%, #191009 100%);
   text-align: center;
   display: flex;
   align-items: center;
@@ -205,19 +203,12 @@ canvas {
 #menu .hint {
   position: absolute;
   bottom: 2%;
-  /* Full-width centered text, then nudged right. */
   left: 0;
   right: 0;
   margin: 0 auto;
   text-align: center;
-  transform: translateX(110px);
   opacity: 0.55;
   font-size: 0.95em;
-}
-
-h1 {
-  font-family: 'Libre Barcode 39 Text', cursive;
-  font-size: 4em;
 }
 
 button {
@@ -234,11 +225,10 @@ button:hover {
   color: #fff;
 }
 
-/* NEW GAME: nudged right (matches the keyboard hint's offset) and down ~20px, with
-   a boxed outline + hover effect so it reads clearly as a clickable button. */
+/* NEW GAME: boxed outline + hover effect so it reads clearly as a clickable button,
+   centred on the horizon line of the CSS backdrop. */
 #start_game {
   position: relative;
-  left: 110px;
   top: 20px;
   padding: 12px 34px;
   border: 2px solid rgba(255, 255, 255, 0.55);

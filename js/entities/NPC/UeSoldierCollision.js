@@ -51,6 +51,11 @@ export default class UeSoldierCollision extends Component{
             const shape = new Ammo.btSphereShape(radius);
             const object = AmmoHelper.CreateTrigger(shape);
             object.parentEntity = this.parent;
+            // Tag the sphere with the bone it represents + its radius, so a bullet that lands here can plant its
+            // blood decal on the EXACT bone that was hit (not the ambiguous nearest bone in the rifle pose) and
+            // SIZE the decal to this body part (radius ~ the part's half-width) so it hugs it without overhang.
+            object.hitBone = bone;
+            object.hitRadius = radius;
             // CharacterFilter group (NOT the default): addCollisionObject(obj) with no group
             // defaults to the STATIC filter group in this Ammo build, which the TPS camera
             // spring-arm sweeps against — so the camera would dolly off the soldier's body

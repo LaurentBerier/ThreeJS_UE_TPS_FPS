@@ -2,6 +2,12 @@ import * as THREE from 'three'
 import Component from '../../Component.js'
 import Input from '../../Input.js'
 import {Ammo, AmmoHelper, CollisionFilterGroups} from '../../AmmoLib.js'
+// Walkable-route test for the authored journey. The steep-slope reactions (auto-slide + climb-hop)
+// fire only OFF this route, so the authored trail/arenas — including the deliberately steep ~50°
+// boss-gate ramp the player MUST climb — stay fully traversable, while the off-path dune faces,
+// bunds and canyon walls get the fake physics. Falls back to "always off-route" if the level ever
+// ships without it (import stays a pure data/math dependency, no side effects).
+import { IsOnRoute } from '../World/JourneyWorld.js'
 
 import DebugShapes from '../../DebugShapes.js'
 
@@ -56,7 +62,12 @@ export default class PlayerControls extends Component{
         // player and stop placing the camera so the tool's free-fly cam can own it.
         this.cameraOverride = false;
 
-        this.angles = new THREE.Euler();
+        // YXZ order: yaw-about-Y first. The spawn quaternion is decomposed into these angles at
+        // Initialize, and the default XYZ order represents any yaw beyond ±90° as (π, π−yaw, π) —
+        // a hidden pitch flip that turned the camera upside down when a spawn faced south-west.
+        // YXZ decomposes every yaw-only quaternion as a clean (0, yaw, 0); the rest of the
+        // controller only ever reads angles.x/.y as scalars, so nothing else changes.
+        this.angles = new THREE.Euler(0, 0, 0, 'YXZ');
         this.pitch = new THREE.Quaternion();
         this.yaw = new THREE.Quaternion();
 
@@ -432,6 +443,44 @@ export default class PlayerControls extends Component{
         this._lastTapTime = -10.0;       // _tapClock time of that first tap
         this.doubleTapWindow = 0.28;     // s between the two taps to count as a double-tap
         this._tapClock = 0.0;            // monotonic clock for tap timing (advanced each Update)
+
+        // --- Slope-driven "fake physics" for the slide + walk. -----------------------------------
+        // The capsule has zero friction, but the movement path otherwise PINS x/z to the input each
+        // frame, so gravity never actually slides the player on a slope. These rules synthesise that:
+        //
+        //   * a grounded player on a downhill steeper than autoSlideAngle DROPS into a slide down the
+        //     fall line (unless they're actively climbing it);
+        //   * a slide heading downhill SUSTAINS — it keeps its normal slide speed (it does NOT
+        //     accelerate down the slope) and simply slides LONGER, until the slope eases below
+        //     slideSustainAngle, then the normal slide ease-out + stop resumes (so flat-ground slides
+        //     keep their current distance, and an UPHILL slide just decays as before);
+        //   * driving INTO an uphill steeper than climbBlockAngle is refused with a small backward hop.
+        //
+        // Angles in radians. Hysteresis (sustain < auto < the ~60° grounding limit) keeps a slide from
+        // stuttering on/off at the trigger edge. Tuned against the journey terrain (see the calibration
+        // pass): the authored path/switchbacks stay comfortably walkable; only real dune faces trip it.
+        this.autoSlideAngle    = THREE.MathUtils.degToRad(34);   // grounded downhill this steep => auto-slide
+        this.slideSustainAngle = THREE.MathUtils.degToRad(15);   // keep sliding while steeper than this
+        this.climbBlockAngle   = THREE.MathUtils.degToRad(36);   // uphill this steep can't be climbed => hop
+        this.slideDownhillDot  = 0.30;   // min (slideDir · fallLine) to count a slide as "heading downhill"
+        this.slideSustainSpeed = this.moveCfg.slide.speed;   // sustained slides HOLD this (== the normal slide speed): a downhill slide goes FARTHER, never FASTER — no slope acceleration
+        this.slideSpeedEase    = 6.0;    // 1/s: ease the sustained speed toward slideSustainSpeed (ramps a gentle auto-slide up to it; a dodge already starts there)
+        this.slideSteer        = 6.0;    // rate (1/s) the sustained slide veers toward the fall line
+        this.autoSlideStartSpeed = 3.0;  // onset speed of an AUTO slide (gentler than the dodge's 8.5 pop)
+        this._slopeEps  = 0.6;           // half-span (m) of the terrain-gradient sample
+        this._slopeInfo = { grade: 0, angle: 0, downhill: new THREE.Vector3() };
+        this._autoSlide = false;         // true while the CURRENT committed slide was auto-started
+        this._autoSlideRearm = 0.0;      // re-arm timer so auto-slide can't instantly re-fire on ending
+        this.autoSlideRearmTime = 0.35;  // s
+        this._moveElapsed = 0.0;         // absolute time since the committed move began (owns i-frames)
+        // Backward-hop (steep-climb rejection) tuning + cooldown. hopUp stays above QueryJump's 2.5 m/s
+        // grounded cutoff so the pop reads as airborne (a little bounce), not a stuck stutter.
+        this.climbHopBack = 3.2;         // backward / down-slope speed of the reject hop (m/s)
+        this.climbHopUp   = 2.8;         // vertical pop of the reject hop (m/s)
+        this._climbHopCooldown = 0.0;
+        this.climbHopRearm = 0.5;        // s between reject hops
+        this.climbInputDot = 0.35;       // min (inputDir · uphill) to read the input as "climbing" the slope
+        this._slopeInputWorld = new THREE.Vector3();   // scratch: world-space input dir for the slope gates
     }
 
     Initialize(){
@@ -439,6 +488,10 @@ export default class PlayerControls extends Component{
         this.physicsBody = this.physicsComponent.body;
         this.physicsWorld = this.physicsComponent.world; // for the TPS boom raycast
         this.body = this.GetComponent('PlayerBody');     // head-bone eye in first-person
+        // Terrain heightfield — sampled for the slope-driven slide/climb rules (_ProbeSlope). Optional:
+        // if the level ever ships without it, every slope reads flat and those rules simply no-op.
+        const level = this.FindEntity('Level');
+        this.terrain = level ? level.GetComponent('Terrain') : null;
         this.transform = new Ammo.btTransform();
         this.zeroVec = new Ammo.btVector3(0.0, 0.0, 0.0);
         this.angles.setFromQuaternion(this.parent.Rotation);
@@ -967,6 +1020,42 @@ export default class PlayerControls extends Component{
         this.aimTarget.copy(this.aimOrigin).addScaledVector(this.aimDir, this._aimDistSmooth);
     }
 
+    // Terrain slope under the player, written into `out` = { grade, angle, downhill }. The height field
+    // is central-differenced over a ~1 m span to get its gradient (which points UPHILL); the fall line
+    // (downhill) is the negated, normalised gradient in the xz-plane. grade = rise/run = tan(angle).
+    // All zero on flat ground or when there is no terrain, so every caller degrades to "flat" safely.
+    // Cheap — four bilinear HeightAt lookups — but call it once per frame and reuse where possible.
+    _ProbeSlope(out){
+        out.grade = 0; out.angle = 0; out.downhill.set(0, 0, 0);
+        if(!this.terrain){ return out; }
+        const c = this.parent.Position;
+        const e = this._slopeEps;
+        const hL = this.terrain.HeightAt(c.x - e, c.z), hR = this.terrain.HeightAt(c.x + e, c.z);
+        const hD = this.terrain.HeightAt(c.x, c.z - e), hU = this.terrain.HeightAt(c.x, c.z + e);
+        const gx = (hR - hL) / (2 * e), gz = (hU - hD) / (2 * e);   // gradient => uphill direction
+        const grade = Math.hypot(gx, gz);
+        out.grade = grade;
+        out.angle = Math.atan(grade);
+        if(grade > 1e-4){ out.downhill.set(-gx, 0, -gz).multiplyScalar(1 / grade); }
+        return out;
+    }
+
+    // Start an AUTO slide down the fall line (behavior: walking onto a too-steep downhill drops you into
+    // a slide). Unlike the double-tap dodge this begins near the current run speed and lets slope gravity
+    // build it (UpdateRoll's sustain), rather than launching with the dodge's speed pop. Reuses the same
+    // committed-move + slide animation path.
+    TryStartAutoSlide(downhill){
+        this.rollDir.copy(downhill); this.rollDir.y = 0;
+        if(this.rollDir.lengthSq() < 1e-6){ return; }
+        this.rollDir.normalize();
+        const dur = (this.body && this.body._slideDuration > 0 && this.body.slideTimeScale > 0)
+            ? this.body._slideDuration / this.body.slideTimeScale : 0.78;
+        this._beginCommittedMove('slide', dur);
+        this._committedSpeed = Math.max(this.HorizontalSpeed, this.autoSlideStartSpeed);   // gentle onset
+        this._autoSlide = true;
+        this.Broadcast({topic: 'player.slide'});             // PlayerBody plays the slide animation
+    }
+
     Accelarate = (direction, t) => {
         const accel = this.tempVec.copy(direction).multiplyScalar(this.acceleration * t);
         this.speed.add(accel);
@@ -1073,7 +1162,9 @@ export default class PlayerControls extends Component{
         this._moveKind = kind;
         this.rolling = true;
         this.rollTimer = 0.0;
+        this._moveElapsed = 0.0;         // absolute clock for the i-frame window (sustain freezes rollTimer, not this)
         this.rollDuration = duration;
+        this._autoSlide = false;         // TryStartAutoSlide re-sets this AFTER calling us
         this.aiming = (kind === 'slide') ? this._aimHeld : false;
         if(kind === 'slide'){ this._committedSpeed = this.moveCfg.slide.speed; }   // land-roll set its own speed
         this._crouchToggle = false;
@@ -1105,15 +1196,50 @@ export default class PlayerControls extends Component{
     // placement. Tuning comes from moveCfg[_moveKind]; _committedSpeed is the per-move start speed.
     UpdateRoll(t){
         const cfg = this.moveCfg[this._moveKind] || this.moveCfg.slide;
+        // TWO clocks. _moveElapsed always advances — it owns the i-frame window and guarantees the move
+        // can't lock forever. rollTimer is the DECAY/termination clock, which the downhill SUSTAIN below
+        // freezes (via pushing rollDuration out) so the ease-out doesn't start until the slope flattens.
+        this._moveElapsed += t;
         this.rollTimer += t;
-        const u = Math.min(1.0, this.rollTimer / this.rollDuration);
-        this.invulnerable = (this.rollTimer >= cfg.iStart && this.rollTimer <= cfg.iEnd);
+        this.invulnerable = (this._moveElapsed >= cfg.iStart && this._moveElapsed <= cfg.iEnd);
+
+        // Downhill SUSTAIN (slide only): while grounded and travelling down a slope steeper than
+        // slideSustainAngle, HOLD the slide at its normal speed (do NOT accelerate down the slope),
+        // steer toward the fall line, and hold the termination clock back — so the slide keeps going
+        // (FARTHER, not FASTER) until the hill eases. On flat / uphill this branch is skipped and the
+        // normal timed ease-out below runs unchanged, so a flat-ground dodge keeps its current distance
+        // and an uphill slide just decays as before. The land-roll never sustains (it's a landing
+        // recovery, not a slide).
+        let sustaining = false;
+        if(this._moveKind === 'slide' && this.IsGrounded){
+            const s = this._ProbeSlope(this._slopeInfo);
+            const dot = this.rollDir.dot(s.downhill);           // >0 => heading down the fall line
+            if(s.angle > this.slideSustainAngle && dot > this.slideDownhillDot){
+                sustaining = true;
+                // Ease the speed toward the base slide speed and cap it there — no gravity term, so a
+                // steeper slope makes the slide LONGER (steep for longer), never faster. A dodge already
+                // starts at this speed (holds); a gentle auto-slide ramps up to it.
+                this._committedSpeed += (this.slideSustainSpeed - this._committedSpeed)
+                    * Math.min(1, this.slideSpeedEase * t);
+                // Veer the travel toward the fall line so the slide follows the hill down instead of
+                // shooting off its side; renormalise (keep it horizontal).
+                this.rollDir.addScaledVector(s.downhill, this.slideSteer * t);
+                this.rollDir.y = 0;
+                if(this.rollDir.lengthSq() > 1e-6){ this.rollDir.normalize(); }
+                // Hold the end ~0.2 s ahead of the (frozen) decay clock so u stays ~0 (no ease-out yet)
+                // and the timer-based termination can't fire while we're still on the slope.
+                this.rollDuration = Math.max(this.rollDuration, this.rollTimer + 0.2);
+            }
+        }
 
         // Momentum from _committedSpeed easing down to *endFactor across the move, with an optional
         // front-loaded surge (decays over the first ~0.1 s of u) so the slide launches with a pop. The
-        // land-roll sets boost 0, so it just continues the captured landing momentum, eased out.
+        // land-roll sets boost 0, so it just continues the captured landing momentum, eased out. While
+        // SUSTAINING the speed is the raw gravity-fed _committedSpeed (no launch burst, no decay).
+        const u = Math.min(1.0, this.rollTimer / this.rollDuration);
         const burst = 1 + cfg.boost * Math.exp(-cfg.decay * u);
-        const speed = this._committedSpeed * (1 - (1 - cfg.endFactor) * u) * burst;
+        const speed = sustaining ? this._committedSpeed
+                                 : this._committedSpeed * (1 - (1 - cfg.endFactor) * u) * burst;
         const velocity = this.physicsBody.getLinearVelocity();
         velocity.setX(this.rollDir.x * speed);
         velocity.setZ(this.rollDir.z * speed);
@@ -1137,10 +1263,15 @@ export default class PlayerControls extends Component{
             this.UpdateAimTarget(t);
         }
 
-        if(this.rollTimer >= this.rollDuration){
+        // Ends only when NOT sustaining (sustain keeps pushing rollDuration out ahead of rollTimer).
+        if(!sustaining && this.rollTimer >= this.rollDuration){
             this.rolling = false;
             this.invulnerable = false;
             this._rollCooldownTimer = cfg.cooldown;
+            // An auto-slide re-arms a short window so it can't instantly re-fire while the player is still
+            // on the (now sub-threshold) slope it just slid down; clear the auto flag either way.
+            if(this._autoSlide){ this._autoSlideRearm = this.autoSlideRearmTime; }
+            this._autoSlide = false;
             // Move over: if right-click is still held, resume precise-aim (the move dropped it on start).
             // Without this the camera stays un-aimed even though the button is down.
             this.aiming = this._aimHeld;
@@ -1175,6 +1306,8 @@ export default class PlayerControls extends Component{
         // movement while it runs (forward burst + i-frames + camera), skipping the normal input path.
         this._tapClock += t;
         if(this._rollCooldownTimer > 0){ this._rollCooldownTimer = Math.max(0, this._rollCooldownTimer - t); }
+        if(this._autoSlideRearm > 0){ this._autoSlideRearm = Math.max(0, this._autoSlideRearm - t); }
+        if(this._climbHopCooldown > 0){ this._climbHopCooldown = Math.max(0, this._climbHopCooldown - t); }
         // Hard-landing watch (may start a land-roll THIS frame) before the double-tap slide; while any
         // committed move runs let it OWN movement (burst + i-frames + camera) and skip the normal path.
         this.UpdateLandingDetect();
@@ -1305,9 +1438,51 @@ export default class PlayerControls extends Component{
 
         const moveVector = this.tempVec.copy(this.speed);
         moveVector.applyQuaternion(this.yaw);
-        
-        velocity.setX(moveVector.x);
-        velocity.setZ(moveVector.z);
+
+        // --- Slope-driven fake physics (grounded, OFF the authored route only). Two mutually exclusive
+        // reactions to a slope too steep to deal with normally: a backward HOP when the player drives UP
+        // it, and an AUTO-SLIDE when they're on it and NOT climbing. Gated to off-route so the authored
+        // trail/arenas (incl. the steep boss-gate ramp) stay walkable; skipped on flat ground / while
+        // airborne. The player-initiated slide SUSTAIN (UpdateRoll) is NOT gated — it works everywhere.
+        let climbBlocked = false;
+        const c = this.parent.Position;
+        if(this.IsGrounded && !IsOnRoute(c.x, c.z)){
+            const s = this._ProbeSlope(this._slopeInfo);
+            // Input direction in world space (unit if any move key is held, else zero); intoHill is its
+            // component UP the fall line (+1 straight uphill, -1 straight downhill, 0 across / no input).
+            this._slopeInputWorld.copy(direction).applyQuaternion(this.yaw); this._slopeInputWorld.y = 0;
+            const inLen = this._slopeInputWorld.length();
+            const intoHill = (inLen > 1e-4 && s.grade > 1e-4)
+                ? -(this._slopeInputWorld.x * s.downhill.x + this._slopeInputWorld.z * s.downhill.z) / inLen : 0;
+
+            if(this._climbHopCooldown <= 0 && s.angle > this.climbBlockAngle && intoHill > this.climbInputDot){
+                // (a) Trying to climb a too-steep uphill: refuse it with a small backward (down-slope) hop
+                // so the player physically bounces off — a clear "you can't climb this" read. Replaces the
+                // normal move this frame; the up-pop (> QueryJump's 2.5 m/s cutoff) reads as brief air.
+                velocity.setX(s.downhill.x * this.climbHopBack);
+                velocity.setZ(s.downhill.z * this.climbHopBack);
+                velocity.setY(this.climbHopUp);
+                this.physicsBody.setLinearVelocity(velocity);
+                this.physicsBody.setAngularVelocity(this.zeroVec);
+                this.speed.set(0, 0, 0);                        // drop the accumulated uphill drive
+                this._climbHopCooldown = this.climbHopRearm;
+                this.physicsComponent.canJump = false;
+                climbBlocked = true;
+            }else if(this._autoSlideRearm <= 0 && this._rollCooldownTimer <= 0
+                     && s.angle > this.autoSlideAngle && intoHill < this.climbInputDot){
+                // (b) On a too-steep downhill and not actively climbing it: drop into a slide down the fall
+                // line. Drive it THIS frame so there's no 1-frame gap, then bail — UpdateRoll owns the
+                // capsule + camera while the slide runs (and SUSTAINS it down the hill; see UpdateRoll).
+                this.TryStartAutoSlide(s.downhill);
+                this.UpdateRoll(t);
+                return;
+            }
+        }
+
+        if(!climbBlocked){
+            velocity.setX(moveVector.x);
+            velocity.setZ(moveVector.z);
+        }
 
         this.physicsBody.setLinearVelocity(velocity);
         this.physicsBody.setAngularVelocity(this.zeroVec);

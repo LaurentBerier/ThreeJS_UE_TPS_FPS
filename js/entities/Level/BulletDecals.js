@@ -35,8 +35,13 @@ export default class LevelBulletDecals extends Component{
         const size = Math.random() * 0.3 + 0.2;
         this.scale.set(size, size, 1.0);
 
-        const rigidBody = Ammo.castObject( e.hitResult.collisionObject, Ammo.btRigidBody ); 
+        const rigidBody = Ammo.castObject( e.hitResult.collisionObject, Ammo.btRigidBody );
         const mesh = rigidBody.mesh;
+
+        // Not every collider carries a mesh to project onto, and some that do opt out (the terrain
+        // sets noDecal — DecalGeometry walks all 41k of its triangles, which would hitch on every
+        // ground shot). Bail rather than constructing a DecalGeometry from undefined.
+        if(!mesh || (mesh.userData && mesh.userData.noDecal)){ return; }
 
         const m = new THREE.Mesh( new DecalGeometry( mesh, e.hitResult.intersectionPoint, this.rot, this.scale ), this.material );
         this.scene.add(m);

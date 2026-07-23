@@ -9,7 +9,7 @@ import FootIK from '../Player/FootIK.js'
 import Ragdoll from './Ragdoll.js'
 import DroppedWeapon from './DroppedWeapon.js'
 import HurtFlinch from '../Common/HurtFlinch.js'
-import { Faction, isHostile, isPriorityThreat } from './Factions.js'
+import { Faction, isHostile, isPriorityThreat, isHuman } from './Factions.js'
 
 
 // A velocity-driven UE Mannequin enemy ("soldier"). It shares the player's rig,
@@ -132,9 +132,36 @@ export default class UeSoldierController extends Component{
         // immediate (the FSM checks every tick), so "reduce reaction delays" is mostly about the
         // short attack wind-up (see UeSoldierFSM) and these wider envelopes.
         this.viewAngle = Math.cos(Math.PI * 0.42);  // ~150° field of view (was 120°)
-        this.proximitySenseRadius = 14.0;           // sense a visible target within this radius, any facing
+        this.proximitySenseRadius = 15.0;           // sense a visible target within this radius, any facing
         this.proximitySenseSq = this.proximitySenseRadius * this.proximitySenseRadius;
         this.maxViewDistance = 28.0 * 28.0;         // longer sight line so it can fight at range
+
+        // ---- Alertness (heightened awareness after a stimulus) ----
+        // The complaint was "I'm right next to them / I'm shooting them and they take ages to react."
+        // Fix: any stimulus — taking a hit, HEARING the player's gunfire (even a miss), or an ally
+        // calling out a contact — opens an ALERT WINDOW during which this soldier perceives much more
+        // sharply (a wider, longer, all-round sense) and snaps toward the threat. So the moment you
+        // make noise near a soldier it whips around and engages instead of obliviously patrolling.
+        this.alertTimer = 0.0;                         // seconds of heightened awareness remaining
+        this.alertDuration = 6.0;                      // how long a stimulus keeps the soldier on edge
+        this.alertViewAngle = Math.cos(Math.PI * 0.6); // ~216° (near all-round) while alert
+        this.alertProximityRadius = 22.0;              // bigger all-round sense while alert
+        this.alertProximitySq = this.alertProximityRadius * this.alertProximityRadius;
+        this.alertViewDistanceSq = 34.0 * 34.0;        // longer sight line while alert
+        // Hearing: the player's gunfire is loud. A shot anywhere within hearingRadius rouses the
+        // soldier (sets a contact at the player and goes alert); within the tighter engageHearingRadius
+        // it engages immediately, otherwise it moves to investigate. This is what makes shooting AT a
+        // soldier — hit OR miss — get an instant reaction.
+        this.hearingRadius = 32.0;
+        this.hearingRadiusSq = this.hearingRadius * this.hearingRadius;
+        this.engageHearingRadius = 20.0;
+        this.engageHearingRadiusSq = this.engageHearingRadius * this.engageHearingRadius;
+        // Squad call-outs: when this soldier first gets a contact it shares the threat's position with
+        // nearby allies (within this radius) so the whole squad turns and converges, instead of each
+        // man noticing you one at a time. Edge-triggered by _hadContact so it fires once per fresh sighting.
+        this.allyCalloutRadius = 24.0;
+        this.allyCalloutRadiusSq = this.allyCalloutRadius * this.allyCalloutRadius;
+        this._hadContact = false;
         // Long-range gunner: it engages from far off (shootRange) and HOLDS its distance
         // (preferredRange, see PickCombatPosition) instead of crowding the player. Raised from 18 m.
         this.shootRange = 22.0;        // start shooting once this close (with line of sight)
@@ -191,6 +218,12 @@ export default class UeSoldierController extends Component{
         // think-tick by AcquireTarget per the faction's priorities (an ENEMY always locks onto
         // the player on sight; a CHAOTIC takes the nearest of anyone).
         this.faction = faction;
+        // Threat-priority scaling hook (see isPriorityThreat). Dormant since the factions collapsed
+        // into one side vs the player — nothing outranks distance today. Historically: how strongly
+        // the BEAST was prioritized over the player when both were visible: its distance is
+        // scaled by this (treated as nearer than it really is). < 1 => the squad still rates the heavy
+        // melee predator highly, but NOT absolutely — a clearly closer player wins (see AcquireTarget).
+        this.beastThreatBias = 0.4;
         this.target = null;                       // current victim entity (player or another agent)
         this.provokedBy = null;                   // for NEUTRAL: retaliate against whoever hit it
         this.lastSeenPos = new THREE.Vector3();    // last spot the target was visible (chase memory)
@@ -245,6 +278,10 @@ export default class UeSoldierController extends Component{
         this.target = this.player;            // default target until AcquireTarget runs
 
         this.parent.RegisterEventHandler(this.TakeHit, 'hit');
+        // Hearing: the player's weapon broadcasts a 'noise' to every entity each shot (WeaponManager).
+        // We decide for ourselves whether it's within earshot — so a shot fired AT us, hit or miss,
+        // rouses us instantly instead of only a LANDED hit doing so.
+        this.parent.RegisterEventHandler(this.OnNoise, 'noise');
         this.blood = this.FindEntity('Level').GetComponent('BloodFx');   // shared blood-splatter burst
         this.bloodDecals = this.FindEntity('Level').GetComponent('BloodDecals');   // shared body blood decals
 
@@ -267,8 +304,9 @@ export default class UeSoldierController extends Component{
         // A spawn that's already valid is left untouched.
         this.position = this.parent.Position.clone();
         this.navmesh.FindClearSpawn(this.position, this.physicsWorld, this.position);
-        // Re-seat on the terrain at the (possibly relocated) clear spawn so the feet start on the ground.
-        if(this.terrain){ this.position.y = this.terrain.HeightAt(this.position.x, this.position.z); }
+        // Re-seat on the terrain at the (possibly relocated) clear spawn so the feet start on the
+        // ground (stance height: on a slope the origin seats on the stance's lowest contact).
+        if(this.terrain){ this.position.y = this.terrain.StanceHeightAt(this.position.x, this.position.z); }
         this.parent.SetPosition(this.position);   // keep entity targeting consistent with the snap
         this.modelRoot.position.copy(this.position);
         this.stuckSamplePos.copy(this.position);
@@ -373,6 +411,17 @@ export default class UeSoldierController extends Component{
 
     ClearPath(){ if(this.path){ this.path.length = 0; } }
 
+    // Drop a navigation DESTINATION onto the navmesh's vertical band. three-pathfinding's
+    // closest-node lookup measures 3D distance and its polygon-containment test has a narrow
+    // vertical window, so the y handed to FindPath must sit at the navmesh surface. On the old
+    // flat depot that surface was a constant y≈0.5 (hence the historical hard-coded 0.5); on the
+    // journey terrain the navmesh hugs the ground, so the correct y is the terrain height under
+    // the point. Same contract, generalised — no behavioural change to the AI itself.
+    NavY(v){
+        v.y = this.terrain ? this.terrain.HeightAt(v.x, v.z) + 0.15 : 0.5;
+        return v;
+    }
+
     NavigateToRandomPoint(){
         const node = this.navmesh.GetRandomNode(this.position, 50);
         if(!node){ this.path = []; return; }
@@ -386,7 +435,7 @@ export default class UeSoldierController extends Component{
         else if(this.hasLastSeen){ dest = this.lastSeenPos; }
         if(!dest){ this.path = []; return; }
         this.tempVec.copy(dest);
-        this.tempVec.y = 0.5;
+        this.NavY(this.tempVec);
         this.path = this.navmesh.FindPath(this.position, this.tempVec) || [];
     }
 
@@ -395,7 +444,7 @@ export default class UeSoldierController extends Component{
     NavigateToLastSeen(){
         if(!this.hasLastSeen){ this.path = []; return; }
         this.tempVec.copy(this.lastSeenPos);
-        this.tempVec.y = 0.5;
+        this.NavY(this.tempVec);
         this.path = this.navmesh.FindPath(this.position, this.tempVec) || [];
         return this.path.length > 0;
     }
@@ -408,7 +457,8 @@ export default class UeSoldierController extends Component{
         let node = this.hasLastSeen ? this.navmesh.GetRandomNode(this.lastSeenPos, radius) : null;
         if(!node){ node = this.navmesh.GetRandomNode(this.position, radius); }
         if(!node){ this.path = []; return false; }
-        this.tempVec.copy(node); this.tempVec.y = 0.5;
+        // A node returned by the navmesh already sits AT the navmesh surface — keep its y.
+        this.tempVec.copy(node);
         this.path = this.navmesh.FindPath(this.position, this.tempVec) || [];
         return this.path.length > 0;
     }
@@ -468,7 +518,8 @@ export default class UeSoldierController extends Component{
     NavigateToCombatPosition(target){
         const node = this.PickCombatPosition(target);
         if(!node){ this.path = []; return false; }
-        this.tempVec.copy(node); this.tempVec.y = 0.5;
+        // Navmesh nodes carry the correct surface y already.
+        this.tempVec.copy(node);
         this.path = this.navmesh.FindPath(this.position, this.tempVec) || [];
         return this.path.length > 0;
     }
@@ -479,11 +530,10 @@ export default class UeSoldierController extends Component{
     HasLineOfSightFrom(fromPos, entity){
         if(!entity){ return false; }
         const eye = this.tempVec2.copy(fromPos); eye.y += 1.5;
-        const aim = this.tempVec2b.copy(entity.Position);
-        if(entity !== this.player){ aim.y += 1.0; }
+        const aim = this._AimPoint(entity, this.tempVec2b);   // player: capsule centre (crouch-safe); NPC: torso
         this.tempVec.copy(aim).sub(eye);
         const len = this.tempVec.length();
-        if(len > 1e-3){ eye.addScaledVector(this.tempVec, 0.6 / len); }   // clear our own spheres
+        if(len > 1e-3){ eye.addScaledVector(this.tempVec, Math.min(0.6, len * 0.5) / len); }   // clear our own spheres (not past the midpoint)
         const rayInfo = {};
         const mask = CollisionFilterGroups.AllFilter & ~CollisionFilterGroups.SensorTrigger;
         if(AmmoHelper.CastRay(this.physicsWorld, eye, aim, rayInfo, mask)){
@@ -514,7 +564,7 @@ export default class UeSoldierController extends Component{
         const soldier = entity.GetComponent && entity.GetComponent('UeSoldierController');
         if(soldier){ return soldier.faction; }
         const beast = entity.GetComponent && entity.GetComponent('CharacterController');
-        if(beast){ return Faction.BEAST; }   // the mutant — the apex threat everyone prioritises
+        if(beast){ return Faction.BEAST; }   // the mutant — same side as the humans now (never targeted)
         return null;
     }
 
@@ -528,26 +578,24 @@ export default class UeSoldierController extends Component{
         return true;
     }
 
-    // Pick the best target for THIS soldier's faction from everyone currently visible, by THREAT
-    // PRIORITY (the new squad behaviour):
-    //   * The BEAST is the apex threat — whenever a human (ENEMY or CHAOTIC) can see it, it is the
-    //     target, full stop. The squad ganging up on the creature first is the intended dynamic.
-    //   * With no beast in sight, an ENEMY hunts the PLAYER; a CHAOTIC takes the nearest hostile.
-    //   * Once the beast is dead / out of view, focus naturally falls back to the player (or the
-    //     nearest other hostile for a chaotic).
+    // Pick the biggest IMMEDIATE threat among everyone this soldier can currently see, by threat-
+    // weighted distance:
+    //   * Normally the nearest visible hostile — which, since the factions collapsed into one
+    //     side vs the player, is only ever the PLAYER (the beast is a fellow enemy now, not prey;
+    //     isHostile filters it out below). The threat-bias scoring survives for any future faction
+    //     that should outrank distance again.
     //   * NEUTRAL — passive: only whoever provoked it (and only while still visible).
-    // Sets this.target (+ remembers its last-seen position) and returns true if one was found.
+    // Sets this.target (+ remembers its last-seen position), fires a one-shot squad call-out on a fresh
+    // sighting, and returns true if a target was found.
     AcquireTarget(){
         if(this.faction === Faction.NEUTRAL){
             const ok = this.provokedBy && this.IsAlive(this.provokedBy) && this.CanSee(this.provokedBy);
             this._setTarget(ok ? this.provokedBy : null);
+            this._noteContact(!!ok);
             return !!ok;
         }
 
-        let best = null, bestDistSq = Infinity;
-        let beastVisible = null;
-        let playerVisible = false;
-
+        let chosen = null, bestScore = Infinity;
         for(const entity of this.manager.entities){
             if(entity === this.parent){ continue; }
             const f = this.FactionOf(entity);
@@ -555,22 +603,92 @@ export default class UeSoldierController extends Component{
             if(!this.IsAlive(entity) || !this.CanSee(entity)){ continue; }
 
             const distSq = this.tempVec.copy(entity.Position).sub(this.position).lengthSq();
-            if(distSq < bestDistSq){ bestDistSq = distSq; best = entity; }
-            if(isPriorityThreat(f)){ beastVisible = entity; }
-            if(f === Faction.PLAYER){ playerVisible = true; }
+            const score = isPriorityThreat(f) ? distSq * this.beastThreatBias : distSq;
+            if(score < bestScore){ bestScore = score; chosen = entity; }
         }
 
-        // Threat priority: the beast above all; else an ENEMY prefers the player; else the nearest.
-        let chosen = best;
-        if(beastVisible){ chosen = beastVisible; }
-        else if(this.faction === Faction.ENEMY && playerVisible){ chosen = this.player; }
         this._setTarget(chosen);
+        this._noteContact(!!chosen);
         return !!chosen;
     }
 
     _setTarget(entity){
         this.target = entity;
         if(entity){ this.lastSeenPos.copy(entity.Position); this.hasLastSeen = true; }
+    }
+
+    // Edge-triggered on a FRESH sighting (no contact last tick, contact now): keep ourselves on edge
+    // (refresh the alert window) and call out the threat's position to nearby allies so the squad
+    // converges instead of each man noticing you one at a time. Resets when contact is lost so the next
+    // sighting calls out again.
+    _noteContact(hasContact){
+        if(hasContact && !this._hadContact){
+            this.alertTimer = this.alertDuration;
+            if(this.target && this.target.Position){ this.AlertAllies(this.target.Position); }
+        }
+        this._hadContact = hasContact;
+    }
+
+    // React to a stimulus that reveals a threat at `pos`: refresh the contact memory, open the ALERT
+    // window (boosted perception in CanSee), snap the body toward the threat for an instant read, and
+    // kick the FSM into pursuit. `hard` engages immediately (got shot / close gunfire); a soft alert
+    // INVESTIGATES (distant noise / an ally's call-out — head over and sweep, engaging on sight).
+    // `fromDamage` lets a passive NEUTRAL rouse ONLY when actually hit (it ignores mere noise/sightings).
+    Alert(pos, hard, fromDamage = false){
+        if(this.dead){ return; }
+        if(this.faction === Faction.NEUTRAL && !fromDamage){ return; }
+
+        this.alertTimer = this.alertDuration;
+        if(pos){
+            this.lastSeenPos.copy(pos);
+            this.hasLastSeen = true;
+            // Instant orient: snap a chunk of the facing toward the threat THIS frame so the reaction
+            // reads immediately (the rest eases in via normal turning) — a sharp "what was that?" turn.
+            this.faceVec.copy(pos).sub(this.position); this.faceVec.y = 0.0;
+            if(this.faceVec.lengthSq() > 1e-6){
+                this.targetYaw = Math.atan2(this.faceVec.x, this.faceVec.z);
+                this.facingYaw = this.StepYaw(this.facingYaw, this.targetYaw, 0.9);   // up to ~50° snap
+            }
+        }
+
+        const cur = this.stateMachine.currentState;
+        const state = cur && cur.Name;
+        if(state === 'dead'){ return; }
+        if(state === 'idle' || state === 'patrol'){
+            this.stateMachine.SetState(hard ? 'chase' : 'search');
+        }else if(state === 'search' && hard){
+            this.stateMachine.SetState('chase');
+        }else if(state === 'chase' && cur.OnProvoked){
+            cur.OnProvoked();
+        }
+    }
+
+    // Share a contact with nearby allied humans (a squad call-out) so they turn and converge on the
+    // threat. Soft alert: they move to investigate the position and engage on sight, rather than
+    // teleport-locking onto a target they can't see yet.
+    AlertAllies(pos){
+        if(!pos){ return; }
+        for(const entity of this.manager.entities){
+            if(entity === this.parent){ continue; }
+            const ally = entity.GetComponent && entity.GetComponent('UeSoldierController');
+            if(!ally || ally.dead || !isHuman(ally.faction)){ continue; }
+            const d2 = this.tempVec.copy(entity.Position).sub(this.position).lengthSq();
+            if(d2 > this.allyCalloutRadiusSq){ continue; }
+            ally.Alert(pos, false, false);
+        }
+    }
+
+    // Heard the player's gunfire (WeaponManager broadcasts a 'noise' to every entity on each shot — see
+    // its NotifyNoise). We decide whether it's in earshot and how urgently to react: a close shot
+    // engages now, a farther one investigates. This is what makes shooting AT a soldier — hit OR miss —
+    // get an immediate reaction instead of only a LANDED hit rousing it.
+    OnNoise = (msg) => {
+        if(this.dead || !msg || !msg.position){ return; }
+        // Only the player's gunfire spooks a soldier here; allies coordinate via the call-out instead.
+        if(msg.source && msg.source !== this.player){ return; }
+        const d2 = this.tempVec.copy(msg.position).sub(this.position).lengthSq();
+        if(d2 > this.hearingRadiusSq){ return; }
+        this.Alert(msg.position, d2 <= this.engageHearingRadiusSq, false);
     }
 
     // Last-resort: a small, subtle hop onto a nearby walkable navmesh node (or the last spot
@@ -650,13 +768,21 @@ export default class UeSoldierController extends Component{
         eyePos.y += 1.6;                              // roughly the soldier's head
         const toT = this.senseVec.copy(entity.Position).sub(eyePos);
 
+        // Heightened awareness while alerted (recently shot / heard gunfire / an ally called out): a
+        // wider, longer, near-all-round sense, so a roused soldier spots you far more readily than a
+        // calm one. Decays back to the calm envelope when the alert window lapses (see Update).
+        const alert = this.alertTimer > 0;
+        const maxView = alert ? this.alertViewDistanceSq : this.maxViewDistance;
+        const proxSq = alert ? this.alertProximitySq : this.proximitySenseSq;
+        const viewAng = alert ? this.alertViewAngle : this.viewAngle;
+
         const distSq = toT.lengthSq();
-        if(distSq > this.maxViewDistance){ return false; }
+        if(distSq > maxView){ return false; }
 
         toT.normalize();
         const facing = this.forwardVec.set(Math.sin(this.facingYaw), 0, Math.cos(this.facingYaw));
-        const inCone = toT.dot(facing) >= this.viewAngle;
-        const inProximity = distSq <= this.proximitySenseSq;
+        const inCone = toT.dot(facing) >= viewAng;
+        const inProximity = distSq <= proxSq;
         if(!inCone && !inProximity){ return false; }
 
         return this.HasLineOfSightTo(entity);
@@ -668,6 +794,24 @@ export default class UeSoldierController extends Component{
         return this.tempVec.copy(entity.Position).sub(this.position).lengthSq() <= this.shootRangeSq;
     }
 
+    // World point the LOS ray aims at for `entity`, written into `out`. For the PLAYER: the capsule
+    // body ORIGIN lifted by a torso rise — a point high on the body that stays INSIDE the capsule in
+    // BOTH stance and crouch (the crouch shape keeps ~0.65 m of half-height, so +0.35 clears its centre
+    // without topping it). This is the crouch fix: entity.Position is the tracked EYE, which PlayerControls
+    // holds at STANDING height while crouched (the capsule shrinks below it), so a ray aimed at the eye
+    // sails OVER a crouched player — the reported "enemies stop seeing me when I crouch" bug. Aiming at
+    // the body itself also keeps crouch-behind-cover correctly hidden (the low point is blocked) while
+    // making crouch-in-the-open visible. Other NPCs: torso = their feet-anchored Position + 1.0.
+    _AimPoint(entity, out){
+        const pp = (entity === this.player) ? this.player.GetComponent('PlayerPhysics') : null;
+        if(pp && pp.body){
+            const o = pp.body.getWorldTransform().getOrigin();
+            return out.set(o.x(), o.y() + 0.35, o.z());
+        }
+        out.copy(entity.Position); out.y += 1.0;
+        return out;
+    }
+
     // Clear shot to `entity`: cast from the soldier's eye toward it and confirm the first thing
     // the ray reaches belongs to that entity (not a wall / another body in between). AI bodies
     // carry `parentEntity` on their hit colliders; the player is the capsule rigid body.
@@ -675,11 +819,13 @@ export default class UeSoldierController extends Component{
         if(!entity){ return false; }
         const eyePos = this.tempVec2.copy(this.position);
         eyePos.y += 1.5;
-        this.tempVec.copy(entity.Position).sub(eyePos);
+        const aim = this._AimPoint(entity, this.tempVec2b);
+        this.tempVec.copy(aim).sub(eyePos);
         const len = this.tempVec.length();
-        if(len > 1e-3){ eyePos.addScaledVector(this.tempVec, 0.6 / len); }   // clear our own spheres
-        const aim = this.tempVec2b.copy(entity.Position);
-        if(entity !== this.player){ aim.y += 1.0; }                          // aim at a torso, not feet
+        // Nudge the ray start forward to clear our own hit spheres — but never past the HALFWAY point to
+        // the target, so at point-blank range the ray doesn't start *beyond* the target and miss it (the
+        // "I'm right next to them and they don't react" case).
+        if(len > 1e-3){ eyePos.addScaledVector(this.tempVec, Math.min(0.6, len * 0.5) / len); }
         const rayInfo = {};
         const mask = CollisionFilterGroups.AllFilter & ~CollisionFilterGroups.SensorTrigger;
         if(AmmoHelper.CastRay(this.physicsWorld, eyePos, aim, rayInfo, mask)){
@@ -994,12 +1140,13 @@ export default class UeSoldierController extends Component{
                     this.navNode = this.navmesh.ClampStep(
                         this.position, this.desiredPos, this.navNode, this.navGroup, this.clampTarget
                     );
-                    // Ride the terrain: take Y from the terrain height under the clamped (x,z) so the
-                    // soldier walks up/down the hills (the navmesh constrains x/z only). Flat ground / no
-                    // terrain => holds its current Y, exactly as before. Horizontal distance only, so the
-                    // measured speed (idle/jog choice) isn't inflated by the vertical step.
+                    // Ride the terrain: take Y from the terrain under the clamped (x,z) so the soldier
+                    // walks up/down the hills (the navmesh constrains x/z only). STANCE height, not the
+                    // single-point height: on the steep bund/switchback faces a point sample hangs the
+                    // whole downhill half of the body in the air (the "floating enemies" bug — foot IK
+                    // fades at speed, so nothing corrected it). Flat ground / no terrain => unchanged.
                     this.clampTarget.y = this.terrain
-                        ? this.terrain.HeightAt(this.clampTarget.x, this.clampTarget.z) : this.position.y;
+                        ? this.terrain.StanceHeightAt(this.clampTarget.x, this.clampTarget.z) : this.position.y;
                     moved = Math.hypot(this.clampTarget.x - this.position.x, this.clampTarget.z - this.position.z);
                     this.position.copy(this.clampTarget);
                 }else{
@@ -1198,7 +1345,26 @@ export default class UeSoldierController extends Component{
             }
             this.blood.Emit(origin, out, { scale: 0.6, count: 12, spread: 0.7 });
             // Stamp a blood decal on the body where the bullet landed (rides the animation + ragdoll).
-            this.bloodDecals && this.bloodDecals.Splat(hp, msg.hitResult.intersectionNormal, this.skinnedmesh);
+            // SIZE matters here: the default footprint (0.12-0.24 m) is too small to read on the "Liz"
+            // enemy. ~0.30 m is the measured sweet spot — big enough that the projection (see BloodDecals,
+            // which now gathers the whole footprint's bones) fills the decal, but not so big the box
+            // outruns the chest's forward-facing surface and re-starves it. 0.24-0.36 keeps it in that band.
+            // BONE: the bullet landed on a specific hit-sphere (UeSoldierCollision tags each with its bone),
+            // so hand the decal that EXACT bone to ride — robust where the hands/forearms cross the torso in
+            // the aim pose and a nearest-bone guess would anchor the decal to an arm and fling it off the body.
+            // Read the EXACT bone the bullet struck + that hit sphere's radius (UeSoldierCollision tags both).
+            let hitBone = null, hitRadius = 0.16;
+            const co = msg.hitResult.collisionObject;
+            if(co){ const ghost = Ammo.castObject(co, Ammo.btPairCachingGhostObject); if(ghost){ hitBone = ghost.hitBone || null; if(ghost.hitRadius){ hitRadius = ghost.hitRadius; } } }
+            // One blood CARD per hit, SIZED to the body part it hit (~2x the hit-sphere radius ≈ the part's
+            // width): big on the chest, small on a limb — so it reads clearly at any range yet hugs the part
+            // without floating off the silhouette (a true projected decal is invisible at combat range on this
+            // dense curved mesh — see BloodDecals). Rides the exact hit bone; the tiny FIFO keeps only the last
+            // few impacts so it stays cheap.
+            if(this.bloodDecals && hitBone){
+                const size = hitRadius * (1.7 + Math.random() * 0.5);
+                this.bloodDecals.Splat(hp, msg.hitResult.intersectionNormal, this.skinnedmesh, { size, bone: hitBone, flat: true });
+            }
         }
 
         this.health = Math.max(0, this.health - (msg.amount ?? 0));
@@ -1219,30 +1385,16 @@ export default class UeSoldierController extends Component{
         // chase MEMORY so a soldier shot from cover pushes toward the shooter (instead of bailing
         // straight back to patrol because the attacker isn't currently visible).
         this.provokedBy = msg.from || this.player;
-        if(this.provokedBy && this.provokedBy.Position){
-            this.lastSeenPos.copy(this.provokedBy.Position);   // investigate where the shot came from
-            this.hasLastSeen = true;
-        }
 
         if(this.health === 0){
             this.stateMachine.SetState('dead');
         }else{
-            // Getting shot ALWAYS provokes an engagement — the soldier turns and pushes toward the
-            // shooter instead of ever shrugging off a hit. The memory refresh above already aimed
-            // lastSeenPos at the attacker; now force the FSM to act on it from ANY non-combat state:
-            //   * idle / patrol / search -> snap into chase (search was already hunting; the shot gives
-            //                       it a fresh direction to press toward),
-            //   * chase          -> refresh its patience + repath, so a soldier shot while closing on a
-            //                       stale last-seen spot (or about to give up) re-targets the shooter,
-            //   * combat         -> already a firefight; the memory refresh keeps it pressing.
-            // This closes the "shot from outside my view, didn't react" gap.
-            const cur = this.stateMachine.currentState;
-            const state = cur && cur.Name;
-            if(state === 'idle' || state === 'patrol' || state === 'search'){
-                this.stateMachine.SetState('chase');
-            }else if(state === 'chase' && cur.OnProvoked){
-                cur.OnProvoked();
-            }
+            // Getting shot ALWAYS provokes an immediate, hard engagement: snap toward the shooter,
+            // refresh the chase memory and push toward them from ANY non-combat state — closing the
+            // "shot from outside my view, didn't react" gap. Routed through Alert(hard, fromDamage) so
+            // a passive NEUTRAL also rouses on a direct hit and the boosted alert perception kicks in.
+            const at = (this.provokedBy && this.provokedBy.Position) ? this.provokedBy.Position : this.position;
+            this.Alert(at, true, true);
         }
     }
 
@@ -1264,6 +1416,9 @@ export default class UeSoldierController extends Component{
             this.SyncParentTransform();
             return;
         }
+
+        // Decay the alert window (heightened awareness from a recent shot / heard gunfire / call-out).
+        if(this.alertTimer > 0){ this.alertTimer = Math.max(0, this.alertTimer - t); }
 
         this.Locomote(t);
         this.UpdateLocomotionAnim();

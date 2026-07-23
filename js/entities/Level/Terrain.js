@@ -44,7 +44,12 @@ export default class Terrain extends Component {
         this.minX = this.centerX - this.sizeX / 2;
         this.minZ = this.centerZ - this.sizeZ / 2;
 
-        this._heights = this._sampleImage(image, this.gridN);   // Float32 gridN*gridN, mean-centred in [-amp,+amp]
+        // Two supply modes for the height grid:
+        //   * opts.heights — a raw Float32Array(gridN²) of ABSOLUTE world heights, used verbatim
+        //     (no low-pass, no mean-centring, no amplitude scaling). This is how the authored
+        //     journey terrain ships its exact trail/arena/castle-hill heights (JourneyWorld).
+        //   * image — the original grayscale-heightmap path, low-passed + scaled to `amplitude`.
+        this._heights = opts.heights || this._sampleImage(image, this.gridN);   // Float32 gridN*gridN
         this._buildMesh();
         this._buildCollider();
     }
@@ -105,6 +110,23 @@ export default class Terrain extends Component {
         }
     }
 
+    // Ground height for a STANDING BODY at (x, z): the LOWEST HeightAt over the body's stance
+    // footprint (centre + 4 ring points at radius r). A single-point HeightAt plants the model
+    // ORIGIN on the surface, which on a slope leaves everything downhill of the origin — half the
+    // stance, the whole silhouette when strafing — hanging in mid-air; and the AI's foot IK fades
+    // out at speed, so nothing corrects it and enemies visibly FLOAT on the trail bunds and
+    // switchback faces. Seating the origin on the stance's lowest contact instead buries the
+    // uphill toes by a few centimetres (unnoticeable, and the slow-speed foot IK lifts them) in
+    // exchange for never hovering. Flat ground: identical to HeightAt.
+    StanceHeightAt(x, z, r = 0.35){
+        let h = this.HeightAt(x, z);
+        h = Math.min(h, this.HeightAt(x + r, z));
+        h = Math.min(h, this.HeightAt(x - r, z));
+        h = Math.min(h, this.HeightAt(x, z + r));
+        h = Math.min(h, this.HeightAt(x, z - r));
+        return h;
+    }
+
     // Bilinear terrain height (world Y) at world (x, z). Outside the footprint clamps to the edge value.
     HeightAt(x, z){
         const N = this.gridN;
@@ -143,9 +165,19 @@ export default class Terrain extends Component {
         geom.setIndex(indices);
         geom.computeVertexNormals();
         // Muted sandy concrete tone to blend with the depot floor; matte so the lights do the shading.
-        const mat = new THREE.MeshStandardMaterial({ color: 0x9a8f7d, roughness: 0.97, metalness: 0.0 });
+        // envMapIntensity is dialled DOWN from the default 1.0: scene.environment (the HDR cube — see
+        // HdrEnvironment) contributes indirect diffuse to every standard material, and at full strength
+        // the huge sand expanse picks up so much sky irradiance it flattens toward the horizon colour
+        // and loses the warm key/shadow contrast the golden-hour look depends on. 0.3 keeps a touch of
+        // sky bounce in the shadowed dune faces without washing the whole ground out.
+        const mat = new THREE.MeshStandardMaterial({ color: 0x9a8f7d, roughness: 0.97, metalness: 0.0, envMapIntensity: 0.3 });
         this.mesh = new THREE.Mesh(geom, mat);
         this.mesh.name = 'Terrain';
+        // Bullets that land on the terrain get a dust burst (see ImpactFx) but NOT a projected
+        // decal: DecalGeometry walks every triangle of the target mesh, and this one carries 41k of
+        // them, so a single ground shot would cost tens of milliseconds and visibly hitch. Sand
+        // does not hold a crisp bullet hole anyway — the puff is the correct read.
+        this.mesh.userData.noDecal = true;
         this.mesh.receiveShadow = true;
         this.mesh.castShadow = false;    // a ground plane doesn't need to cast
         this.scene.add(this.mesh);
@@ -182,6 +214,19 @@ export default class Terrain extends Component {
         this.physicsWorld.addRigidBody(body);
         this.body = body;
         this.shape = shape;
+    }
+
+    // Tag the terrain collider with its owning entity + mesh, exactly as LevelSetup does for the
+    // container hulls. Without this a bullet that lands on the ground resolves to no entity and the
+    // shot silently produces nothing at all — no decal, no dust, no reaction. Combat is unaffected:
+    // Weapon.Raycast already broadcast 'hit' for whatever it struck; this only means the Level
+    // entity now hears about ground hits too, and its handlers are cosmetic (BulletDecals, which
+    // skips this mesh via noDecal, and ImpactFx).
+    Initialize(){
+        if(this.body){
+            this.body.parentEntity = this.parent;
+            this.body.mesh = this.mesh;
+        }
     }
 
     Dispose(){

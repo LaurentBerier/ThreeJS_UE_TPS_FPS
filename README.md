@@ -63,16 +63,45 @@ hunt you instead of orbiting a wall.
   (inspired by the rapierjs-ragdoll demo) and takes over the skinned mesh, knocking the
   body away from the shot and letting it fold at the joints and settle on the ground.
   Works for both the mutant and the UE soldier rigs, with a safe fallback.
-- **Living bright-day sky** — a drifting, FBM-noise **cloud deck** (ported from the
-  SkibidiTower storm sky and re-graded for daylight) paints broken white cumulus across
-  the blue, thinning to real sky gaps at the horizon and brightening on the sun side.
+- **The journey to the castle** — the game is now a deliberate ~800 m trek across a dark
+  sci-fi desert at golden hour, ending in a boss fight on a castle summit. The whole level
+  is **generated at runtime** from one authored layout
+  ([JourneyWorld.js](js/entities/World/JourneyWorld.js)): a path spine (start overlook →
+  dune basin → buried ruins → canyon → wreck field → switchback ascent → fortified gate →
+  summit arena) synthesises the terrain heightfield, the walkable navmesh is generated over
+  the same data ([NavmeshGen.js](js/entities/World/NavmeshGen.js)), and the castle, gate,
+  arches, collapsed walls, wreck hulks, barricades, parapets, banners and cyan tech seams
+  are built with real static colliders ([Structures.js](js/entities/World/Structures.js))
+  tagged exactly like the old level hulls — so bullet decals, impact VFX, AI line of sight
+  and the TPS camera sweep work on them unchanged. The journey runs INTO the sunset: the
+  ruined **gothic-brutalist castle** sits on the sun's bearing, permanently backlit, visible
+  from nearly every outdoor beat, and it grows as you approach. Encounters ramp — 2 → 3 →
+  ambush → soldiers + beast → overwatch → gate trio → the boss — with optional side spurs
+  (overwatch ledge, canyon cache, vista parapet) paying out ammo.
+
+  **The boss arena is enforced by level design, not scripts**: the entrance is a drop-in
+  ledge too tall to jump back, and the slope cut it makes in the generated navmesh leaves
+  the summit bowl a separate island — the beast's own movement clamp confines it there with
+  zero special-case AI. A victory stair through a wall breach (structure, not navmesh) lets
+  the player out afterwards. Around it all: the procedural dusk **sky**, three-layer
+  **storm deck**, **dune sea** to the horizon, dust plumes, sun shafts, drifting sand and
+  machinery smoke — none of it collidable, none of it at combat depth. Filmic (ACES) tone
+  mapping, restrained bloom and a split-tone grade finish the frame
+  ([js/PostFx.js](js/PostFx.js)). Combat readability stays a hard constraint: enemies carry
+  a rim light added *after* shading, the sand stays the brightest surface, pickups get the
+  world's only strong cyan emissive, fog is tuned to spare both combat range and the 600 m
+  landmark. The old container depot (level.glb + navmesh.obj) is no longer loaded but stays
+  on disk, as does the original bright-day sky
+  ([Sky2.js](js/entities/Sky/Sky2.js) + [Clouds.js](js/entities/Sky/Clouds.js)).
 - **Ammo.js physics** — capsule controller, raycast combat, bullet decals, ammo
   pickups, melee hitboxes.
 - **UE export** — press **P** to download `level_ue.glb` (Z-up, centimetres) +
   `mechanics.json` (tunable "blueprint data"). See
   [docs/UE_IMPORT_GUIDE.md](docs/UE_IMPORT_GUIDE.md).
-- **Buildless** — native ES modules + importmap, no bundler. Served by a tiny
-  Python static server (the Sandscape game format).
+- **Buildless & fully self-contained** — native ES modules + importmap, no bundler
+  and **no external/CDN fetches**: three.js + its addons, three-pathfinding, ammo.js
+  and the HDR environment all ship vendored under `assets/`. This is what makes the
+  game Sandscape-compatible (the platform serves the bundle statically, offline).
 
 ## Run
 
@@ -81,8 +110,10 @@ python serve.py          # or double-click Start-Server.bat on Windows
 # open http://127.0.0.1:8070/index.html
 ```
 
-Requires Python 3 (any 3.x). No `npm install`, no build step. Three.js, its
-loaders, ammo.js and three-pathfinding load via importmap / a vendored WASM build.
+Requires Python 3 (any 3.x). No `npm install`, no build step. Three.js r127, its
+loaders, ammo.js and three-pathfinding all load from the **vendored** copies under
+`assets/vendor/` via the importmap — nothing is fetched from a CDN, so the game runs
+with no internet connection (and uploads intact to Sandscape's static host).
 
 ## Controls
 
@@ -125,13 +156,29 @@ js/
                     UeSoldierFSM (ranged soldier): awareness + stuck-recovery, hitboxes,
                     Ragdoll (shared verlet death ragdoll for both rigs)
     Common/         UeMannequin (shared rig build), CameraDither (close-mesh dither rule)
-    Level/          LevelSetup, Navmesh (three-pathfinding), BulletDecals
-    Sky/            Sky2 (sky dome + light) + Clouds (drifting bright-day deck)
+    Level/          Terrain (heightfield mesh + trimesh collider + HeightAt), Navmesh
+                    (three-pathfinding wrapper), BulletDecals; LevelSetup (archived depot loader)
+    World/          the journey level + the desert look:
+                    JourneyWorld (authored layout -> terrain heights, spawns, arenas),
+                    Structures (castle/gate/ruins/wrecks WITH colliders + footprints),
+                    NavmeshGen (walkable grid -> route mesh + the boss-arena island),
+                    HdrEnvironment (.hdr -> cube env + SH light probe: r127-safe IBL),
+                    DesertLook (palette + shared GLSL + material graders), DesertSky (dusk sky,
+                    light rig, camera-following shadow frustum, fog), DesertClouds (storm deck),
+                    DesertSurfaces (sand grading), FarWorld (horizon dunes/ridges/ruins/wrecks),
+                    Atmosphere (drifting sand, dust plumes, sun shafts, machinery smoke),
+                    ImpactFx (impact dust / sparks / chips, footstep puffs, muzzle light),
+                    DesertActors (character
+                    weathering + rim light + pickup glow)
+    Sky/            Sky2 + Clouds — the ORIGINAL bright-day sky, kept for a one-line revert
     UI/ AmmoBox/
   export/UeExporter.js   P-key glTF + mechanics export
 assets/
   characters/ue/    SK_Mannequin_new.glb (Y-up mesh, baked PBR) + SK_Mannequin.glb (clip source) + source FBX
   vendor/ammo/      ammo.wasm.js + .wasm
+  vendor/three/     three r127 build + examples/jsm addons (vendored — no CDN)
+  vendor/three-pathfinding/   three-pathfinding module (vendored)
+  hdri/             venice_sunset_1k.hdr (scene IBL — see World/HdrEnvironment.js)
   level.glb, navmesh.obj, guns/, animations/ (enemy), decals/, sounds/, ui/, css/
 data/mechanics.schema.json   schema for the export "blueprint data"
 docs/UE_IMPORT_GUIDE.md      UE round-trip guide (axis/scale, character retarget)
@@ -181,9 +228,15 @@ tools/
   keeps the major bones, and simulates them. Tune feel via `boneStiffness` /
   `braceStiffness` / `iterations`; the knock-back impulse is set where each controller
   calls `Die()`.
-- **Sky / clouds** — re-grade the cloud deck in
-  [Clouds.js](js/entities/Sky/Clouds.js) (coverage threshold, colours, `uTime` drift
-  speed, sun direction) to swap bright day for overcast, dawn, etc.
+- **Sky / clouds / the whole look** — the desert grade is driven from one place:
+  `PALETTE`, `SUN_AZIMUTH` and `SUN_ELEVATION` in
+  [DesertLook.js](js/entities/World/DesertLook.js). The sky dome, the fog colour, the light
+  rig, the cloud deck, the far world's haze and every surface grader read from it, so
+  changing the hour or the palette is a single edit rather than a hunt. Sun elevation is
+  the load-bearing one: the ground receives `sin(elevation)` of the key, so lowering it
+  makes the sky more dramatic and the sand deader. To go back to the template's bright day,
+  point `entry.js` at [Sky2.js](js/entities/Sky/Sky2.js) + [Clouds.js](js/entities/Sky/Clouds.js)
+  and drop the `World/` components (`assets/sky.jpg` is still shipped for it).
 
 ## How UE compatibility works
 

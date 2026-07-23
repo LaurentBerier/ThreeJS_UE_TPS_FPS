@@ -11,16 +11,36 @@ import * as THREE from 'three'
 import {AmmoHelper, Ammo, createConvexHullShape} from './AmmoLib.js'
 import EntityManager from './EntityManager.js'
 import Entity from './Entity.js'
-import Sky from './entities/Sky/Sky2.js'
-import Clouds from './entities/Sky/Clouds.js'
-import LevelSetup from './entities/Level/LevelSetup.js'
+// Dark sci-fi desert overhaul. These replace the template's bright-day sky (Sky2 + Clouds), which
+// stay on disk unused so the original daylight look is a two-line revert.
+import DesertSky from './entities/World/DesertSky.js'
+import DesertClouds from './entities/World/DesertClouds.js'
+import DesertSurfaces from './entities/World/DesertSurfaces.js'
+import FarWorld from './entities/World/FarWorld.js'
+import Atmosphere from './entities/World/Atmosphere.js'
+import ImpactFx from './entities/World/ImpactFx.js'
+import DesertActors from './entities/World/DesertActors.js'
+import PostFx from './PostFx.js'
+// The JOURNEY level: authored layout + procedural terrain (JourneyWorld), the castle/ruins/cover
+// with real colliders (Structures), and the generated navmesh (NavmeshGen). These replace the old
+// container-depot level.glb + its baked navmesh.obj + the heightmap — the environment is built
+// entirely at runtime now; every gameplay system rides it through the same Terrain/Navmesh/hit
+// contracts the depot used.
+import { BuildTerrainOpts, SPAWNS } from './entities/World/JourneyWorld.js'
+import Structures from './entities/World/Structures.js'
+import { BuildJourneyNavmesh } from './entities/World/NavmeshGen.js'
+// HDR image-based lighting: cube env (specular) + SH light probe (diffuse) built from the .hdr —
+// the r127-safe substitute for PMREMGenerator (see HdrEnvironment.js). This is what keeps the
+// shadowed side of the world readable instead of crushing to black.
+import { BuildHdrEnvironment } from './entities/World/HdrEnvironment.js'
+import { sunDirection } from './entities/World/DesertLook.js'
+import { RGBELoader } from 'three/examples/jsm/loaders/RGBELoader.js'
 import Terrain from './entities/Level/Terrain.js'
 import PlayerControls from './entities/Player/PlayerControls.js'
 import PlayerPhysics from './entities/Player/PlayerPhysics.js'
 import Stats from 'three/examples/jsm/libs/stats.module.js'
 import {  FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
 import {  GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import {  OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import {  SkeletonUtils } from 'three/examples/jsm/utils/SkeletonUtils.js'
 import NpcCharacterController from './entities/NPC/CharacterController.js'
 import UeSoldierController from './entities/NPC/UeSoldierController.js'
@@ -32,8 +52,10 @@ import Input from './Input.js'
 // turned each into a hashed URL string); native ESM has no such loader, so these
 // are plain root-relative URL strings the Three.js loaders fetch directly.
 // Paths are relative to index.html (the document base), not this module.
-const level = 'assets/level.glb'
-const navmesh = 'assets/navmesh.obj'
+//
+// NOTE: the old depot level (assets/level.glb), its baked navmesh (assets/navmesh.obj) and the
+// terrain heightmap are no longer fetched — the journey level is generated at runtime (see the
+// World/ imports above). The files stay in the repo for the archived depot.
 
 // Onboarding fade timings. FADE_MS must match the #fade opacity transition in
 // style.css; MIN_LOADING_MS keeps the loading screen up long enough to read even
@@ -55,6 +77,34 @@ const dieAnim = 'assets/animations/mutant%20dying.fbx'
 // (PlayerBody/UeSoldierController build it with preOriented:true). This is the new
 // house convention: all assets ship Y-up for smoother Three.js integration.
 const ueChar = 'assets/characters/ue/SK_Mannequin_new.glb'
+
+// Human ENEMY body MESH (replaces the UE Mannequin for the AI soldiers). A Tripo-generated
+// character ("Liz") rigged to the SAME UE Mannequin skeleton: identical 67 bone names and bind
+// offsets, so the shared rifle clips (ueAnims) drive it by name with NO re-bake. Tripo fit the
+// differing body proportions by baking PER-BONE SCALES into the rest pose (e.g. hand/foot/limb
+// scales) that COMPOSE back to ~unit at the leaf bones — so joint world positions stay nearly
+// co-located with the mannequin's (the gun on hand_r keeps its size, the feet sit at y=0, the
+// height matches ~1.83 m). It ships Y-up + metre-scaled with baked PBR like SK_Mannequin_new, so
+// UeSoldierController builds it with preOriented:true exactly like the mannequin. The PLAYER body
+// still uses the mannequin (ueChar). NOTE: the raw Tripo export was ~1M verts / 100 MB; this is the
+// DECIMATED build (meshopt simplify -> ~70k verts, textures 4K->2K JPEG, ~6 MB) produced by
+// d:/tmp/lizdecimate/decimate.mjs. The skeleton (all 67 bones + the per-bone rest scales the
+// retarget relies on) is byte-identical to the raw export — only mesh density + texture size changed.
+const lizChar = 'assets/characters/Sandscape_Liz_decimated.glb'
+
+// PLAYER body MESH: a Tripo-generated character ("Frog") rigged to the SAME UE Mannequin skeleton as
+// the soldiers' Liz mesh — identical 67 bone names, same Y-up + 0.01-root-scale (cm bones) convention,
+// height ~1.83 m with feet at y=0, baked PBR (JPEG) materials. So the shared rifle clips (ueAnims)
+// drive it by bone name with NO re-bake, and PlayerBody builds it with preOriented:true exactly like
+// the mannequin. The body proportions differ from the mannequin (shorter arms, lower head) but the
+// clips carry absolute per-bone rotations, so the animated pose retargets for free (same as the Liz
+// soldiers); the self-calibrating Foot/WeaponAim IK re-captures the rest/grip pose at init. This is a
+// re-rigged Frog with cleaner skinning weights (bind pose now matches the mannequin exactly, pelvis
+// y=0.9675). Shipped at FULL mesh detail (209k verts) on purpose — decimating would soften the joint
+// deformation we want to keep — and it's only ~21 MB because its baked PBR textures are already 1K
+// (mesh geometry is the bulk; a single hero character at 209k verts is fine on the GPU). The mannequin
+// (ueChar) is kept loaded as the canonical reference rig / one-line fallback (swap frogModel -> ueModel).
+const frogChar = 'assets/characters/Sandscape_Frog_2_optimized.glb'
 
 // The new mesh GLB carries no animation, so the 4 named UE rifle clips
 // (idle/walk/reload/shoot) still come from the legacy bake (mesh + clips, baked by
@@ -126,12 +176,14 @@ const bloodDecal2 = 'assets/decals/Blood_Decal_2.png'
 // droplet burst as the hero impact VFX — see BloodFx.
 const bloodSheet = 'assets/VFX/Blood_SpriteSheet.png'
 
-//Sky
-const skyTex = 'assets/sky.jpg'
+// Sky: the dusk sky is generated in a shader (see entities/World/DesertSky.js), so the old
+// bright-day photo dome (assets/sky.jpg) is no longer fetched. The file stays in the repo for
+// anyone restoring Sky2.js.
 
-// Heightmap for the uneven terrain (gentle hills/slopes that replace the flat ground). Sampled at load
-// into a height grid + a static collider by the Terrain component; see entities/Level/Terrain.js.
-const heightmap = 'assets/World/heightmaps_20260609_150752_1584m.png'
+// HDR environment (same asset Pollinate ships): lights the scene via scene.environment (specular)
+// + a spherical-harmonics LightProbe (diffuse ambient) — see HdrEnvironment.js. Its sun is rolled
+// onto DesertLook's sun azimuth at build time so the IBL and the shadow-casting key agree.
+const hdriEnv = 'assets/hdri/venice_sunset_1k.hdr'
 
 import DebugDrawer from './DebugDrawer.js'
 import Navmesh from './entities/Level/Navmesh.js'
@@ -174,13 +226,23 @@ class FPSGameApp{
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-    this.renderer.toneMapping = THREE.ReinhardToneMapping;
-		this.renderer.toneMappingExposure = 1;
+    // Filmic tone mapping. Reinhard desaturates highlights into pastel, which is exactly wrong for
+    // a sky whose whole subject is a hot sun burning through dust; ACES holds saturation into the
+    // shoulder and rolls off to white cleanly. Exposure stays below 1 because the sunset sky is
+    // authored well above 1.0 so the sun keeps a real hot core for the bloom pass to find — but
+    // only slightly below now: 0.68 was tuned before the HDR environment existed and read too
+    // dark on anything in shadow (Pollinate's daylight rig runs 0.95–1.1 for reference).
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+		this.renderer.toneMappingExposure = 0.78;
 		this.renderer.outputEncoding = THREE.sRGBEncoding;
 
     this.camera = new THREE.PerspectiveCamera();
     this.camera.fov = 60;   // wider base FOV (precise-aim still zooms to its own tight FOV)
     this.camera.near = 0.01;
+    // The dune sea now runs to 2 km and the sky dome sits beyond it, so the default 2000 m far
+    // plane would slice the horizon off. Depth precision is governed almost entirely by the near
+    // plane, so moving far out here costs essentially nothing.
+    this.camera.far = 3200;
 
     // create an AudioListener and add it to the camera
     this.listener = new THREE.AudioListener();
@@ -290,14 +352,10 @@ class FPSGameApp{
         ? 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
         : url);
     const akFbxLoader = new FBXLoader(akManager);
-    const objLoader = new OBJLoader();
     const audioLoader = new THREE.AudioLoader();
     const texLoader = new THREE.TextureLoader();
     const promises = [];
 
-    //Level
-    promises.push(this.AddAsset(level, gltfLoader, "level"));
-    promises.push(this.AddAsset(navmesh, objLoader, "navmesh"));
     //Mutant (enemy NPC)
     promises.push(this.AddAsset(mutant, fbxLoader, "mutant"));
     promises.push(this.AddAsset(idleAnim, fbxLoader, "idleAnim"));
@@ -307,6 +365,10 @@ class FPSGameApp{
     promises.push(this.AddAsset(dieAnim, fbxLoader, "dieAnim"));
     //UE Mannequin player body: Y-up mesh GLB (baked PBR) + legacy GLB for the clips
     promises.push(this.AddAsset(ueChar, gltfLoader, "ueChar"));
+    //Human enemy body (Tripo "Liz") — same UE skeleton, drives the shared clips by bone name
+    promises.push(this.AddAsset(lizChar, gltfLoader, "lizChar"));
+    //Player body (Tripo "Frog") — same UE skeleton, drives the shared clips by bone name
+    promises.push(this.AddAsset(frogChar, gltfLoader, "frogChar"));
     promises.push(this.AddAsset(ueClipsSrc, gltfLoader, "ueClips"));
     promises.push(this.AddAsset(ueRollSrc, gltfLoader, "ueRoll"));
     promises.push(this.AddAsset(ueSlideSrc, gltfLoader, "ueSlide"));
@@ -334,14 +396,11 @@ class FPSGameApp{
     promises.push(this.AddAsset(bloodDecal1, texLoader, "bloodDecal1"));
     promises.push(this.AddAsset(bloodDecal2, texLoader, "bloodDecal2"));
     promises.push(this.AddAsset(bloodSheet, texLoader, "bloodSheet"));
-
-    promises.push(this.AddAsset(skyTex, texLoader, "skyTex"));
-    //Heightmap (uneven terrain)
-    promises.push(this.AddAsset(heightmap, texLoader, "heightmap"));
+    //HDR environment (half-float keeps the CPU repack + SH projection cheap and exact)
+    promises.push(this.AddAsset(hdriEnv, new RGBELoader().setDataType(THREE.HalfFloatType), "hdriEnv"));
 
     await this.PromiseProgress(promises, this.OnProgress);
 
-    this.assets['level'] = this.assets['level'].scene;
     this.assets['muzzleFlash'] = this.assets['muzzleFlash'].scene;
 
     // Blood textures are authored colour (sRGB) — tag them so they read at the right colour under the
@@ -366,6 +425,12 @@ class FPSGameApp{
     //shoot). The clips drive the new rig by bone name (same UE skeleton); textures are baked into
     //the mesh, so no external texture set is needed.
     this.ueModel = this.assets['ueChar'].scene;
+    // Human-enemy body mesh (same UE skeleton, different proportions via baked per-bone scales).
+    // The AI soldiers clone THIS instead of the mannequin; the shared ueAnims drive it by bone name.
+    this.lizModel = this.assets['lizChar'].scene;
+    // Player body mesh (Tripo "Frog"): same UE skeleton again, so the shared ueAnims drive it by
+    // bone name with no re-bake. The player clones THIS instead of the mannequin (this.ueModel).
+    this.frogModel = this.assets['frogChar'].scene;
     const ueClips = this.assets['ueClips'].animations;
     // Adapt each legacy clip onto the pre-oriented rig (drop 'root', rotate pelvis;
     // see adaptClipToPreOriented). Adapt once and share across player + soldier.
@@ -476,17 +541,63 @@ class FPSGameApp{
     await this.FadeTo(false);
   }
 
+  // HDR image-based lighting. Built ONCE (the cube render target + SH probe survive restarts);
+  // re-applied on every game start because StartGame's scene.clear() strips the probe (a scene
+  // CHILD) while scene.environment (a scene PROPERTY) survives. envMapIntensity on materials is
+  // left at its default 1.0 — the balance against the key light lives in the probe intensity here
+  // and the hemisphere/fill grades in DesertSky.
+  SetupEnvironment(){
+    if(!this.hdrEnv){
+      const hdrTex = this.assets['hdriEnv'];
+      if(!hdrTex){ return; }   // asset failed to load: the hemisphere floor still carries the scene
+      // probeIntensity is deliberately LOW: the cube env map already supplies the bulk of the
+      // diffuse IBL for every MeshStandardMaterial (three samples its top mip for indirect
+      // diffuse), so the SH probe is a supplemental sky-tint floor, not the main ambient. Pushing
+      // it higher on top of the env double-counts the sky and washes the golden hour flat. Tuned
+      // by eye against the opening vista + the character bodies in shadow.
+      this.hdrEnv = BuildHdrEnvironment(this.renderer, hdrTex, sunDirection(), {
+        cubeSize: 256,
+        probeIntensity: 0.12,
+      });
+    }
+    this.scene.environment = this.hdrEnv.envMap;
+    this.scene.add(this.hdrEnv.probe);
+  }
+
   EntitySetup(){
     this.entityManager = new EntityManager();
 
+    // Environment first: scene.environment must exist before the first render of the standard
+    // materials so they compile with the env map in place (no mid-game shader rebuild hitch).
+    this.SetupEnvironment();
+
     const levelEntity = new Entity();
     levelEntity.SetName('Level');
-    // Build the uneven terrain FIRST: its collider + HeightAt must exist before the level + every spawn is
-    // snapped onto it. Added as a component so the NPC controllers can ride it (FindEntity('Level')).
-    const terrain = new Terrain(this.scene, this.physicsWorld, this.assets['heightmap'].image);
+    // Build the JOURNEY terrain first: its collider + HeightAt must exist before the structures +
+    // every spawn snap onto it. The heightfield is synthesised from the authored path/arena layout
+    // (JourneyWorld), then fed through the SAME Terrain component the depot used — mesh, static
+    // trimesh collider and HeightAt all behave identically, so the capsule, foot IK, camera boom,
+    // ragdolls and AI terrain-riding are untouched.
+    console.time('[Journey] terrain');
+    const terrain = new Terrain(this.scene, this.physicsWorld, null, BuildTerrainOpts());
+    console.timeEnd('[Journey] terrain');
     levelEntity.AddComponent(terrain);
-    levelEntity.AddComponent(new LevelSetup(this.assets['level'], this.scene, this.physicsWorld, terrain));
-    levelEntity.AddComponent(new Navmesh(this.scene, this.assets['navmesh']));
+    // The castle, gate, ruins, arches, wrecks, barricades, parapets and arena cover — visual
+    // meshes + real static colliders tagged exactly like the old level hulls (parentEntity +
+    // mesh), so bullet decals, ImpactFx, AI line-of-sight and the TPS camera sweep just work.
+    console.time('[Journey] structures');
+    const structures = new Structures(this.scene, this.physicsWorld, terrain, levelEntity);
+    levelEntity.AddComponent(structures);
+    console.timeEnd('[Journey] structures');
+    // Navmesh: generated over the trail/arenas/side paths, minus structure footprints and
+    // over-steep ground. The summit boss arena is deliberately a separate island (see NavmeshGen).
+    console.time('[Journey] navmesh');
+    const navGeometry = BuildJourneyNavmesh(terrain, structures.footprints);
+    console.timeEnd('[Journey] navmesh');
+    levelEntity.AddComponent(new Navmesh(this.scene, navGeometry));
+    // Ochre desert sand grading on the heightfield (materials only — the old container re-dress
+    // half of this component no-ops now that the depot is gone).
+    levelEntity.AddComponent(new DesertSurfaces());
     levelEntity.AddComponent(new LevelBulletDecals(this.scene, this.assets['decalColor'], this.assets['decalNormal'], this.assets['decalAlpha']));
     // Shared blood-splatter burst — spritesheet-animated splash cards + a fine droplet mist (pooled).
     // One instance; combatants fetch it on hit (FindEntity('Level').GetComponent('BloodFx')).
@@ -494,20 +605,36 @@ class FPSGameApp{
     // Shared blood DECALS sprayed onto the enemy body geometry where a bullet lands (bone-attached, so
     // they ride the animation + ragdoll). Combatants fetch it on hit, like BloodFx.
     levelEntity.AddComponent(new BloodDecals(this.scene, this.assets['bloodDecal1'], this.assets['bloodDecal2']));
+    // Impact dust / sparks / stone chips, footstep puffs and the player's muzzle flash light. Rides
+    // the SAME 'hit' event the bullet decals already use, so VFX and decals can never disagree
+    // about where a round landed. Reads combat events; writes nothing back to them.
+    levelEntity.AddComponent(new ImpactFx(this.scene, this.camera));
     this.entityManager.Add(levelEntity);
 
     const skyEntity = new Entity();
     skyEntity.SetName("Sky");
-    skyEntity.AddComponent(new Sky(this.scene, this.assets['skyTex']));
-    // Drifting bright-day cloud deck (ported from SkibidiTower, re-graded for daylight).
-    skyEntity.AddComponent(new Clouds(this.scene));
+    // Procedural golden-hour sky + the light rig that agrees with it + atmospheric fog. Re-grades
+    // (rather than replaces) the shadow-casting sun that ships inside level.glb, so LevelSetup's
+    // shadow configuration and the UE export path are unchanged.
+    skyEntity.AddComponent(new DesertSky(this.scene, this.camera));
+    // Layered storm deck: high cirrus + a heavy mid mass + low dust scud, with real gaps for the
+    // low sun to break through.
+    skyEntity.AddComponent(new DesertClouds(this.scene, this.camera));
+    // Everything past the depot fence: the dune sea, dark rock ridges, buried ruins, broken
+    // arches, abandoned military hulks, and the ruined fortress that orients the player. Purely
+    // visual — it never touches the physics world, is built no closer than ~60 m from the middle
+    // of the playable area, casts no shadows, and is excluded from the UE export.
+    skyEntity.AddComponent(new FarWorld(this.scene, this.camera));
+    // Drifting ground-level sand, distant dust plumes and sun shafts. Tuned so nothing draws within
+    // 2.5 m of the lens or at combat depth — see the readability rules at the top of Atmosphere.js.
+    skyEntity.AddComponent(new Atmosphere(this.scene, this.camera));
     this.entityManager.Add(skyEntity);
 
     const playerEntity = new Entity();
     playerEntity.SetName("Player");
     playerEntity.AddComponent(new PlayerPhysics(this.physicsWorld, Ammo));
     playerEntity.AddComponent(new PlayerControls(this.camera, this.scene));
-    playerEntity.AddComponent(new PlayerBody(SkeletonUtils.clone(this.ueModel), this.ueAnims, this.scene, this.camera, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps']), true, this.akMagReloadClip));
+    playerEntity.AddComponent(new PlayerBody(SkeletonUtils.clone(this.frogModel), this.ueAnims, this.scene, this.camera, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps']), true, this.akMagReloadClip));
     playerEntity.AddComponent(new Hands(this.camera, this.assets['ak47'].scene));
     playerEntity.AddComponent(new WeaponManager(this.camera, this.physicsWorld, this.assets['muzzleFlash'], this.assets['ak47Shot'], this.listener ));
     playerEntity.AddComponent(new PlayerHealth());
@@ -517,19 +644,25 @@ class FPSGameApp{
     // Dev aid: press K to visualize the weapon aim-alignment + two-hand IK (aim target, crosshair
     // ray, barrel vs corrected direction, IK grip sockets, live blend value). Toggles, off by default.
     playerEntity.AddComponent(new WeaponAimDebug());
-    // Spawn the player on the terrain (the physics capsule then settles onto it). 1.48 = capsule centre
-    // above the ground; add the terrain height so it isn't dropped from inside a hill / above a valley.
-    playerEntity.SetPosition(new THREE.Vector3(5.64, 1.48 + terrain.HeightAt(5.64, -1.36), -1.36));
-    playerEntity.SetRotation(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), -Math.PI * 0.5));
+    // Spawn the player on the START OVERLOOK, facing the castle: the opening vista is the level's
+    // first beat. 1.48 = capsule centre above the ground; terrain height keeps the drop honest.
+    playerEntity.SetPosition(new THREE.Vector3(
+      SPAWNS.player.x, 1.48 + terrain.HeightAt(SPAWNS.player.x, SPAWNS.player.z), SPAWNS.player.z));
+    playerEntity.SetRotation(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0), SPAWNS.player.yaw));
     this.entityManager.Add(playerEntity);
 
-    const npcLocations = [
-      [10.8, 0.0, 22.0],
+    // The BEASTS (mutant rig, root-motion melee): one loose in the wreck field as the mid-journey
+    // spike, and THE BOSS holding the castle-summit arena. The boss spawns on the summit navmesh
+    // ISLAND (see NavmeshGen), so its own movement clamp confines it to the arena — same
+    // controller, same FSM, same attacks, zero special-case AI.
+    const beastLocations = [
+      ...SPAWNS.beasts.map(b => [b.x, b.z]),
+      [SPAWNS.boss.x, SPAWNS.boss.z],
     ];
 
-    npcLocations.forEach((v,i)=>{
+    beastLocations.forEach((v,i)=>{
       const npcEntity = new Entity();
-      npcEntity.SetPosition(new THREE.Vector3(v[0], v[1] + terrain.HeightAt(v[0], v[2]), v[2]));
+      npcEntity.SetPosition(new THREE.Vector3(v[0], terrain.HeightAt(v[0], v[1]), v[1]));
       npcEntity.SetName(`Mutant${i}`);
       npcEntity.AddComponent(new NpcCharacterController(SkeletonUtils.clone(this.assets['mutant']), this.mutantAnims, this.scene, this.physicsWorld));
       npcEntity.AddComponent(new AttackTrigger(this.physicsWorld));
@@ -540,23 +673,28 @@ class FPSGameApp{
 
     // Velocity-driven UE Mannequin soldiers: same rig/textures/AK as the player, but
     // AI-driven and moved by an explicit velocity (path-follow at a target speed) with the
-    // animation chosen from the measured speed. Five human enemies wired into the faction
-    // system (see Factions.js): ENEMIES hunt the player but turn on a nearby CHAOTIC; the
-    // CHAOTICS attack everyone (player, enemies, each other, the beast); the NEUTRAL stays
-    // passive until shot. The mix makes the arena a three-way fight, not a turkey shoot.
-    const soldiers = [
-      { pos: [13.0, 0.0, 22.0], faction: Faction.ENEMY },
-      { pos: [20.0, 0.0, 17.0], faction: Faction.CHAOTIC },
-      { pos: [27.0, 0.0, 29.0], faction: Faction.ENEMY },
-      { pos: [30.0, 0.0, 19.0], faction: Faction.CHAOTIC },
-      { pos: [16.0, 0.0, 31.0], faction: Faction.NEUTRAL },
-    ];
+    // animation chosen from the measured speed. Human enemies wired into the faction
+    // system (see Factions.js). ALL hostiles are ONE SIDE against the player now: a soldier
+    // hunts the PLAYER and ONLY the player — never a fellow human, and never the beast (the
+    // beast is a fellow enemy; AI-vs-AI infighting stole the player's fights and thinned
+    // encounters before arrival). Per-instance combat STYLE (aggression / preferred range /
+    // flank side / cadence) is still randomized in the controller, so the squad keeps its
+    // variety without any faction infighting.
+    // Encounters along the journey (see JourneyWorld.SPAWNS): density and pressure RAMP toward the
+    // castle — basin pair, ruins trio, canyon ambush, wreck-field pair + beast, the switchback
+    // overwatch, and the gate trio guarding the final ascent. All ENEMY faction: one side, one
+    // prey — the player.
+    const soldiers = SPAWNS.soldiers.map(s => ({ pos: [s.x, 0.0, s.z], faction: Faction.ENEMY }));
 
     soldiers.forEach((s,i)=>{
       const soldierEntity = new Entity();
       soldierEntity.SetPosition(new THREE.Vector3(s.pos[0], s.pos[1] + terrain.HeightAt(s.pos[0], s.pos[2]), s.pos[2]));
       soldierEntity.SetName(`UeSoldier${i}`);
-      soldierEntity.AddComponent(new UeSoldierController(SkeletonUtils.clone(this.ueModel), this.ueAnims, this.scene, this.physicsWorld, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps']), true, this.assets['ak47Shot'], this.listener, s.faction));
+      // Body = the "Liz" human-enemy mesh (cloned per soldier). SkeletonUtils.clone SHARES the
+      // geometry buffers across clones (only the skeleton/bones are cloned), so the decimated ~70k-vert
+      // mesh lives in memory once; each soldier still skins it per frame. preOriented:true exactly as the
+      // mannequin — Liz is the same Y-up/metre pre-oriented rig, so the shared clips + IK apply.
+      soldierEntity.AddComponent(new UeSoldierController(SkeletonUtils.clone(this.lizModel), this.ueAnims, this.scene, this.physicsWorld, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps']), true, this.assets['ak47Shot'], this.listener, s.faction));
       soldierEntity.AddComponent(new AttackTrigger(this.physicsWorld));
       soldierEntity.AddComponent(new UeSoldierCollision(this.physicsWorld));
       this.entityManager.Add(soldierEntity);
@@ -573,10 +711,8 @@ class FPSGameApp{
     exporterEntity.AddComponent(new UeExporter(this.scene, this.entityManager));
     this.entityManager.Add(exporterEntity);
 
-    const ammoLocations = [
-       [14.37, 0.0, 10.45],
-       [32.77, 0.0, 33.84],
-    ];
+    // Ammo caches: one per major fight plus the side-path rewards (the optional spurs pay out).
+    const ammoLocations = SPAWNS.ammo.map(a => [a.x, 0.0, a.z]);
 
     ammoLocations.forEach((loc, i) => {
       const box = new Entity();
@@ -585,6 +721,16 @@ class FPSGameApp{
       box.SetPosition(new THREE.Vector3(loc[0], loc[1] + terrain.HeightAt(loc[0], loc[2]) + 0.1, loc[2]));
       this.entityManager.Add(box);
     });
+
+    // Weathering for everything that moves: dust on the player, the soldiers and the beast, a rim
+    // light that keeps them readable in any lighting, per-class accents that keep the archetypes
+    // distinguishable, and a cyan tech glow so ammo pickups still stand out in a charcoal world.
+    // Added LAST so every character and pickup exists when it initialises. Colour only — no model,
+    // hitbox, animation, AI or stat is touched, and it has no per-frame cost.
+    const actorsEntity = new Entity();
+    actorsEntity.SetName("DesertActors");
+    actorsEntity.AddComponent(new DesertActors());
+    this.entityManager.Add(actorsEntity);
 
     this.entityManager.EndSetup();
 
@@ -596,6 +742,11 @@ class FPSGameApp{
     if(warmCtrl && warmCtrl.skinnedmesh && bloodDecals){ bloodDecals.Prewarm(warmCtrl.skinnedmesh); }
 
     this.scene.add(this.camera);
+
+    // Build the post stack now that the scene exists. Returns null (and logs) if it cannot be
+    // built, in which case Step() renders directly.
+    this.postFx = PostFx.Build(this.renderer, this.scene, this.camera);
+
     this.animFrameId = window.requestAnimationFrame(this.OnAnimationFrameHandler);
   }
 
@@ -632,11 +783,14 @@ class FPSGameApp{
   }
 
   // resize
-  WindowResizeHanlder = () => { 
+  WindowResizeHanlder = () => {
     const { innerHeight, innerWidth } = window;
     this.renderer.setSize(innerWidth, innerHeight);
     this.camera.aspect = innerWidth / innerHeight;
     this.camera.updateProjectionMatrix();
+    // Keep the post stack's render targets in step with the backbuffer, or bloom samples a
+    // stale-sized buffer and the image smears after any resize.
+    if(this.postFx){ this.postFx.SetSize(innerWidth, innerHeight); }
   }
 
   // render loop
@@ -663,7 +817,11 @@ class FPSGameApp{
 
     this.entityManager.Update(elapsedTime);
 
-    this.renderer.render(this.scene, this.camera);
+    // Post stack if it built; otherwise draw straight to the screen exactly as before. Keeping the
+    // direct path alive means a broken or unsupported post pass degrades the picture rather than
+    // taking the game down with it.
+    if(this.postFx){ this.postFx.Render(elapsedTime); }
+    else { this.renderer.render(this.scene, this.camera); }
     this.stats.update();
   }
 

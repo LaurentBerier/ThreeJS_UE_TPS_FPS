@@ -284,6 +284,20 @@ export default class WeaponManager extends Component{
         this.EquipWeapon(next);
     }
 
+    // Tell the world the player just fired: broadcast a 'noise' to every entity carrying the player's
+    // current position. AI controllers that registered a 'noise' handler (soldiers, the beast) decide
+    // for themselves whether it's within earshot and react — so shooting (hit OR miss) draws nearby
+    // enemies, not just a landed hit. Non-AI entities have no 'noise' handler, so the broadcast no-ops.
+    NotifyNoise(){
+        const manager = this.parent && this.parent.parent;   // EntityManager owning all entities
+        if(!manager || !manager.entities){ return; }
+        const pos = this.parent.Position;
+        for(const entity of manager.entities){
+            if(entity === this.parent){ continue; }
+            entity.Broadcast({topic: 'noise', position: pos, source: this.parent, kind: 'gunfire'});
+        }
+    }
+
     AmmoPickup = () => {
         this.active && this.active.AddAmmo(30);
         this.active && this.active.RefreshUI();
@@ -389,6 +403,9 @@ export default class WeaponManager extends Component{
             // where the body is hidden) and re-roll the TPS muzzle flash.
             this.Broadcast({topic: 'weapon.shoot'});
             this.TriggerTpsFlash();
+            // Gunfire is loud: let nearby AI HEAR the shot (hit or miss) so they react instantly
+            // instead of only noticing a landed hit / a player who wandered into their view cone.
+            this.NotifyNoise();
         }
 
         weapon.AnimateMuzzle(t);
