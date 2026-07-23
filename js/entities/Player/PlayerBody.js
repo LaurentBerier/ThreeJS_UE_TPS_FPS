@@ -641,12 +641,19 @@ export default class PlayerBody extends Component{
         this._headAimPWInv = new THREE.Quaternion();
         this._headAimLocal = new THREE.Quaternion();
         this.headBasePitchOffset = opts.headBasePitchOffset ?? 0;
-        this.headPitchCurrent = this.headBasePitchOffset;
+        this.headAimYawCurrent = 0;
+        this.headAimPitchCurrent = 0;
         this.headPitchLerp = 10;
+        this.headAimYawMax = opts.headAimYawMax ?? THREE.MathUtils.degToRad(16);
+        this.headAimYawInputMax = opts.headAimYawInputMax ?? THREE.MathUtils.degToRad(95);
+        this.headAimYawFalloffStart = opts.headAimYawFalloffStart ?? THREE.MathUtils.degToRad(115);
+        this.headAimYawFalloffEnd = opts.headAimYawFalloffEnd ?? THREE.MathUtils.degToRad(165);
         this.headPitchDeadzone = opts.headPitchDeadzone ?? THREE.MathUtils.degToRad(30);
         this.headPitchMaxCamera = opts.headPitchMaxCamera ?? THREE.MathUtils.degToRad(85);
         this.headPitchMaxAngle = opts.headPitchMaxAngle ?? THREE.MathUtils.degToRad(7);
         this.headPitchAxisSign = opts.headPitchAxisSign ?? -1;
+        this._headYawAxis = new THREE.Vector3(0, 1, 0);
+        this._headYawQ = new THREE.Quaternion();
         this._headPitchAxis = new THREE.Vector3(1, 0, 0);
         this._headPitchQ = new THREE.Quaternion();
     }
@@ -2446,9 +2453,9 @@ export default class PlayerBody extends Component{
     UpdateHeadAim(t){
         if(!this.headBone || !this.playerControls){ return; }
         const pc = this.playerControls;
-        // Keep the animation's head pose as the baseline. Only add a small local pitch when the TPS
-        // camera is near its vertical extremes; at level and most normal view angles this resolves to
-        // zero, so the alien helmet no longer tucks down when the camera orbits in front.
+        // Keep the animation's head pose as the baseline, then add a restrained local aim offset.
+        // Yaw follows the camera/body delta a little, but fades out before the near-180-degree
+        // front/back case that makes the neck fold. Pitch stays tiny and deadzoned around level.
         const pitch = (this.cameraMode === 'TPS' && pc.angles) ? pc.angles.x : 0;
         const deadzone = this.headPitchDeadzone ?? THREE.MathUtils.degToRad(30);
         const maxCamera = this.headPitchMaxCamera ?? THREE.MathUtils.degToRad(85);
@@ -2457,16 +2464,35 @@ export default class PlayerBody extends Component{
         const span = Math.max(1e-5, maxCamera - deadzone);
         const tPitch = THREE.MathUtils.clamp((Math.abs(pitch) - deadzone) / span, 0, 1);
         const eased = tPitch * tPitch * (3 - 2 * tPitch);
-        const target = (this.headBasePitchOffset ?? 0) + Math.sign(pitch) * maxAngle * eased * axisSign;
-        if(this.headPitchCurrent === undefined){ this.headPitchCurrent = 0; }
-        this.headPitchCurrent += (target - this.headPitchCurrent) * (1 - Math.exp(-this.headPitchLerp * t));
-        if(Math.abs(this.headPitchCurrent) >= 1e-4){
-            if(!this._headPitchAxis){ this._headPitchAxis = new THREE.Vector3(1, 0, 0); }
-            if(!this._headPitchQ){ this._headPitchQ = new THREE.Quaternion(); }
-            this._headPitchQ.setFromAxisAngle(this._headPitchAxis, this.headPitchCurrent);
-            this.headBone.quaternion.multiply(this._headPitchQ);
-            this.headBone.updateWorldMatrix(false, false);
+
+        let yawDelta = 0;
+        if(this.cameraMode === 'TPS' && pc.angles && this._bodyYaw !== null){
+            const lookYaw = pc.angles.y + this.yawOffset;
+            yawDelta = Math.atan2(Math.sin(lookYaw - this._bodyYaw), Math.cos(lookYaw - this._bodyYaw));
         }
+        const absYaw = Math.abs(yawDelta);
+        const yawInputMax = Math.max(1e-5, this.headAimYawInputMax ?? THREE.MathUtils.degToRad(95));
+        const yawFalloffStart = this.headAimYawFalloffStart ?? THREE.MathUtils.degToRad(115);
+        const yawFalloffEnd = this.headAimYawFalloffEnd ?? THREE.MathUtils.degToRad(165);
+        const yawFade = 1 - THREE.MathUtils.smoothstep(absYaw, yawFalloffStart, yawFalloffEnd);
+        const targetYaw = THREE.MathUtils.clamp(yawDelta / yawInputMax, -1, 1)
+            * (this.headAimYawMax ?? THREE.MathUtils.degToRad(16)) * yawFade;
+        const targetPitch = Math.sign(pitch) * maxAngle * eased * axisSign;
+        const aimEase = 1 - Math.exp(-this.headPitchLerp * t);
+
+        this.headAimYawCurrent += (targetYaw - this.headAimYawCurrent) * aimEase;
+        this.headAimPitchCurrent += (targetPitch - this.headAimPitchCurrent) * aimEase;
+
+        if(Math.abs(this.headAimYawCurrent) >= 1e-4){
+            this._headYawQ.setFromAxisAngle(this._headYawAxis, this.headAimYawCurrent);
+            this.headBone.quaternion.multiply(this._headYawQ);
+        }
+        const totalPitch = (this.headBasePitchOffset ?? 0) + this.headAimPitchCurrent;
+        if(Math.abs(totalPitch) >= 1e-4){
+            this._headPitchQ.setFromAxisAngle(this._headPitchAxis, totalPitch);
+            this.headBone.quaternion.multiply(this._headPitchQ);
+        }
+        this.headBone.updateWorldMatrix(false, false);
         return;
         const active = (this.cameraMode === 'TPS') ? 1 : 0;
         this.headAimWeight += (active - this.headAimWeight) * (1 - Math.exp(-this.headAimLerp * t));
