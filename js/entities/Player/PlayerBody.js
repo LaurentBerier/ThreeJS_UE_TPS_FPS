@@ -640,7 +640,7 @@ export default class PlayerBody extends Component{
         this._headAimPW = new THREE.Quaternion();
         this._headAimPWInv = new THREE.Quaternion();
         this._headAimLocal = new THREE.Quaternion();
-        this.headBasePitchOffset = opts.headBasePitchOffset ?? 0;
+        this.headBasePitchOffset = opts.headBasePitchOffset ?? 0; // optional rig override; the idle clip is neutral by default
         this.headAimYawCurrent = 0;
         this.headAimPitchCurrent = 0;
         this.headPitchLerp = 10;

@@ -102,10 +102,8 @@ const lizChar = 'assets/characters/Sandscape_Liz_decimated.glb'
 // one-line fallback (swap alienModel -> ueModel).
 const alienChar = 'assets/characters/Hero_alien_rig_optimized.glb'
 const alienPlayerRig = {
-  // Retarget correction + restrained head aim. The base offset makes the alien helmet read forward
-  // in the shared rifle clips; the aim layer is deliberately small and fades out before the camera
-  // gets directly in front/behind the body, where neck twisting looks broken.
-  headBasePitchOffset: THREE.MathUtils.degToRad(70),
+  // Restrained head aim layered over the authored idle pose. The idle clip is the neutral
+  // forward-looking head rotation; this only adds a small camera-follow offset.
   headAimYawMax: THREE.MathUtils.degToRad(16),
   headAimYawInputMax: THREE.MathUtils.degToRad(95),
   headAimYawFalloffStart: THREE.MathUtils.degToRad(115),
