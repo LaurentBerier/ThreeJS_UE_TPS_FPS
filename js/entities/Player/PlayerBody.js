@@ -54,7 +54,7 @@ function makeClipSeamlessLoop(clip){
 // while still moving. The two layers drive disjoint bones, so they compose on one mixer. An additive
 // spine lean (UpdateAimPose) points the gun at the look altitude while aiming.
 export default class PlayerBody extends Component{
-    constructor(model, clips, scene, camera, textures = null, weapon = null, preOriented = false, magReloadClip = null){
+    constructor(model, clips, scene, camera, textures = null, weapon = null, preOriented = false, magReloadClip = null, opts = {}){
         super();
         this.name = 'PlayerBody';
         this.model = model;            // GLB scene (SkeletonUtils.clone)
@@ -617,11 +617,17 @@ export default class PlayerBody extends Component{
         // so the gaze leads — the head snaps onto the target and the gun follows, like a real shooter.
         this.headAimLerp = 16;                           // ease rate (1/s) for the look in/out
         this.maxHeadAimAngle = THREE.MathUtils.degToRad(70); // clamp so the head can't wring the neck
+        this.headAimVisualForward = (opts.headAimVisualForward || new THREE.Vector3(0, 0, 1)).clone().normalize();
+        this.headPoseOffset = opts.headPoseOffset ? opts.headPoseOffset.clone().normalize() : new THREE.Quaternion();
+        this._hasHeadPoseOffset = Math.abs(1 - this.headPoseOffset.w) > 1e-6
+            || Math.abs(this.headPoseOffset.x) > 1e-6
+            || Math.abs(this.headPoseOffset.y) > 1e-6
+            || Math.abs(this.headPoseOffset.z) > 1e-6;
         // Antiparallel safety: ease the WHOLE look delta out only when the target is nearly directly
         // behind the body (this band), where setFromUnitVectors' axis collapses/flips. Below it the head
         // simply HOLDS at the neck clamp and tracks the target's azimuth — no direction reversal.
-        this.headAimAntiparallelStart = THREE.MathUtils.degToRad(150);
-        this.headAimAntiparallelEnd   = THREE.MathUtils.degToRad(175);
+        this.headAimAntiparallelStart = opts.headAimAntiparallelStart ?? THREE.MathUtils.degToRad(150);
+        this.headAimAntiparallelEnd   = opts.headAimAntiparallelEnd   ?? THREE.MathUtils.degToRad(175);
         this._headFwdRef = new THREE.Vector3();
         this._headFwdDes = new THREE.Vector3();
         this._headAimPos = new THREE.Vector3();
@@ -634,6 +640,15 @@ export default class PlayerBody extends Component{
         this._headAimPW = new THREE.Quaternion();
         this._headAimPWInv = new THREE.Quaternion();
         this._headAimLocal = new THREE.Quaternion();
+        this.headBasePitchOffset = opts.headBasePitchOffset ?? 0;
+        this.headPitchCurrent = this.headBasePitchOffset;
+        this.headPitchLerp = 10;
+        this.headPitchDeadzone = opts.headPitchDeadzone ?? THREE.MathUtils.degToRad(30);
+        this.headPitchMaxCamera = opts.headPitchMaxCamera ?? THREE.MathUtils.degToRad(85);
+        this.headPitchMaxAngle = opts.headPitchMaxAngle ?? THREE.MathUtils.degToRad(7);
+        this.headPitchAxisSign = opts.headPitchAxisSign ?? -1;
+        this._headPitchAxis = new THREE.Vector3(1, 0, 0);
+        this._headPitchQ = new THREE.Quaternion();
     }
 
     SetupAnimations(){
@@ -804,7 +819,7 @@ export default class PlayerBody extends Component{
             this.headBone.getWorldQuaternion(this._headWorldQ);
             // headRel = root⁻¹ · head (head orientation in modelRoot-local space); local fwd = headRel⁻¹ · (+Z).
             const headRel = new THREE.Quaternion().copy(rootWQ).invert().multiply(this._headWorldQ);
-            this._headFwdLocal = new THREE.Vector3(0, 0, 1).applyQuaternion(headRel.invert()).normalize();
+            this._headFwdLocal = this.headAimVisualForward.clone().applyQuaternion(headRel.invert()).normalize();
         }
 
         // Pelvis (hips) for proximity stabilization; seed the settled-pose reference from its bind.
@@ -2431,6 +2446,28 @@ export default class PlayerBody extends Component{
     UpdateHeadAim(t){
         if(!this.headBone || !this.playerControls){ return; }
         const pc = this.playerControls;
+        // Keep the animation's head pose as the baseline. Only add a small local pitch when the TPS
+        // camera is near its vertical extremes; at level and most normal view angles this resolves to
+        // zero, so the alien helmet no longer tucks down when the camera orbits in front.
+        const pitch = (this.cameraMode === 'TPS' && pc.angles) ? pc.angles.x : 0;
+        const deadzone = this.headPitchDeadzone ?? THREE.MathUtils.degToRad(30);
+        const maxCamera = this.headPitchMaxCamera ?? THREE.MathUtils.degToRad(85);
+        const maxAngle = this.headPitchMaxAngle ?? THREE.MathUtils.degToRad(7);
+        const axisSign = this.headPitchAxisSign ?? -1;
+        const span = Math.max(1e-5, maxCamera - deadzone);
+        const tPitch = THREE.MathUtils.clamp((Math.abs(pitch) - deadzone) / span, 0, 1);
+        const eased = tPitch * tPitch * (3 - 2 * tPitch);
+        const target = (this.headBasePitchOffset ?? 0) + Math.sign(pitch) * maxAngle * eased * axisSign;
+        if(this.headPitchCurrent === undefined){ this.headPitchCurrent = 0; }
+        this.headPitchCurrent += (target - this.headPitchCurrent) * (1 - Math.exp(-this.headPitchLerp * t));
+        if(Math.abs(this.headPitchCurrent) >= 1e-4){
+            if(!this._headPitchAxis){ this._headPitchAxis = new THREE.Vector3(1, 0, 0); }
+            if(!this._headPitchQ){ this._headPitchQ = new THREE.Quaternion(); }
+            this._headPitchQ.setFromAxisAngle(this._headPitchAxis, this.headPitchCurrent);
+            this.headBone.quaternion.multiply(this._headPitchQ);
+            this.headBone.updateWorldMatrix(false, false);
+        }
+        return;
         const active = (this.cameraMode === 'TPS') ? 1 : 0;
         this.headAimWeight += (active - this.headAimWeight) * (1 - Math.exp(-this.headAimLerp * t));
         if(this.headAimWeight < 1e-3){ return; }
@@ -2472,6 +2509,12 @@ export default class PlayerBody extends Component{
         this._headAimPWInv.copy(this._headAimPW).invert();
         this._headAimLocal.copy(this._headAimPWInv).multiply(this._headAimWorld).multiply(this._headAimPW);
         this.headBone.quaternion.premultiply(this._headAimLocal);
+        this.headBone.updateWorldMatrix(false, false);
+    }
+
+    ApplyHeadPoseOffset(){
+        if(!this.headBone || !this._hasHeadPoseOffset){ return; }
+        this.headBone.quaternion.multiply(this.headPoseOffset);
         this.headBone.updateWorldMatrix(false, false);
     }
 

@@ -92,19 +92,24 @@ const ueChar = 'assets/characters/ue/SK_Mannequin_new.glb'
 // retarget relies on) is byte-identical to the raw export — only mesh density + texture size changed.
 const lizChar = 'assets/characters/Sandscape_Liz_decimated.glb'
 
-// PLAYER body MESH: a Tripo-generated character ("Frog") rigged to the SAME UE Mannequin skeleton as
-// the soldiers' Liz mesh — identical 67 bone names, same Y-up + 0.01-root-scale (cm bones) convention,
-// height ~1.83 m with feet at y=0, baked PBR (JPEG) materials. So the shared rifle clips (ueAnims)
-// drive it by bone name with NO re-bake, and PlayerBody builds it with preOriented:true exactly like
-// the mannequin. The body proportions differ from the mannequin (shorter arms, lower head) but the
-// clips carry absolute per-bone rotations, so the animated pose retargets for free (same as the Liz
-// soldiers); the self-calibrating Foot/WeaponAim IK re-captures the rest/grip pose at init. This is a
-// re-rigged Frog with cleaner skinning weights (bind pose now matches the mannequin exactly, pelvis
-// y=0.9675). Shipped at FULL mesh detail (209k verts) on purpose — decimating would soften the joint
-// deformation we want to keep — and it's only ~21 MB because its baked PBR textures are already 1K
-// (mesh geometry is the bulk; a single hero character at 209k verts is fine on the GPU). The mannequin
-// (ueChar) is kept loaded as the canonical reference rig / one-line fallback (swap frogModel -> ueModel).
-const frogChar = 'assets/characters/Sandscape_Frog_2_optimized.glb'
+// PLAYER body MESH: the hero alien rigged to the SAME UE Mannequin skeleton as the prior player and
+// the soldiers' Liz mesh. It has identical 67 bone names/rest transforms, ships Y-up/metre-scaled,
+// and carries no embedded clips. The shared rifle clips (ueAnims) drive it by bone name after
+// adaptClipToPreOriented; FootIK + WeaponAimIK re-capture the foot/gun sockets from the posed alien
+// rig at init so the AK stays in the new hands. This GLB is a texture-optimized copy of the supplied
+// source (2048px embedded JPEGs, skeleton/skin/mesh preserved) to stay under Sandscape's 50 MB
+// per-file upload limit. The mannequin (ueChar) is kept loaded as the canonical reference rig /
+// one-line fallback (swap alienModel -> ueModel).
+const alienChar = 'assets/characters/Hero_alien_rig_optimized.glb'
+const alienPlayerRig = {
+  // Keep the alien's authored idle head pose as the baseline. The head only gets a tiny local pitch
+  // near steep camera angles, so normal/level viewing never tucks the helmet down into the chest.
+  headBasePitchOffset: THREE.MathUtils.degToRad(70),
+  headPitchDeadzone: THREE.MathUtils.degToRad(30),
+  headPitchMaxCamera: THREE.MathUtils.degToRad(85),
+  headPitchMaxAngle: THREE.MathUtils.degToRad(5),
+  headPitchAxisSign: 1,
+}
 
 // The new mesh GLB carries no animation, so the 4 named UE rifle clips
 // (idle/walk/reload/shoot) still come from the legacy bake (mesh + clips, baked by
@@ -367,8 +372,8 @@ class FPSGameApp{
     promises.push(this.AddAsset(ueChar, gltfLoader, "ueChar"));
     //Human enemy body (Tripo "Liz") — same UE skeleton, drives the shared clips by bone name
     promises.push(this.AddAsset(lizChar, gltfLoader, "lizChar"));
-    //Player body (Tripo "Frog") — same UE skeleton, drives the shared clips by bone name
-    promises.push(this.AddAsset(frogChar, gltfLoader, "frogChar"));
+    //Player body (hero alien) — same UE skeleton, drives the shared clips by bone name + IK
+    promises.push(this.AddAsset(alienChar, gltfLoader, "alienChar"));
     promises.push(this.AddAsset(ueClipsSrc, gltfLoader, "ueClips"));
     promises.push(this.AddAsset(ueRollSrc, gltfLoader, "ueRoll"));
     promises.push(this.AddAsset(ueSlideSrc, gltfLoader, "ueSlide"));
@@ -428,9 +433,9 @@ class FPSGameApp{
     // Human-enemy body mesh (same UE skeleton, different proportions via baked per-bone scales).
     // The AI soldiers clone THIS instead of the mannequin; the shared ueAnims drive it by bone name.
     this.lizModel = this.assets['lizChar'].scene;
-    // Player body mesh (Tripo "Frog"): same UE skeleton again, so the shared ueAnims drive it by
+    // Player body mesh (hero alien): same UE skeleton again, so the shared ueAnims drive it by
     // bone name with no re-bake. The player clones THIS instead of the mannequin (this.ueModel).
-    this.frogModel = this.assets['frogChar'].scene;
+    this.alienModel = this.assets['alienChar'].scene;
     const ueClips = this.assets['ueClips'].animations;
     // Adapt each legacy clip onto the pre-oriented rig (drop 'root', rotate pelvis;
     // see adaptClipToPreOriented). Adapt once and share across player + soldier.
@@ -634,7 +639,7 @@ class FPSGameApp{
     playerEntity.SetName("Player");
     playerEntity.AddComponent(new PlayerPhysics(this.physicsWorld, Ammo));
     playerEntity.AddComponent(new PlayerControls(this.camera, this.scene));
-    playerEntity.AddComponent(new PlayerBody(SkeletonUtils.clone(this.frogModel), this.ueAnims, this.scene, this.camera, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps']), true, this.akMagReloadClip));
+    playerEntity.AddComponent(new PlayerBody(SkeletonUtils.clone(this.alienModel), this.ueAnims, this.scene, this.camera, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps']), true, this.akMagReloadClip, alienPlayerRig));
     playerEntity.AddComponent(new Hands(this.camera, this.assets['ak47'].scene));
     playerEntity.AddComponent(new WeaponManager(this.camera, this.physicsWorld, this.assets['muzzleFlash'], this.assets['ak47Shot'], this.listener ));
     playerEntity.AddComponent(new PlayerHealth());

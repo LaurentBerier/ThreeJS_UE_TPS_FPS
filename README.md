@@ -194,14 +194,15 @@ tools/
 
 ## Swapping in your own content
 
-- **Player character** — the body mesh is `assets/characters/ue/SK_Mannequin_new.glb`,
+- **Player character** — the body mesh is `assets/characters/Hero_alien_rig_optimized.glb`,
   a **Y-up, metre-scaled** GLB with baked PBR materials (the house convention: ship
   assets Y-up for clean Three.js integration). Its rifle clips
   (`idle`/`walk`/directional jogs/`aim`/`reload`/`shoot`/jump start+fall) come from the
   legacy `SK_Mannequin.glb` and are adapted onto the Y-up rig at load (`adaptClipToPreOriented` in
   [UeMannequin.js](js/entities/Common/UeMannequin.js)). To swap in your own Y-up
-  rigged GLB, point `ueChar` in [entry.js](js/entry.js) at it and build it with
-  `preOriented: true`; tune `yawOffset` / `feetOffset` in
+  rigged GLB, point `alienChar` in [entry.js](js/entry.js) at it and build it with
+  `preOriented: true`; WeaponAimIK re-captures the hand sockets from the posed rig
+  so the in-hand gun follows the new character. Tune `yawOffset` / `feetOffset` in
   [PlayerBody.js](js/entities/Player/PlayerBody.js) if your rig differs from the UE
   Mannequin. New FBX assets reorient + convert to Y-up GLB via the Sandscape
   FBX→GLB converter.
