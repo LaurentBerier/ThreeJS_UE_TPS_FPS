@@ -57,6 +57,24 @@ export default class WeaponAimIK{
         this.MuzzleForwardAxis      = opts.MuzzleForwardAxis ? opts.MuzzleForwardAxis.clone() : null; // local barrel axis (auto-detected if null)
         this.RightHandOffset        = opts.RightHandOffset ? opts.RightHandOffset.clone() : new THREE.Vector3(); // dominant grip socket nudge (pivot-local)
         this.LeftHandOffset         = opts.LeftHandOffset  ? opts.LeftHandOffset.clone()  : new THREE.Vector3(); // support grip socket nudge (pivot-local)
+        // SUPPORT GRIP NUDGE IN BODY AXES — the designer-facing version of LeftHandOffset above. Same
+        // effect, but authored in METRES along the CHARACTER's own axes (x = the character's LEFT, y = up,
+        // z = forward) instead of the weapon pivot's raw local units, which are unreadable: they depend on
+        // the gun mesh's authored orientation and on the ~0.0072 rig scale, so "move the hand 3 cm left"
+        // is not something you can write down there.
+        //
+        // WHY THIS EXISTS. The support-hand IK target is CAPTURED from wherever the rifle clips pose hand_l
+        // on the gun (CaptureGripSockets), so it is only as good as the match between the clip and the gun
+        // actually equipped. The player now carries the Vortex Blaster in place of the AK the clips were
+        // authored against, and its foregrip sits off to one side of where the AK's was — so the captured
+        // socket left the support hand floating BESIDE the weapon instead of wrapped around it. This shifts
+        // the socket back onto the gun without re-authoring the clip or the weapon mesh.
+        //
+        // The axes are snapshot ONCE, in pivot-local space, at capture time (see CaptureGripSockets), so the
+        // nudge is baked into the gun's own frame: the hand keeps gripping the SAME point of the weapon as
+        // it swings to aim, exactly like the captured socket it offsets. Per weapon via SetWeaponConfig, or
+        // per rig via PlayerBody (leftHandOffset).
+        this.LeftHandBodyOffset     = opts.LeftHandBodyOffset ? opts.LeftHandBodyOffset.clone() : new THREE.Vector3();
         this.twoHanded              = opts.twoHanded ?? true;              // false => one-handed (skip support-hand foregrip IK)
         // One-handed off-hand relax: for a single-handed weapon (twoHanded:false) the support hand has no
         // foregrip to grab, so instead of leaving it reaching for a phantom grip (the rifle clips pose it
@@ -91,6 +109,15 @@ export default class WeaponAimIK{
         this.forwardLocal = new THREE.Vector3(0, 0, 1); // unit barrel-forward, weaponPivot-local
         this.rightGripLocal = new THREE.Vector3();   // dominant hand contact on the gun (debug / 1-handed)
         this.leftGripLocal = new THREE.Vector3();    // support hand contact (foregrip) — the IK target
+        // The CHARACTER's left/up/forward as unit vectors in weaponPivot-LOCAL space, snapshot at socket
+        // capture, plus the local-units-per-metre factor — together they turn LeftHandBodyOffset (metres,
+        // body axes) into the pivot-local nudge the IK target actually wants. Seeded to the pivot's own
+        // axes so an un-captured solver is still well-defined.
+        this._bodyLeftLocal = new THREE.Vector3(1, 0, 0);
+        this._bodyUpLocal   = new THREE.Vector3(0, 1, 0);
+        this._bodyFwdLocal  = new THREE.Vector3(0, 0, 1);
+        this._localPerMetre = 1;
+        this._bodyAxesCaptured = false;
         this._aimSocketOverridden = false;           // true once a weapon supplies its own aim socket
         this._barrelResolved = false;
         this._socketsCaptured = false;
@@ -336,7 +363,46 @@ export default class WeaponAimIK{
             this.rightGripQuatLocal.copy(this._pW).invert().multiply(this._hq2);
             this._rightGripQuatCaptured = true;
         }
+        this.CaptureBodyAxes();
         this._socketsCaptured = true;
+    }
+
+    // Snapshot the CHARACTER's left/up/forward in weaponPivot-local space (+ the pivot's local-units-per-
+    // metre), so LeftHandBodyOffset can be authored in body-relative metres. Rig-agnostic: "left" is read
+    // off the SHOULDER LINE (upperarm_r -> upperarm_l, flattened), which no bone-naming or axis convention
+    // can get wrong, and "up" is world up; forward is their cross. Taken once, with the gun at its captured
+    // rest pose, so the resolved nudge rides the gun exactly like the grip socket it offsets.
+    CaptureBodyAxes(){
+        const pivot = this.weaponPivot;
+        if(!pivot || !this.bones.upperarm_l || !this.bones.upperarm_r){ return; }
+        this.bones.upperarm_l.getWorldPosition(this._tmpV);
+        this.bones.upperarm_r.getWorldPosition(this._tmpV2);
+        this._tmpV.sub(this._tmpV2); this._tmpV.y = 0;                      // right shoulder -> left shoulder
+        if(this._tmpV.lengthSq() < 1e-8){ return; }
+        this._tmpV.normalize();
+        pivot.getWorldQuaternion(this._pW);
+        this._pWInv.copy(this._pW).invert();
+        this._bodyLeftLocal.copy(this._tmpV).applyQuaternion(this._pWInv).normalize();
+        this._bodyUpLocal.set(0, 1, 0).applyQuaternion(this._pWInv).normalize();
+        this._bodyFwdLocal.crossVectors(this._bodyUpLocal, this._bodyLeftLocal).normalize();
+        // The rig is ~0.0072-scaled, so a metre is ~139 pivot-local units. Decompose rather than assume.
+        pivot.matrixWorld.decompose(this._tmpV, this._pW, this._tmpV2);     // _tmpV2 = world scale
+        const s = Math.abs(this._tmpV2.x);
+        this._localPerMetre = s > 1e-9 ? 1 / s : 1;
+        this._bodyAxesCaptured = true;
+    }
+
+    // The total support-grip nudge in pivot-local units: the raw LeftHandOffset plus LeftHandBodyOffset
+    // resolved through the captured body axes. Written into `out` (no allocation).
+    SupportGripOffset(out){
+        out.copy(this.LeftHandOffset);
+        const b = this.LeftHandBodyOffset;
+        if(b.x !== 0 || b.y !== 0 || b.z !== 0){
+            out.addScaledVector(this._bodyLeftLocal, b.x * this._localPerMetre)
+               .addScaledVector(this._bodyUpLocal,   b.y * this._localPerMetre)
+               .addScaledVector(this._bodyFwdLocal,  b.z * this._localPerMetre);
+        }
+        return out;
     }
 
     // Per-weapon override: authored sockets/offsets/forward-axis (pivot-local). Any field omitted keeps
@@ -348,6 +414,7 @@ export default class WeaponAimIK{
         if(cfg.rightGrip){ this.rightGripLocal.copy(cfg.rightGrip); }
         if(cfg.leftGrip){ this.leftGripLocal.copy(cfg.leftGrip); this._socketsCaptured = true; }
         if(cfg.LeftHandOffset){ this.LeftHandOffset.copy(cfg.LeftHandOffset); }
+        if(cfg.LeftHandBodyOffset){ this.LeftHandBodyOffset.copy(cfg.LeftHandBodyOffset); }
         if(cfg.RightHandOffset){ this.RightHandOffset.copy(cfg.RightHandOffset); }
         if(cfg.LeftHandRotationOffset){ this.LeftHandRotationOffset.copy(cfg.LeftHandRotationOffset); }
         if(cfg.matchHandToGrip !== undefined){ this.matchHandToGrip = cfg.matchHandToGrip; }
@@ -418,6 +485,10 @@ export default class WeaponAimIK{
         if(!this._baseCaptured){ this.CaptureBase(); }
         if(!this._barrelResolved){ this.ResolveBarrel(); }
         if(!this._socketsCaptured){ this.CaptureGripSockets(); }
+        // A weapon that AUTHORS its own leftGrip (SetWeaponConfig) marks the sockets captured without ever
+        // running CaptureGripSockets, so the body axes would still be at their seeded identity and
+        // LeftHandBodyOffset would silently act as a raw pivot-local nudge. Resolve them here instead.
+        if(!this._bodyAxesCaptured){ this.CaptureBodyAxes(); }
 
         // Both blends fully released: leave the weapon + arm entirely to the animation (so idle reads
         // exactly as authored). The mixer rewrites the arm each frame, so nothing lingers. With the
@@ -512,7 +583,7 @@ export default class WeaponAimIK{
         // blend (always-on for a held two-handed weapon), NOT the aim blend — so the support hand stays
         // glued to the gun at idle and through aim/shoot transitions (no release/re-grab snap). ---
         const ikW = this._gripAlpha * this.WeaponIKBlendAlpha;
-        this._tmpV.copy(this.leftGripLocal).add(this.LeftHandOffset);
+        this._tmpV.copy(this.leftGripLocal).add(this.SupportGripOffset(this._tmpV2));
         this._leftTarget.copy(this._tmpV).applyMatrix4(pivot.matrixWorld);   // foregrip world (post-rotation)
         if(this.twoHanded && this._socketsCaptured && this.bones.upperarm_l && this.bones.lowerarm_l && this.bones.hand_l){
             this.bones.hand_l.getWorldPosition(this._ikE);
@@ -600,6 +671,10 @@ export default class WeaponAimIK{
         if(!this._baseCaptured){ this.CaptureBase(); }
         if(!this._barrelResolved){ this.ResolveBarrel(); }
         if(!this._socketsCaptured){ this.CaptureGripSockets(); }
+        // A weapon that AUTHORS its own leftGrip (SetWeaponConfig) marks the sockets captured without ever
+        // running CaptureGripSockets, so the body axes would still be at their seeded identity and
+        // LeftHandBodyOffset would silently act as a raw pivot-local nudge. Resolve them here instead.
+        if(!this._bodyAxesCaptured){ this.CaptureBodyAxes(); }
         this.model.updateMatrixWorld(true);
 
         // Keep the gun's own world SCALE (the skeleton is ~0.01-scaled); position+orientation come from the
@@ -701,7 +776,7 @@ export default class WeaponAimIK{
 
         // SUPPORT (left) hand -> the foregrip on the (now placed) gun — same solve as the TPS path.
         if(this.twoHanded && this._socketsCaptured && this.bones.upperarm_l && this.bones.lowerarm_l && this.bones.hand_l){
-            this._leftTarget.copy(this.leftGripLocal).add(this.LeftHandOffset).applyMatrix4(pivot.matrixWorld);
+            this._leftTarget.copy(this.leftGripLocal).add(this.SupportGripOffset(this._tmpV)).applyMatrix4(pivot.matrixWorld);
             this.bones.hand_l.getWorldPosition(this._ikE);
             this._tmpV2.copy(this._ikE).lerp(this._leftTarget, ikW);
             // Raised support-elbow pole (owner-supplied, eased) so the left elbow lifts up/out while

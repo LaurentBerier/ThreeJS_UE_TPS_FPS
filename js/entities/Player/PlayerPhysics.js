@@ -89,8 +89,7 @@ export default class PlayerPhysics extends Component{
         const ms = this.body.getMotionState();
         if(ms){ ms.setWorldTransform(tr); }                 // keep the interpolated transform in sync
         this.crouched = want;
-        this.body.setCollisionShape(this._currentShape());  // crouch shape (wide in FPS, normal in TPS)
-        if(this.world.updateSingleAabb){ this.world.updateSingleAabb(this.body); }
+        this._SwapShape();                                  // crouch shape (wide in FPS, normal in TPS)
 
         // Vertical velocity is PRESERVED through the swap. It used to be zeroed ("so the swap can't
         // bounce") — but the swap keeps the capsule bottom in place by construction, so there is no
@@ -109,15 +108,38 @@ export default class PlayerPhysics extends Component{
         return this.wide ? this._standShapeWide : this._standShape;
     }
 
+    // Re-seat the collision shape for the current (crouched, wide) state on a body that is ALREADY in
+    // the world.
+    //
+    // WHY THE REMOVE/RE-ADD. `setCollisionShape` alone is NOT enough in Bullet: the broadphase proxy and
+    // the per-pair collision ALGORITHM the dispatcher cached for (player, terrain) are still bound to the
+    // OLD shape, so the narrowphase keeps resolving contacts against the previous capsule for as long as
+    // that pair persists — which it always does, since the player never stops touching the ground. The
+    // symptom was severe and permanent: crouching drops the origin by centerDrop (0.30 m) to keep the
+    // capsule BOTTOM on the floor, but the stale algorithm still saw the TALL capsule there, read 0.30 m
+    // of penetration, and shoved the body back up over the next few frames. The crouched player ended up
+    // hovering a full 0.30 m off the terrain — with Player.Position (and the visual body that follows it)
+    // 0.30 m too high — and the only thing hiding it was FootIK dragging the whole avatar back down with
+    // a ~0.34 m terrain hip-drop while the legs snapped to FULL EXTENSION for the frames that took (the
+    // "knee popping when crouched"). Removing and re-adding rebuilds the proxy and drops the cached
+    // algorithm, so the very next step collides against the shape we actually asked for.
+    //
+    // Cheap (one broadphase pair for a capsule) and only on an actual state change, never per frame.
+    _SwapShape(){
+        this.world.removeRigidBody(this.body);
+        this.body.setCollisionShape(this._currentShape());
+        this.world.addRigidBody(this.body);
+    }
+
     // Swap to the wider FPS capsule (or back to the normal one). Same TOTAL height, so there's no vertical
-    // shift — just re-seat the collision shape for the current crouch state and refresh the broadphase AABB.
+    // shift — just re-seat the collision shape for the current crouch state (see _SwapShape: the swap has
+    // to rebuild the broadphase pair or the narrowphase keeps colliding the OLD radius).
     // Called by PlayerControls on a TPS<->FPS camera switch.
     SetWide(on){
         on = !!on;
         if(on === this.wide || !this.body){ return; }
         this.wide = on;
-        this.body.setCollisionShape(this._currentShape());
-        if(this.world.updateSingleAabb){ this.world.updateSingleAabb(this.body); }
+        this._SwapShape();
         this.body.activate(true);
     }
 

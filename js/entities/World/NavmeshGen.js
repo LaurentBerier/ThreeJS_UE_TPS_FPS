@@ -22,7 +22,14 @@ import { WORLD, IsOnRoute, CASTLE, SPAWNS } from './JourneyWorld.js'
 
 const CELL = 2.75          // metres per nav cell — fine enough for the 9 m canyon, coarse enough
                            // that A* over the whole level stays cheap for the beast's 8 Hz repath
-const SLOPE_LIMIT = 0.8    // rise/run (~38.6°) — above this a cell is unwalkable
+// Slope walkability. Raised HIGH (from 0.8 ≈ 38.6°) so enemies can climb essentially ANY natural
+// slope the route crosses — dune faces, switchbacks, and the deliberately steep ~50° gate ramp the
+// player takes — instead of stalling at the base of anything over ~39°. 3.0 ≈ 71.6°, so only
+// near-vertical cliffs stay unwalkable; and since the navmesh is gated to IsOnRoute, this only ever
+// opens up on-route slopes, never canyon walls. The boss arena is no longer severed by this slope
+// cut (the ~50° ramp and the drop-in lip are similar steepness, so any limit that passes the ramp
+// passes the lip too) — it is severed instead by the rim-moat band below, widened to guarantee it.
+const SLOPE_LIMIT = 3.0    // rise/run (~71.6°) — above this a cell is unwalkable (near-vertical only)
 const CLEARANCE = 1.0      // structure-footprint inflation (m) — the beast's path clearance
 
 export function BuildJourneyNavmesh(terrain, footprints){
@@ -65,6 +72,10 @@ export function BuildJourneyNavmesh(terrain, footprints){
     // island is severed BY CONSTRUCTION whatever the slope sampling says. The bowl interior and
     // the ramp outside both survive; only the ledge line itself is cut. (The victory stair crosses
     // this band as structure geometry, which was never navmesh — AI stays confined either way.)
+    // The band is now the SOLE severing mechanism (the raised SLOPE_LIMIT no longer cuts the lip), so
+    // it must be at least one CELL (2.75 m) wide or a radial could bridge it with two adjacent cells
+    // whose centres straddle the gap. Widened to 3.0 m (A.r-1.4 .. A.r+1.6) to guarantee a complete
+    // cut on every radial; the arena floor (r 19) only loses a 0.6 m rim, still a 17.6 m walkable bowl.
     const A = CASTLE.arena
 
     for(let j = 0; j < nz; j++){
@@ -72,7 +83,7 @@ export function BuildJourneyNavmesh(terrain, footprints){
             const x = cellX(i), z = cellZ(j)
             if(!IsOnRoute(x, z)){ continue }
             const dA = Math.hypot(x - A.x, z - A.z)
-            if(dA > A.r - 0.8 && dA < A.r + 1.6){ continue }
+            if(dA > A.r - 1.4 && dA < A.r + 1.6){ continue }
             const h0 = terrain.HeightAt(x, z)
             if(tooSteep(x, z, h0)){ continue }
             if(inFootprint(x, z)){ continue }

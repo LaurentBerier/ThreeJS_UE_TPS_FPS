@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Vortex FBX -&gt; GLB converter</title>
+    <!--
+      Build-time converter (NOT part of the game). Loads SK_VortexBlaster.fbx (FBX 7700,
+      which r127's runtime FBXLoader cannot parse) with a MODERN three.js FBXLoader
+      (r160) and exports a binary GLB carrying the MESH + materials + embedded textures:
+        assets/guns/New/SK_VortexBlaster_raw.glb
+      That raw GLB is then squeezed with the gltf-transform CLI into the shipped
+      SK_VortexBlaster.glb. The runtime loads the compressed GLB with its own (r127)
+      GLTFLoader and sockets it into the player's hand (buildUeMannequin auto-centres
+      + auto-scales it), replacing the old SK_AK47 FBX. Driven headlessly by opening
+      this page against tools/convert_server.mjs; it POSTs the GLB to /__save.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <pre id="log">starting…</pre>
+    <script type="module">
+      import * as THREE from 'three';
+      import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+      import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+
+      const status = { steps: [] };
+      const logEl = document.getElementById('log');
+      const log = (m) => { status.steps.push(m); logEl.textContent = status.steps.join('\n'); document.title = m; };
+
+      try {
+        const FBX_URL = '../assets/guns/New/SK_VortexBlaster.fbx';
+        const OUT_REL = 'assets/guns/New/SK_VortexBlaster_raw.glb';
+
+        log('loading FBX ' + FBX_URL);
+        const loader = new FBXLoader();
+        const root = await loader.loadAsync(FBX_URL);
+        root.name = 'SK_VortexBlaster';
+
+        const TEX_SLOTS = ['map','normalMap','roughnessMap','metalnessMap','emissiveMap','aoMap','alphaMap','bumpMap','specularMap'];
+
+        // Gather every (material, slot, texture) triple.
+        let meshes = 0, verts = 0;
+        const refs = [];             // { mat, slot, tex }
+        const texSet = new Set();
+        root.updateMatrixWorld(true);
+        root.traverse((o) => {
+          if(o.isMesh || o.isSkinnedMesh){
+            meshes++;
+            const g = o.geometry;
+            if(g && g.attributes && g.attributes.position){ verts += g.attributes.position.count; }
+            const mats = Array.isArray(o.material) ? o.material : [o.material];
+            for(const m of mats){
+              if(!m) continue;
+              for(const slot of TEX_SLOTS){
+                if(m[slot]){ refs.push({ mat: m, slot, tex: m[slot] }); texSet.add(m[slot]); }
+              }
+            }
+          }
+        });
+
+        const isReady = (img) => {
+          if(!img) return false;
+          if(img instanceof HTMLImageElement) return img.complete && img.naturalWidth > 0;
+          if(typeof ImageBitmap !== 'undefined' && img instanceof ImageBitmap) return img.width > 0;
+          if(img instanceof HTMLCanvasElement) return img.width > 0;
+          return !!(img.width && img.height) || !!(img.data && img.width);
+        };
+        const srcTail = (t) => {
+          const img = t.image || {};
+          return (img.src || t.name || (t.userData && t.userData.src) || '').split('/').pop().slice(0, 80);
+        };
+        // Expose the texture inventory on window IMMEDIATELY, so it's readable even
+        // before/if the export path throws.
+        window.__TEXINFO = refs.map(r => ({ slot: r.slot, src: srcTail(r.tex), ready: isReady(r.tex.image) }));
+
+        // FBXLoader decodes embedded texture images ASYNCHRONOUSLY (Image.onload off a
+        // blob URL). Give them a fixed grace period to fire onload — NO img.decode()
+        // await (it can hang forever on a stalled/broken image, which froze the loop).
+        log('waiting (grace) for ' + texSet.size + ' texture image(s)');
+        for(let i = 0; i < 25 && [...texSet].some(t => !isReady(t.image)); i++){
+          await new Promise(r => setTimeout(r, 200));
+        }
+
+        // Per-texture report + prune broken slots so the exporter won't fail on a
+        // missing external ref (like the AK's unshipped T_WeaponColors).
+        const texReport = [];
+        let kept = 0, dropped = 0;
+        for(const t of texSet){
+          const img = t.image || {};
+          texReport.push({ name: t.name || '', src: srcTail(t), w: img.naturalWidth || img.width || 0, h: img.naturalHeight || img.height || 0, ok: isReady(t.image) });
+        }
+        for(const { mat, slot, tex } of refs){
+          if(isReady(tex.image)){ kept++; }
+          else { mat[slot] = null; mat.needsUpdate = true; dropped++; }
+        }
+        window.__TEXINFO = texReport;
+
+        const box = new THREE.Box3().setFromObject(root);
+        const size = box.getSize(new THREE.Vector3());
+        status.diag = {
+          meshes, verts, uniqueTextures: texSet.size, slotRefs: refs.length,
+          keptSlots: kept, droppedSlots: dropped,
+          bbox: [ +size.x.toFixed(2), +size.y.toFixed(2), +size.z.toFixed(2) ],
+          textures: texReport,
+        };
+        log(`meshes=${meshes} verts=${verts} uniqueTex=${texSet.size} kept=${kept} dropped=${dropped} bbox=${status.diag.bbox.join('×')}`);
+
+        log('exporting GLB');
+        const exporter = new GLTFExporter();
+        const glb = await new Promise((resolve, reject) => {
+          exporter.parse(
+            root,
+            (result) => resolve(result),
+            (err) => reject(err),
+            { binary: true, onlyVisible: false, includeCustomExtensions: true },
+          );
+        });
+        const bytes = new Uint8Array(glb);
+        status.bytes = bytes.length;
+        log('exported ' + bytes.length + ' bytes; saving');
+
+        const resp = await fetch('/__save?path=' + encodeURIComponent(OUT_REL), {
+          method: 'POST',
+          headers: { 'content-type': 'application/octet-stream' },
+          body: glb,
+        });
+        status.saveResp = await resp.text();
+        status.ok = resp.ok;
+        log('done: ' + status.saveResp);
+      } catch (e) {
+        status.ok = false;
+        status.error = (e.message || String(e)) + '\n' + (e.stack || '');
+        log('error: ' + status.error);
+      }
+      window.__STATUS = status;
+    </script>
+  </body>
+</html>

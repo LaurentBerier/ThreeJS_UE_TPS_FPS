@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { BufferGeometryUtils } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import Component from '../../Component.js'
 import { Ammo } from '../../AmmoLib.js'
-import { PALETTE, gradeRuin } from './DesertLook.js'
+import { PALETTE, gradeRuin, captureFogUniforms } from './DesertLook.js'
 import { CASTLE } from './JourneyWorld.js'
 
 // Every built thing the player can touch on the journey: the ruined castle and its boss arena,
@@ -604,6 +604,8 @@ export default class Structures extends Component{
             const merged = BufferGeometryUtils.mergeBufferGeometries(this._banners)
             const mat = this.mats.banner
             mat.onBeforeCompile = (shader) => {
+                // Replacing onBeforeCompile bypasses the default fog-clock hook — re-register.
+                captureFogUniforms(shader)
                 shader.uniforms.uTime = { value: 0 }
                 shader.vertexShader = 'uniform float uTime;\n' + shader.vertexShader
                 shader.vertexShader = shader.vertexShader.replace(

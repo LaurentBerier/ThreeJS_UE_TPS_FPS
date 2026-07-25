@@ -1,7 +1,8 @@
 import * as THREE from 'three'
 import { BufferGeometryUtils } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import Component from '../../Component.js'
-import { PALETTE, GLSL_NOISE, GLSL_SKY, GLSL_ENCODE, sunDirection, PLAY_CENTER, PLAY_RADIUS } from './DesertLook.js'
+import { PALETTE, GLSL_NOISE, GLSL_SKY, GLSL_ENCODE, sunDirection, windDirection, PLAY_CENTER, PLAY_RADIUS } from './DesertLook.js'
+import { RugDetailTiled } from './JourneyWorld.js'
 
 
 // The world beyond the journey: dunes to the horizon, dark rock ridges, buried ruins, broken
@@ -40,11 +41,14 @@ const PAD_RADIUS = 462
 // same triangle count however far out they sit.
 const FAR_EDGE = 2000
 
-// Haze density for far geometry. Thinner than the scene fog the near world uses (0.0028): at 380 m
-// this leaves the fortress about 22% hazed — present and solid, with aerial perspective, rather
-// than the milky ghost a heavier value produced. Both densities are effectively zero inside combat
+// Haze density for far geometry. Thinner than the scene fog the near world uses: at 380 m this
+// leaves the fortress about 22% hazed — present and solid, with aerial perspective, rather than
+// the milky ghost a heavier value produced. Both densities are effectively zero inside combat
 // range, so they cannot disagree anywhere the player is actually fighting.
-const FAR_HAZE = 0.0013
+// NOTE this is the MID-altitude optical depth: the fragment shader scales it by height — the
+// cold mist pools low (dune sea, spire feet) and thins toward the crowns, per the alien-vista
+// reference. 0.0013 -> 0.0010 with that change, so spire crowns at ~1200 m stay solid.
+const FAR_HAZE = 0.0010
 
 
 // Deterministic PRNG. The world must be identical every load — an art-directed skyline that
@@ -59,11 +63,15 @@ function makeRng(seed){
 
 
 export default class FarWorld extends Component{
-    constructor(scene, camera){
+    // rugged: the same { albedo, normal, ctrl, meta } bundle the near ground grades with
+    // (optional). The far dune sea samples the SAME sheets under mirrored tiling and displaces
+    // with the SAME detail field, so near and far read as one continuous map instead of two.
+    constructor(scene, camera, rugged = null){
         super()
         this.name = 'FarWorld'
         this.scene = scene
         this.camera = camera
+        this.rugged = rugged
         this.sunDir = sunDirection()
         this.root = new THREE.Group()
         this.root.name = 'FarWorld'
@@ -72,11 +80,30 @@ export default class FarWorld extends Component{
     }
 
     Initialize(){
+        // Defensive sampler setup: DesertSurfaces configures these same texture objects when it
+        // grades the near ground, but FarWorld must not depend on entity-initialisation order —
+        // mirrored wrap + flipY are exactly what the far sampling below assumes.
+        if(this.rugged){
+            for(const t of [this.rugged.albedo, this.rugged.normal, this.rugged.ctrl]){
+                if(!t){ this.rugged = null; break }
+                t.wrapS = t.wrapT = THREE.MirroredRepeatWrapping
+                t.flipY = false
+                t.needsUpdate = true
+            }
+            // The erosion-regime sheet is optional on top of the required trio.
+            if(this.rugged && this.rugged.ero){
+                const t = this.rugged.ero
+                t.wrapS = t.wrapT = THREE.MirroredRepeatWrapping
+                t.flipY = false
+                t.needsUpdate = true
+            }
+        }
         this.material = this._buildMaterial()
         this.scene.add(this.root)
 
         this._buildDuneField()
         this._buildRidges()
+        this._buildSpires()
         this._buildRuins()
         this._buildWrecks()
     }
@@ -89,6 +116,39 @@ export default class FarWorld extends Component{
     // seam. Surface variety rides on vertex colours, which is what lets everything merge.
     _buildMaterial(){
         const c = (col) => new THREE.Vector3(col.r, col.g, col.b)
+        const rug = this.rugged
+        const meta = (rug && rug.meta) || {}
+        const mean = meta.albedoMeanLinear || [0.4, 0.43, 0.39]
+        const meanL = 0.2126 * mean[0] + 0.7152 * mean[1] + 0.0722 * mean[2]
+        const uniforms = {
+                uSunDir: { value: this.sunDir.clone() },
+                uSunCol: { value: c(PALETTE.sun) },
+                uAmbCol: { value: c(PALETTE.skyAmbient) },
+                uBounce: { value: c(PALETTE.sandBounce) },
+                uHaze: { value: FAR_HAZE },
+                uMistCol: { value: c(PALETTE.mist) },
+                uTime: { value: 0 },       // drives the drifting haze banks (see Update)
+        }
+        if(rug){
+            uniforms.uRugAlb = { value: rug.albedo }
+            uniforms.uRugNrm = { value: rug.normal }
+            uniforms.uRugCtrl = { value: rug.ctrl }
+            uniforms.uRugHalf = { value: (meta.worldSize || 640) / 2 }
+            uniforms.uRugSize = { value: meta.worldSize || 640 }
+            uniforms.uRugMeanL = { value: meanL }
+            if(rug.ero){ uniforms.uRugEro = { value: rug.ero } }
+        }
+        // The near fog's bank field, verbatim (freq 1/115 m, vertical squashed 2.6x, drifting on
+        // the world wind at 2.4 m/s, sampled at the same capped 220 m mid-ray point) — both sides
+        // of the fence must agree on where a bank sits or the handoff line reappears as a
+        // modulation seam, and the mid-ray cap is what keeps grazing rays over the flat dune pad
+        // from striping (see the CUSTOM FOG notes in DesertLook).
+        const wv = windDirection()
+        const bankGLSL = /* glsl */`
+                vec3 bsp = cameraPosition + (vWorld - cameraPosition) * min(1.0, 220.0 / max(dist, 0.001));
+                vec3 bnp = (bsp + vec3(${wv.x.toFixed(5)}, 0.0, ${wv.z.toFixed(5)}) * (uTime * 2.4))
+                    * vec3(0.008696, 0.022609, 0.008696);
+                float bank = dl_noise(bnp) * 0.65 + dl_noise(bnp * 2.7 + 13.1) * 0.35;`
         return new THREE.ShaderMaterial({
             fog: false,           // handled below, per view direction, to match the sky exactly
             // Ridges, arches and collapsed walls are open shells, not closed solids — they are
@@ -96,13 +156,7 @@ export default class FarWorld extends Component{
             // half the angles in the level. Drawing both sides and flipping the normal in the
             // shader costs nothing at 40k triangles and makes them solid from everywhere.
             side: THREE.DoubleSide,
-            uniforms: {
-                uSunDir: { value: this.sunDir.clone() },
-                uSunCol: { value: c(PALETTE.sun) },
-                uAmbCol: { value: c(PALETTE.skyAmbient) },
-                uBounce: { value: c(PALETTE.sandBounce) },
-                uHaze: { value: FAR_HAZE },
-            },
+            uniforms,
             vertexShader: /* glsl */`
                 attribute vec3 color;
                 varying vec3 vCol;
@@ -122,6 +176,19 @@ export default class FarWorld extends Component{
                 uniform vec3 uAmbCol;
                 uniform vec3 uBounce;
                 uniform float uHaze;
+                uniform vec3 uMistCol;
+                uniform float uTime;
+                ${this.rugged ? /* glsl */`
+                uniform sampler2D uRugAlb;
+                uniform sampler2D uRugNrm;
+                uniform sampler2D uRugCtrl;
+                uniform float uRugHalf;
+                uniform float uRugSize;
+                uniform float uRugMeanL;
+                ` : ''}
+                ${this.rugged && this.rugged.ero ? /* glsl */`
+                uniform sampler2D uRugEro;
+                ` : ''}
                 varying vec3 vCol;
                 varying vec3 vWorld;
                 varying vec3 vNrm;
@@ -136,6 +203,61 @@ export default class FarWorld extends Component{
                     vec3 toCam = cameraPosition - vWorld;
                     float dist = length(toCam);
                     vec3 V = toCam / max(dist, 0.001);
+                    vec3 alb = vCol;
+
+                    ${this.rugged ? /* glsl */`
+                    // Shared erosion language with the playable ground (same sheets, mirror-tiled
+                    // by the sampler): residual normals crisp the dune shading, the macro albedo
+                    // carries the same staining, drainage lanes darken. Gated to SAND by vertex
+                    // colour luminance so the dark rock ridges, the alien spires (lum ≈ 0.25) and
+                    // steel wrecks keep their look — dune sand always sits above 0.4 here — and
+                    // to up-facing surfaces so lofted walls are untouched.
+                    vec2 rugUV = (vWorld.xz + uRugHalf) / uRugSize;
+                    float sandy = smoothstep(0.30, 0.42, dot(alb, vec3(0.2126, 0.7152, 0.0722)));
+                    float upw = smoothstep(0.35, 0.7, N.y) * sandy;
+                    if(upw > 0.003){
+                        vec3 rn = texture2D(uRugNrm, rugUV).xyz * 2.0 - 1.0;
+                        vec2 grad = -N.xz / max(N.y, 0.25);
+                        grad += -rn.xz / max(rn.y, 0.2) * (1.6 * upw);
+                        N = normalize(vec3(-grad.x, 1.0, -grad.y));
+                    }
+                    if(sandy > 0.003){
+                        // The staining exists to kill the FENCE SEAM — beyond ~2 rug tiles out it
+                        // buys nothing, and at the grazing angles the flat dune sea is seen from,
+                        // mirror-tiled wash lanes foreshorten into hard horizon-parallel bands
+                        // (they read as shorelines). Fade all albedo-side staining out past the
+                        // fence zone; the residual NORMALS stay — relief reads as texture, not
+                        // stripes.
+                        float rugFade = 1.0 - smoothstep(360.0, 560.0, length(vWorld.xz));
+                        vec3 mac = dl_toLinear(texture2D(uRugAlb, rugUV).rgb);
+                        float macL = max(dot(mac, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+                        float det = clamp(macL / max(uRugMeanL, 1e-4), 0.35, 2.0);
+                        vec3 macCh = mac / macL;
+                        float chD = length(macCh - vec3(1.0));
+                        // Chroma adoption + taming matched to gradeGround's Dark Alien values
+                        // (RUG_HUE 0.55, tame 1.6) so near and far stay one map.
+                        vec3 hue = mix(vec3(1.0), macCh, 0.55 / (1.0 + chD * chD * 1.6));
+                        float wash = smoothstep(0.25, 0.75, texture2D(uRugCtrl, rugUV).r);
+                        ${this.rugged.ero ? /* glsl */`
+                        // Erosion-regime sheet, as on the near ground: silt floors lighten the
+                        // wash lanes instead of darkening them.
+                        vec3 ev = texture2D(uRugEro, rugUV).rgb;
+                        wash *= 1.0 - ev.g * 0.55;
+                        ` : ''}
+                        alb *= mix(vec3(1.0), hue * det, sandy * 0.9 * rugFade);
+                        alb *= mix(1.0, 0.70, wash * 0.5 * sandy * rugFade);
+                        ${this.rugged.ero ? /* glsl */`
+                        // Surface-age luma/hue matched to gradeGround's RUG_ERO block at reduced
+                        // strength — the haze owns most far contrast; this only kills the seam.
+                        // +0.137 = the same bake-measured zero-mean recentring as the near ground
+                        // (channel means 0.203/0.080/0.373 at this block's 0.75 varnish weight).
+                        float varnF = ev.b * 0.75;
+                        float eLumF = ev.g * 0.85 + ev.r * 0.30 - varnF * 0.95 + 0.137;
+                        alb *= clamp(1.0 + eLumF * 0.33 * sandy * rugFade, 0.76, 1.24);
+                        alb *= mix(vec3(1.0), vec3(0.93, 0.905, 0.88), clamp(varnF * 1.15, 0.0, 1.0) * 0.5 * sandy * rugFade);
+                        ` : ''}
+                    }
+                    ` : ''}
 
                     // Wrapped diffuse. The wrap stands in for the bounce a real desert throws
                     // around; a hard N.L terminator at this scale reads as flat cardboard. Kept
@@ -149,18 +271,36 @@ export default class FarWorld extends Component{
                     float up = N.y * 0.5 + 0.5;
                     vec3 amb = mix(uBounce * 0.55, uAmbCol, up);
 
-                    vec3 col = vCol * (uSunCol * diff * 1.25 + amb * 0.5);
+                    vec3 col = alb * (uSunCol * diff * 1.25 + amb * 0.5);
 
                     // Backlit rim. With the sun behind the fortress this is what draws the molten
-                    // edge along its towers and turns a grey mass into a silhouette.
+                    // edge along its towers and turns a grey mass into a silhouette. GATED OFF
+                    // up-facing ground: on the rolling dune floor seen at a grazing sunward angle
+                    // the fresnel term banded every ripple crest into hard gold stripes that read
+                    // as sheets of water (isolated by hiding FarWorld — the near fog was clean).
+                    // A rim is a SILHOUETTE cue; flat floor has no silhouette to draw.
                     float rim = pow(clamp(1.0 - abs(dot(N, V)), 0.0, 1.0), 2.5);
+                    rim *= 1.0 - smoothstep(0.55, 0.80, N.y) * 0.85;
                     col += uSunCol * rim * clamp(dot(L, -V) * 0.5 + 0.5, 0.0, 1.0) * 0.55;
 
-                    // Atmospheric perspective, blending into the sky in THIS view direction rather
-                    // than into a single flat fog colour.
-                    float h = 1.0 - exp(-pow(dist * uHaze, 2.0));
+                    // Atmospheric perspective, blending into the sky in THIS view direction
+                    // rather than into a single flat fog colour. ALTITUDE-DEPENDENT, per the
+                    // alien-vista reference: cold mist pools low — the far dune sea and the
+                    // spire feet drown in it — while crowns punch through into clearer air.
+                    // The factor scales the optical depth, so the fade stays exponential and
+                    // seam-free across a tower's height.
+                    float lowAlt = smoothstep(95.0, 6.0, vWorld.y);
+                    // The same wind-drifted bank field the near fog runs (constants must match —
+                    // see bankGLSL): far haze thickens and thins in the same moving weather, so
+                    // the near/far handoff never draws a modulation seam.
+                    ${bankGLSL}
+                    float bmod = 1.0 + (bank * 2.0 - 1.0) * (0.20 + 0.33 * lowAlt);
+                    float h = 1.0 - exp(-pow(dist * bmod * uHaze * mix(0.55, 1.45, lowAlt), 2.0));
+                    // The pooled mist is COOLER than the dusk sky behind it — pale steel against
+                    // amber. That temperature split is what reads as depth in the reference.
                     vec3 sky = dl_skyColor(-V, L);
-                    col = mix(col, sky, clamp(h, 0.0, 1.0));
+                    vec3 fadeCol = mix(sky, uMistCol, lowAlt * 0.55);
+                    col = mix(col, fadeCol, clamp(h, 0.0, 1.0));
 
                     gl_FragColor = vec4(dl_toLinear(col), 1.0);
                 }
@@ -258,7 +398,15 @@ export default class FarWorld extends Component{
         // Dunes grow with distance — the near field stays low so it never rises into the skyline
         // and steals the fortress's silhouette.
         h *= 0.25 + 0.75 * Math.min(radius / 420, 1.6)
-        return DEPOT_PAD + blend * (h + 9 * blend)
+
+        // The SAME rugged erosion field the playable terrain composites (mirror-tiled past the
+        // world square), scaled up with distance like the dunes themselves. This is what makes
+        // the fence line stop reading as the border between a detailed map and a smooth one.
+        // Zero inside the pad (blend ramps it in), zero when the bake is absent.
+        const rug = RugDetailTiled(PLAY_CENTER.x + dx, PLAY_CENTER.y + dz)
+            * (3.5 + Math.min(radius / 300, 2) * 2.5)
+
+        return DEPOT_PAD + blend * (h + rug + 9 * blend)
     }
 
     // ---------------------------------------------------------------------------------------
@@ -333,6 +481,123 @@ export default class FarWorld extends Component{
         for(let i = 0; i < n; i++){ arr[i * 3] = col.r; arr[i * 3 + 1] = col.g; arr[i * 3 + 2] = col.b }
         geometry.setAttribute('color', new THREE.BufferAttribute(arr, 3))
         return geometry
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Alien rock spires — the vista reference's hero feature: colossal fluted towers standing
+    // out of the pooled mist, dark steel-blue against the dusk with a molten rim where the sun
+    // grazes them (the material's existing backlit-rim term supplies that for free).
+    //
+    // Placement rules: every cluster sits ≥1000 m out (far past KEEP_CLEAR), and the sun/castle
+    // bearing (azimuth -118° ±22°) stays EMPTY — the fortress owns that silhouette and the
+    // opening vista cone must never be contested (JourneyWorld carves terrain for that shot).
+    // ---------------------------------------------------------------------------------------
+    _buildSpires(){
+        const rng = makeRng(4242)
+        const parts = []
+        const cx = PLAY_CENTER.x, cz = PLAY_CENTER.y
+        // az: world compass degrees, same convention as DesertLook.SUN_AZIMUTH (-118°).
+        const CLUSTERS = [
+            { az: -84,  dist: 1150, n: 4, h: 300 },   // hero cluster right of the sunset — under the moons
+            { az: -150, dist: 1250, n: 3, h: 250 },   // left flank, under the stray moon
+            { az: -48,  dist: 1500, n: 2, h: 210 },
+            { az: 22,   dist: 1250, n: 3, h: 270 },   // the skyline at the player's back
+            { az: 95,   dist: 1450, n: 2, h: 220 },
+            { az: 165,  dist: 1600, n: 3, h: 290 },
+        ]
+        for(const cl of CLUSTERS){
+            const baseAng = cl.az * Math.PI / 180
+            for(let i = 0; i < cl.n; i++){
+                const ang = baseAng + (rng() - 0.5) * 0.16
+                const dist = cl.dist * (0.86 + rng() * 0.30)
+                const x = cx + Math.cos(ang) * dist
+                const z = cz + Math.sin(ang) * dist
+                // First of each cluster is the monarch; companions step well down, as in the ref.
+                const height = cl.h * (i === 0 ? 0.9 + rng() * 0.25 : 0.42 + rng() * 0.38)
+                const baseR = height * (0.10 + rng() * 0.05)
+                parts.push(this._spireGeometry(baseR, height, rng, x, z, dist))
+            }
+        }
+        this._adopt(BufferGeometryUtils.mergeBufferGeometries(parts), 'FarSpires')
+    }
+
+    // One spire: a lofted fluted column — stepped strata (radius holds through a band, then
+    // jumps in), a lobed cross-section so the silhouette reads as wind-carved rock rather than
+    // a cone, a slight whole-tower lean, and a talus skirt that beds it into the dune sea. The
+    // skirt's vertex colour walks toward sand, so the shared rugged albedo picks it up and the
+    // foot belongs to the ground it stands on. ~700 triangles; merged with its siblings.
+    _spireGeometry(baseR, height, rng, x, z, dist){
+        const SIDES = 10, RINGS = 11
+        const positions = [], colors = [], indices = []
+        // Cool alien rock — deliberately colder than PALETTE.stoneDark's warm brown. Kept dark:
+        // vertex-colour luminance below the far shader's "sandy" gate, so the erosion albedo
+        // never restains the towers.
+        const rock = new THREE.Color(0x39414f)
+        const rockLo = new THREE.Color(0x252b36)
+        const sandFoot = PALETTE.sandDark.clone().lerp(rockLo, 0.45)
+        const y0 = this._duneHeight(x - PLAY_CENTER.x, z - PLAY_CENTER.y, dist) - (8 + baseR * 0.35)
+        const fluteN = 3 + Math.floor(rng() * 3)
+        const flutePhase = rng() * Math.PI * 2
+        const lean = (rng() - 0.5) * 0.07
+        const leanDir = rng() * Math.PI * 2
+
+        // Ring ladder: [0] talus skirt hem, [1] foot, [2..] the tower, stepped.
+        let stepR = 1.0
+        const rings = []
+        rings.push({ y: y0 - baseR * 0.9, rad: baseR * 3.0, col: sandFoot, spread: 0.10 })
+        rings.push({ y: y0, rad: baseR * 1.06, col: rockLo.clone().lerp(rock, 0.3), spread: 0.16 })
+        for(let r = 0; r <= RINGS; r++){
+            const t = r / RINGS
+            // Gentle taper + small strata steps: the reference towers are COLUMNAR — near-straight
+            // shafts with blunt broken tops. The first cut (t*0.52, steps to ~0.5) read as witch
+            // hats on the horizon.
+            if(r > 0 && rng() < 0.55){ stepR *= 0.88 + rng() * 0.09 }
+            const band = rockLo.clone().lerp(rock, 0.35 + rng() * 0.65)
+            rings.push({
+                y: y0 + height * Math.pow(t, 0.92),
+                rad: baseR * (1.0 - t * 0.30) * stepR,
+                col: band, spread: 0.22,
+            })
+        }
+        for(const ring of rings){
+            const yy = ring.y
+            const lx = Math.cos(leanDir) * lean * Math.max(0, yy - y0)
+            const lz = Math.sin(leanDir) * lean * Math.max(0, yy - y0)
+            for(let s = 0; s <= SIDES; s++){
+                const a = (s / SIDES) * Math.PI * 2
+                const flute = 1 + 0.14 * Math.sin(a * fluteN + flutePhase)
+                    + 0.09 * Math.sin(a * (fluteN * 2 + 1) - flutePhase * 1.7)
+                const rad = ring.rad * flute
+                positions.push(x + lx + Math.cos(a) * rad, yy, z + lz + Math.sin(a) * rad)
+                const f = 1 + (rng() - 0.5) * ring.spread
+                colors.push(ring.col.r * f, ring.col.g * f, ring.col.b * f)
+            }
+        }
+        const stride = SIDES + 1
+        for(let r = 0; r < rings.length - 1; r++){
+            for(let s = 0; s < SIDES; s++){
+                const a = r * stride + s, b = a + 1, c = a + stride, d = c + 1
+                indices.push(a, c, b, b, c, d)
+            }
+        }
+        // Broken crown: a jittered near-FLAT apex fan over the last ring, off-centre — a blunt
+        // sheared top, not a steeple (see the taper note above).
+        const top = rings[rings.length - 1]
+        const apex = positions.length / 3
+        positions.push(
+            x + Math.cos(leanDir) * lean * height + (rng() - 0.5) * top.rad,
+            top.y + baseR * (0.06 + rng() * 0.12),
+            z + Math.sin(leanDir) * lean * height + (rng() - 0.5) * top.rad)
+        colors.push(rock.r * 1.25, rock.g * 1.25, rock.b * 1.25)
+        const lastRow = (rings.length - 1) * stride
+        for(let s = 0; s < SIDES; s++){ indices.push(lastRow + s, apex, lastRow + s + 1) }
+
+        const g = new THREE.BufferGeometry()
+        g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+        g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
+        g.setIndex(indices)
+        g.computeVertexNormals()
+        return g
     }
 
     // ---------------------------------------------------------------------------------------
@@ -465,6 +730,11 @@ export default class FarWorld extends Component{
             parts.push(g)
         }
         this._adopt(BufferGeometryUtils.mergeBufferGeometries(parts), 'FarWrecks')
+    }
+
+    Update(t){
+        // Only the haze-bank clock — the far world itself never moves.
+        if(this.material){ this.material.uniforms.uTime.value += t }
     }
 
     Dispose(){

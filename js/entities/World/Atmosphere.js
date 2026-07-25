@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import Component from '../../Component.js'
-import { PALETTE, GLSL_NOISE, GLSL_ENCODE, sunDirection, PLAY_CENTER } from './DesertLook.js'
+import { PALETTE, GLSL_NOISE, GLSL_ENCODE, sunDirection, windDirection, windStrengthAt, WIND_SPEED, PLAY_CENTER } from './DesertLook.js'
 import { SMOKES } from './JourneyWorld.js'
 
 
@@ -40,6 +40,7 @@ export default class Atmosphere extends Component{
     Initialize(){
         this.terrain = this.FindEntity('Level') ? this.FindEntity('Level').GetComponent('Terrain') : null
         this._buildMotes()
+        this._buildStreaks()
         this._buildPlumes()
         this._buildShafts()
         this._buildSmokes()
@@ -74,18 +75,23 @@ export default class Atmosphere extends Component{
                 uCam: { value: new THREE.Vector3() },
                 uBox: { value: MOTE_BOX },
                 uCol: { value: new THREE.Vector3(PALETTE.dust.r, PALETTE.dust.g, PALETTE.dust.b) },
+                // THE world wind (DesertLook) — the same direction the flags, smoke, clouds and
+                // sand ripples answer to.
+                uWind: { value: new THREE.Vector2(windDirection().x * WIND_SPEED, windDirection().z * WIND_SPEED) },
             },
             vertexShader: /* glsl */`
                 attribute float seed;
                 uniform float uTime;
                 uniform vec3 uCam;
                 uniform float uBox;
+                uniform vec2 uWind;
                 varying float vFade;
                 void main(){
                     vec3 p = position;
-                    // Wind drift, with a slow vertical wander so it does not read as a conveyor.
-                    p.x += uTime * (1.7 + seed * 2.3);
-                    p.z += uTime * (0.7 + seed * 1.1);
+                    // Wind drift along the shared world wind (each mote at its own fraction of the
+                    // wind speed — near-ground air is slower), with a slow vertical wander so it
+                    // does not read as a conveyor.
+                    p.xz += uTime * uWind * (0.30 + seed * 0.45);
                     p.y += sin(uTime * (0.4 + seed) + seed * 31.0) * 0.5;
                     // Wrap into a box centred on the camera: an endless field from a small buffer.
                     vec3 origin = uCam - vec3(uBox * 0.5, 2.0, uBox * 0.5);
@@ -108,7 +114,7 @@ export default class Atmosphere extends Component{
                     vec2 d = gl_PointCoord - 0.5;
                     float r = dot(d, d);
                     if(r > 0.25){ discard; }
-                    float a = (1.0 - r * 4.0) * vFade * 0.13;
+                    float a = (1.0 - r * 4.0) * vFade * 0.17;
                     gl_FragColor = vec4(dl_toLinear(uCol), a);
                 }
             `,
@@ -121,6 +127,118 @@ export default class Atmosphere extends Component{
         this.moteMat = mat
         this.scene.add(pts)
         this.parts.push(pts)
+    }
+
+    // --- Wind streaks ---------------------------------------------------------------------------
+    // The VISIBLE wind: thin line streaks riding the citadel wind in gusty bursts — the classic
+    // stylised air-current read. Same architecture as the motes (a fixed buffer wrapped modulo a
+    // camera-following box, all animation from uTime on the GPU), but drawn as LINE SEGMENTS:
+    // the head vertex is the air parcel, the tail trails upwind, so every streak is a visible
+    // arrow of where the wind is going. Readability rules hold: nothing inside 3.5 m, 1-pixel
+    // additive lines that brighten in gust waves and die between them, so they read as weather,
+    // not as a constant particle rain.
+    _buildStreaks(){
+        const COUNT = 240
+        const positions = new Float32Array(COUNT * 2 * 3)
+        const seeds = new Float32Array(COUNT * 2)
+        const ends = new Float32Array(COUNT * 2)
+        for(let i = 0; i < COUNT; i++){
+            const x = Math.random() * MOTE_BOX
+            // Height bias: wind streaks live in the walked layer of air — mostly 0.5–3 m with a
+            // tail up to ~7 m, so they cross the frame without living on the crosshair line.
+            const y = 0.4 + Math.pow(Math.random(), 1.8) * 6.5
+            const z = Math.random() * MOTE_BOX
+            const s = Math.random()
+            for(let k = 0; k < 2; k++){
+                const o = (i * 2 + k)
+                positions[o * 3] = x; positions[o * 3 + 1] = y; positions[o * 3 + 2] = z
+                seeds[o] = s
+                ends[o] = k
+            }
+        }
+        const g = new THREE.BufferGeometry()
+        g.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+        g.setAttribute('seed', new THREE.BufferAttribute(seeds, 1))
+        g.setAttribute('aEnd', new THREE.BufferAttribute(ends, 1))
+
+        const wd = windDirection()
+        const mat = new THREE.ShaderMaterial({
+            transparent: true,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending,
+            fog: false,
+            uniforms: {
+                uTime: { value: 0 },
+                uCam: { value: new THREE.Vector3() },
+                uBox: { value: MOTE_BOX },
+                uGust: { value: 0.5 },       // normalised gust envelope, fed from windStrengthAt
+                uWind: { value: new THREE.Vector3(wd.x, 0, wd.z) },
+                uCol: { value: new THREE.Vector3(
+                    PALETTE.dust.r * 0.7 + 0.3, PALETTE.dust.g * 0.7 + 0.3, PALETTE.dust.b * 0.7 + 0.3) },
+            },
+            vertexShader: /* glsl */`
+                attribute float seed;
+                attribute float aEnd;
+                uniform float uTime;
+                uniform vec3 uCam;
+                uniform float uBox;
+                uniform float uGust;
+                uniform vec3 uWind;
+                varying float vA;
+                varying float vEnd;
+                void main(){
+                    vec3 p = position;
+                    // Streaks ride FASTER than the motes — they are the visible fast layer of the
+                    // same air. Each at its own fraction so the field never marches in step.
+                    float speed = ${WIND_SPEED.toFixed(2)} * (0.7 + seed * 0.6);
+                    p.xz += uTime * uWind.xz * speed;
+                    // Wrap the HEAD into the camera box; the tail hangs off the same wrapped
+                    // head, so a segment can never straddle the wrap seam.
+                    vec3 origin = uCam - vec3(uBox * 0.5, 2.0, uBox * 0.5);
+                    p = origin + mod(p - origin, vec3(uBox, 8.0, uBox));
+                    // Gust waves: each streak flares in its own phase, cubed so the field is
+                    // mostly OFF and arrives in visible pulses that cross the screen together.
+                    float burst = pow(0.5 + 0.5 * sin(uTime * (0.55 + seed * 0.75) + seed * 41.0), 3.0);
+                    // Trail upwind. Length breathes with the gust envelope — hard wind draws
+                    // long slashes, the lulls shrink them to ticks.
+                    float len = (0.9 + seed * 1.6) * (0.35 + uGust * 1.35) * (0.4 + burst * 0.8);
+                    vec3 tail = -uWind * len;
+                    // A light vertical S-bend on the tail so streaks read as flowing air, not
+                    // ruled pencil lines.
+                    float bob = sin(uTime * (1.6 + seed) + seed * 31.0);
+                    p.y += bob * 0.25;
+                    p += aEnd * (tail + vec3(0.0, sin(uTime * 1.8 + seed * 17.0) * 0.22, 0.0));
+
+                    vec4 mv = modelViewMatrix * vec4(p, 1.0);
+                    float dist = -mv.z;
+                    // Rule 1: nothing near the lens; long fade-out keeps the mid-field alive.
+                    float fade = smoothstep(3.5, 8.0, dist) * (1.0 - smoothstep(30.0, 52.0, dist));
+                    vA = fade * (0.12 + 0.88 * burst) * (0.35 + uGust * 0.65);
+                    vEnd = aEnd;
+                    gl_Position = projectionMatrix * mv;
+                }
+            `,
+            fragmentShader: /* glsl */`
+                uniform vec3 uCol;
+                varying float vA;
+                varying float vEnd;
+                ${GLSL_ENCODE}
+                void main(){
+                    // Taper toward the tail: the bright head + fading trail is what makes the
+                    // motion direction legible in a still frame.
+                    float a = vA * (1.0 - vEnd * 0.75) * 0.30;
+                    gl_FragColor = vec4(dl_toLinear(uCol), a);
+                }
+            `,
+        })
+
+        const lines = new THREE.LineSegments(g, mat)
+        lines.frustumCulled = false      // camera-following field, same as the motes
+        lines.userData.noExport = true
+        this.streaks = lines
+        this.streakMat = mat
+        this.scene.add(lines)
+        this.parts.push(lines)
     }
 
     // --- Distant dust plumes ------------------------------------------------------------------
@@ -323,6 +441,14 @@ export default class Atmosphere extends Component{
         if(this.moteMat){
             this.moteMat.uniforms.uTime.value = this.time
             this.moteMat.uniforms.uCam.value.copy(this.camera.position)
+        }
+        if(this.streakMat){
+            this.streakMat.uniforms.uTime.value = this.time
+            this.streakMat.uniforms.uCam.value.copy(this.camera.position)
+            // Normalised gust envelope (windStrengthAt spans ~0.32..1.12 of WIND_SPEED) — the
+            // whole streak field breathes with the same gusts the cloth answers to.
+            const g = (windStrengthAt(this.time) / WIND_SPEED - 0.32) / 0.80
+            this.streakMat.uniforms.uGust.value = THREE.MathUtils.clamp(g, 0, 1)
         }
         if(this.plumeMat){ this.plumeMat.uniforms.uTime.value = this.time }
         if(this.shaftMat){ this.shaftMat.uniforms.uTime.value = this.time }

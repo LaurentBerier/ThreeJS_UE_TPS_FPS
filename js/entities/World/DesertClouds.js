@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import Component from '../../Component.js'
-import { PALETTE, GLSL_NOISE, GLSL_ENCODE, sunDirection } from './DesertLook.js'
+import { PALETTE, GLSL_NOISE, GLSL_ENCODE, sunDirection, windDirection } from './DesertLook.js'
 
 
 // Layered storm deck for the golden-hour sky.
@@ -80,20 +80,30 @@ export default class DesertClouds extends Component{
                     // projection finite as the view approaches the horizon.
                     vec2 uv = dir.xz / (dir.y * 0.8 + 0.32);
 
+                    // All three layers drift along THE world wind (DesertLook.WIND_AZIMUTH) at
+                    // their own speeds — the deck slides the same way the flags stream and the
+                    // sand drifts. uv space maps to world xz, so the wind vector drops straight in
+                    // (negated: shifting the sample window upwind moves the pattern downwind).
+                    ${(() => { const w = windDirection(); return `const vec2 windUV = vec2(${(-w.x).toFixed(4)}, ${(-w.z).toFixed(4)});` })()}
+
                     // --- Layer 1: high cirrus. Stretched hard on one axis into wind-drawn streaks.
-                    vec2 uvH = uv * vec2(0.55, 2.4) + vec2(uTime * 0.010, 0.0);
+                    vec2 uvH = uv * vec2(0.55, 2.4) + windUV * (uTime * 0.010);
                     float high = fbm2(uvH);
                     high = smoothstep(0.44, 0.78, high);
 
                     // --- Layer 2: the mid storm mass, warped by a second field so the billows curl.
-                    vec2 uvM = uv * 1.05 + vec2(uTime * 0.0065, uTime * 0.0032);
+                    vec2 uvM = uv * 1.05 + windUV * (uTime * 0.0072) + vec2(-windUV.y, windUV.x) * (uTime * 0.0021);
                     float warp = fbm2(uvM * 0.5 + 13.0);
                     float mid = fbm2(uvM + warp * 0.9);
                     float midShape = fbm2(uvM * 2.6 - warp * 0.5 + 5.0);
-                    float midCov = smoothstep(0.40, 0.76, mid * 0.74 + midShape * 0.26);
+                    float midCov = smoothstep(0.46, 0.82, mid * 0.74 + midShape * 0.26);
+                    // The alien-vista sky is CLEAR overhead — the stars and the moon cluster own
+                    // the zenith, and the cloud drama lives low, warm-lit against the dusk band.
+                    // (Was a full storm deck: raised thresholds + this altitude fade opened it.)
+                    midCov *= 1.0 - smoothstep(0.32, 0.70, dir.y) * 0.78;
 
                     // --- Layer 3: low dust scud, fast and thin, only near the horizon.
-                    vec2 uvL = uv * 2.1 + vec2(uTime * 0.021, -uTime * 0.008);
+                    vec2 uvL = uv * 2.1 + windUV * (uTime * 0.022) + vec2(-windUV.y, windUV.x) * (uTime * -0.005);
                     float low = smoothstep(0.50, 0.85, fbm2(uvL));
                     low *= smoothstep(0.55, 0.06, dir.y);
 
@@ -119,8 +129,10 @@ export default class DesertClouds extends Component{
                     vec3 lowCol = mix(deepBase * 0.9, ${this._c(PALETTE.haze)} * 1.1, pow(sd, 4.0));
 
                     // Composite back-to-front: cirrus, then the storm mass, then dust scud.
+                    // Cirrus thins toward the zenith too — enough wisp to keep the sky alive
+                    // between the moons without ever screening the starfield.
                     vec3 col = highCol;
-                    float a = high * 0.42;
+                    float a = high * 0.30 * (1.0 - smoothstep(0.45, 0.85, dir.y) * 0.6);
 
                     col = mix(col, midCol, midCov * 0.94);
                     a = a + midCov * 0.90 * (1.0 - a);

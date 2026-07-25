@@ -1,0 +1,792 @@
+{
+  "assets/index.html": {
+    "sha256": "033fc777742336f06c624da41070d2c1087ea7b1a14686c0d508d00bae1f2f77",
+    "version": 1,
+    "size": 3439
+  },
+  "assets/.gitignore": {
+    "sha256": "8f6b2548cf9a90bda14d764f3484519f6f10e00f0b29b0d3a886d9acdc0e3cc7",
+    "version": 1,
+    "size": 308
+  },
+  "assets/.sandscapeignore": {
+    "sha256": "016e0e4f87ab6e3ba68b21c839221bb918af2f8d5af24e16220dc444e3cc0952",
+    "version": 1,
+    "size": 1378
+  },
+  "assets/assets/TPS_FPS_Template_Spashscreen.png": {
+    "sha256": "de311475b6a6e2f9a150384493fa0d8901bd2e04590b5fd15d68d25f8965b622",
+    "version": 1,
+    "size": 2125930
+  },
+  "assets/assets/level.glb": {
+    "sha256": "cfac531e9ead3240b7ea54e203b12353d443b75ab1bf498b3df5ad32afb333f1",
+    "version": 1,
+    "size": 8008668
+  },
+  "assets/assets/navmesh.obj": {
+    "sha256": "da1c47018dc39e12eb3fa0a4d9bd1230da356a2fc02876a9321d36492897d7dd",
+    "version": 1,
+    "size": 8068
+  },
+  "assets/assets/TPS_FPS_Template_Spashscreen1.png": {
+    "sha256": "7a3e88f5f318437b891cad7ef8bf29f1299f5096c6aff70431eed2e28501ca89",
+    "version": 1,
+    "size": 2412861
+  },
+  "assets/assets/muzzle_flash.glb": {
+    "sha256": "e62088f4fa6cf1c389a40eda9eecf0bdf139e73e7f4947e3e2e3678e784b563c",
+    "version": 1,
+    "size": 338828
+  },
+  "assets/assets/sky.jpg": {
+    "sha256": "72365df2fa916c83934db5dd8d8f712517614ee7509295b9f73b39aa2c897bc5",
+    "version": 1,
+    "size": 453153
+  },
+  "assets/assets/decals/decal_n.jpg": {
+    "sha256": "b287fad933ca8cf182bddf3e73b7541b6775b7b5d14ae731395ea6db244254b2",
+    "version": 1,
+    "size": 215880
+  },
+  "assets/assets/decals/Blood_decal_1.png": {
+    "sha256": "28dbe1885e5d835ce92cad51aac8d3c3d9097797050c7f02dc3a91106359f17c",
+    "version": 1,
+    "size": 617360
+  },
+  "assets/assets/decals/Blood_Decal_2.png": {
+    "sha256": "8c322831943ce2f1ff2bd8c1567075d109dceb9f2978e0ed28c6f396b95d02b8",
+    "version": 1,
+    "size": 316027
+  },
+  "assets/assets/decals/decal_a.jpg": {
+    "sha256": "f940b0961d424a560c26dac1212e22d1fc0aec80862e71a5f6fdf9d0d2da0475",
+    "version": 1,
+    "size": 137774
+  },
+  "assets/assets/decals/decal_c.jpg": {
+    "sha256": "acf1a647ec26b1af6e675bcf1efddf736f0252a2aa2a40630df639ef4c49b390",
+    "version": 1,
+    "size": 51957
+  },
+  "assets/assets/animations/mutant breathing idle.fbx": {
+    "sha256": "832c969b23aa5e13f16aeedd006a921a3b79b633b5b97438920a4a3399710dc3",
+    "version": 1,
+    "size": 327665
+  },
+  "assets/assets/animations/mutant run.fbx": {
+    "sha256": "ec700a100c64cdb463980dda523242cec176336dd6811396196633dd489266d9",
+    "version": 1,
+    "size": 209217
+  },
+  "assets/assets/animations/mutant.fbx": {
+    "sha256": "1c96ff36b7279e42ec420f074571f58ea3bb579191154c58134a077b63c59c16",
+    "version": 1,
+    "size": 16975969
+  },
+  "assets/assets/animations/mutant dying.fbx": {
+    "sha256": "ba4cc638726701d4e844ef06329c9581508cf72e7b41032d4f9f7e2750acf358",
+    "version": 1,
+    "size": 349841
+  },
+  "assets/assets/animations/mutant punch.fbx": {
+    "sha256": "0253d4724106573b4354cce51a31922a65dfb7e8a3165cb06a7e1de2c112642d",
+    "version": 1,
+    "size": 222545
+  },
+  "assets/assets/animations/mutant walking.fbx": {
+    "sha256": "2b71ce4fff18f445335e5971eb745f231cf21706f0cc7942e8565788293a19ab",
+    "version": 1,
+    "size": 232769
+  },
+  "assets/assets/sounds/ak47_shot.wav": {
+    "sha256": "d6d1dca02d88594ad43c1b33851a3b617983c93efd6dbfe30f65794d1e6608c7",
+    "version": 1,
+    "size": 84106
+  },
+  "assets/assets/css/style.css": {
+    "sha256": "f1c1cc643ea0cb211b158cbcfbfe55c77c668c125976f5b71d4624e071e13cf7",
+    "version": 1,
+    "size": 7153
+  },
+  "assets/assets/ui/crosshair.png": {
+    "sha256": "3fb94459528b3b95bbb955019b548d2ef5573ac3c2577a5cce6b7cf7ab75c295",
+    "version": 1,
+    "size": 13268
+  },
+  "assets/assets/guns/ak47/weapon_ak47_D.tga.png": {
+    "sha256": "fbc2f9f339c90717c42f991e443bf5b3fee2b5e5b27413117bf307a62bc3443d",
+    "version": 1,
+    "size": 2962147
+  },
+  "assets/assets/guns/ak47/T_INS_Body_a.tga.png": {
+    "sha256": "95fc4b36d2a29e1c1c9f79e9061c509775d0034b61d9e6f1334c441224775d85",
+    "version": 1,
+    "size": 359834
+  },
+  "assets/assets/guns/ak47/weapon_ak47_N_S.tga.png": {
+    "sha256": "66f3154f6b6c46caf4837e2dc617aa05704715c8a9d0c231aae7db8551bda154",
+    "version": 1,
+    "size": 7144310
+  },
+  "assets/assets/guns/ak47/T_INS_Skin_a.tga.png": {
+    "sha256": "ce35050bd368e1b322f095071edf44010e72033973ca666f50104e2c35559176",
+    "version": 1,
+    "size": 604769
+  },
+  "assets/assets/guns/ak47/ak47.glb": {
+    "sha256": "8919cbdfe80557d8a77623039afff14d20a016a3f289dfd4e9d542aa515abe2e",
+    "version": 1,
+    "size": 13804592
+  },
+  "assets/assets/guns/New/SK_AK47.FBX": {
+    "sha256": "10e9be6d976e163c22ccc48ff879470428e785f031f825a1ccaaa7ecb233720c",
+    "version": 1,
+    "size": 77280
+  },
+  "assets/assets/guns/New/A_SK_AK47_Rifle_Reload_.fbx": {
+    "sha256": "e4f60ce8d231f444352d7561d9918ce57229fc1bbcec6af66ce5b1855f493852",
+    "version": 1,
+    "size": 54672
+  },
+  "assets/assets/guns/New/AK47_Reload.glb": {
+    "sha256": "633fe56c88d2d775254c3e4856ad45c3bd18942cfc4143180b91e14a2d15e724",
+    "version": 1,
+    "size": 15416
+  },
+  "assets/assets/ammo/AmmoBox_D.tga.png": {
+    "sha256": "0034917097233a1b1788865167c47846d8b0fd0e5e3e21c20d549e8344f5601f",
+    "version": 1,
+    "size": 1201543
+  },
+  "assets/assets/ammo/AmmoBox_AO.tga.png": {
+    "sha256": "1a62583d1a6791e5cc12d05e0c06f601d558f7b72b5465c8c11af8f23b2c96f7",
+    "version": 1,
+    "size": 252992
+  },
+  "assets/assets/ammo/AmmoBox_N.tga.png": {
+    "sha256": "772e2a3d9f43f475bf9ca73aa75bcf1da486977850aac462e667ebcb926a6198",
+    "version": 1,
+    "size": 1114411
+  },
+  "assets/assets/ammo/AmmoBox_R.tga.png": {
+    "sha256": "95b365de3cb80d295f84468d54d12e39696630e911a3666545d2d53ca120f0ef",
+    "version": 1,
+    "size": 660832
+  },
+  "assets/assets/ammo/AmmoBox.fbx": {
+    "sha256": "b57335764f69785f5a575bff5cfe29518ae8314cc4a69936a973d965257ea155",
+    "version": 1,
+    "size": 100428
+  },
+  "assets/assets/ammo/AmmoBox_M.tga.png": {
+    "sha256": "5cf57bb63e328f16b3f3a38569567ac23770ea8482a9e18bf363827da5bd0e9a",
+    "version": 1,
+    "size": 665234
+  },
+  "assets/assets/World/heightmaps_20260609_150752_1584m.png": {
+    "sha256": "0fce72c61c52800d45db573a72dd688350e29c3a21a3592d125272365a9c5f34",
+    "version": 1,
+    "size": 7922076
+  },
+  "assets/assets/vendor/three/examples/jsm/lights/LightProbeGenerator.js": {
+    "sha256": "1b7aec817152207c0bd10902722fb0acb473afb0609bb03701cc734eecee8de9",
+    "version": 1,
+    "size": 5529
+  },
+  "assets/assets/vendor/three/examples/jsm/math/ConvexHull.js": {
+    "sha256": "909ce6c4dc17b51dbc0a11ca9cbca20b14e57ec41bfd8e00e22f715074e8c020",
+    "version": 1,
+    "size": 23651
+  },
+  "assets/assets/vendor/three/examples/jsm/geometries/DecalGeometry.js": {
+    "sha256": "c3b6951813ebbafc8cbb0dbb69e5c27795ddc97b5cb65910bd83605429518c89",
+    "version": 1,
+    "size": 8574
+  },
+  "assets/assets/vendor/three/examples/jsm/loaders/RGBELoader.js": {
+    "sha256": "0bc4b876ee3207eebd22289db3a494cdab453e77dcfd170d862cd428c799873e",
+    "version": 1,
+    "size": 12521
+  },
+  "assets/assets/vendor/three/examples/jsm/loaders/FBXLoader.js": {
+    "sha256": "399fecd15191d00d703242f441e3f669db855c118dd0c68ca9fae41802e3e722",
+    "version": 1,
+    "size": 101997
+  },
+  "assets/assets/vendor/three/examples/jsm/loaders/GLTFLoader.js": {
+    "sha256": "39164a556791f09867eac004736f089c1ee7f2da09d77080001f156dd0df0966",
+    "version": 1,
+    "size": 96942
+  },
+  "assets/assets/vendor/three/examples/jsm/postprocessing/MaskPass.js": {
+    "sha256": "c320dd30eb78e3b5c9e19493c21c0e7f32b8d0053b26870e8c493a786a880648",
+    "version": 1,
+    "size": 2335
+  },
+  "assets/assets/vendor/three/examples/jsm/postprocessing/EffectComposer.js": {
+    "sha256": "5cf3ca4d23fa0dae82b07d3577bb7f99ed4a6bb5036ba453c48282b61737d575",
+    "version": 1,
+    "size": 6808
+  },
+  "assets/assets/vendor/three/examples/jsm/postprocessing/UnrealBloomPass.js": {
+    "sha256": "4e7bfc6f2c3112f0d61c37cf5662ed922814a6809492f00a20f557060feeab39",
+    "version": 1,
+    "size": 12680
+  },
+  "assets/assets/vendor/three/examples/jsm/postprocessing/Pass.js": {
+    "sha256": "05fd6f11778be2adfdd3b46d34073d94cd33acf66213bb52032e9657d877facf",
+    "version": 1,
+    "size": 2046
+  },
+  "assets/assets/vendor/three/examples/jsm/postprocessing/RenderPass.js": {
+    "sha256": "0473fc9df19bdc5500d06b6f354dc1b30ca394ce1a3870ed6cf43bc72f92aa6f",
+    "version": 1,
+    "size": 1869
+  },
+  "assets/assets/vendor/three/examples/jsm/postprocessing/ShaderPass.js": {
+    "sha256": "55787e2528477abff3534a0f9ac32d16a57c2004cdf843c9d2287783fe94163f",
+    "version": 1,
+    "size": 1554
+  },
+  "assets/assets/vendor/three/examples/jsm/shaders/CopyShader.js": {
+    "sha256": "46cc723f17545525b94f3fd51371591730e79b81517bcb227f332d1e29fa824f",
+    "version": 1,
+    "size": 592
+  },
+  "assets/assets/vendor/three/examples/jsm/shaders/LuminosityHighPassShader.js": {
+    "sha256": "b20a104e8e6d01f5461fcf5cad809a04dda58fc93757531f69cadcb4b291d65c",
+    "version": 1,
+    "size": 1246
+  },
+  "assets/assets/vendor/three/examples/jsm/utils/SkeletonUtils.js": {
+    "sha256": "abf4def9d1da3e40a4bfda7bdcac7a94daa7cc6496de1f66d96b6782baa5f803",
+    "version": 1,
+    "size": 12013
+  },
+  "assets/assets/vendor/three/examples/jsm/utils/BufferGeometryUtils.js": {
+    "sha256": "961a9f902c561ae6b065bb6a00574d6e472eddc2096df367fb128bdcfe33d50f",
+    "version": 1,
+    "size": 22935
+  },
+  "assets/assets/vendor/three/examples/jsm/libs/fflate.module.min.js": {
+    "sha256": "8cfc73b2b6acf3d807b00251d0b0ba8e25c1b46622ae870f26aea05946c7f598",
+    "version": 1,
+    "size": 28761
+  },
+  "assets/assets/vendor/three/examples/jsm/libs/stats.module.js": {
+    "sha256": "2c71a2f70e89c69e46c2e285fb171bac3dcfd498a85400e94ad5aaf6044ffc06",
+    "version": 1,
+    "size": 3514
+  },
+  "assets/assets/vendor/three/examples/jsm/exporters/GLTFExporter.js": {
+    "sha256": "2e387850de832debdd80a16be24c23daf985c9672043bf54c437d71b03c2667b",
+    "version": 1,
+    "size": 58772
+  },
+  "assets/assets/vendor/three/examples/jsm/curves/NURBSUtils.js": {
+    "sha256": "3f79a2cfb306117fa02f2728c40c100a5b6ba16f9cfe3d6ecddb3dd25e518720",
+    "version": 1,
+    "size": 7990
+  },
+  "assets/assets/vendor/three/examples/jsm/curves/NURBSCurve.js": {
+    "sha256": "4cfeefece63710093a415fc2f472a0fb7485a428ec32e2d942658e0998daa4de",
+    "version": 1,
+    "size": 2011
+  },
+  "assets/assets/vendor/three/build/three.module.js": {
+    "sha256": "6f274035dac82e7eb1e5f825255e173c7d1be971342400f68fd7818f7f046758",
+    "version": 1,
+    "size": 1147462
+  },
+  "assets/assets/vendor/three-pathfinding/three-pathfinding.module.js": {
+    "sha256": "6c13b3c153898446d9f3150756bfd01b8f35dbadfee309dbe4cb91deb8c45140",
+    "version": 1,
+    "size": 12450
+  },
+  "assets/assets/vendor/ammo/ammo.wasm.js": {
+    "sha256": "7415bb0c891710d6eec877ddf1038e98dc7e0e4fa745fd3fbfff2c74ca79a59f",
+    "version": 1,
+    "size": 443380
+  },
+  "assets/assets/vendor/ammo/ammo.wasm.wasm": {
+    "sha256": "a73b547ed4289aa174bf3424b14b3cb8addc7fe708cd2636d306b72880d6ad13",
+    "version": 1,
+    "size": 747690
+  },
+  "assets/assets/characters/Sandscape_Frog_2_optimized.glb": {
+    "sha256": "0ca8f67ba3a23a0efaaa843c316950ff6ff1150c7096b717fae476a5349bdc59",
+    "version": 1,
+    "size": 21026332
+  },
+  "assets/assets/characters/Hero_alien_rig_optimized.glb": {
+    "sha256": "5e03da6ee5d2088c3c337070710a8a1064f586d7ca7f646e6fa9c6837c1bcbab",
+    "version": 1,
+    "size": 26448196
+  },
+  "assets/assets/characters/Sandscape_Liz_decimated.glb": {
+    "sha256": "b9b985a9f208c77cbfdc3da8ad4bc4d059d042c537443395529ca0728f7b1abf",
+    "version": 1,
+    "size": 6468604
+  },
+  "assets/assets/characters/ue/A_Rifle_Slide.fbx": {
+    "sha256": "a47878184da49f96cee06b7846cb1dbec1a839e4968faf35b39985f8eebf88df",
+    "version": 1,
+    "size": 534656
+  },
+  "assets/assets/characters/ue/anim_Slide.fbx": {
+    "sha256": "1dbba31edc79786d432987e2a06d7c9e4cd057915ee042f234650143f58df9cd",
+    "version": 1,
+    "size": 948656
+  },
+  "assets/assets/characters/ue/SK_Mannequin.FBX": {
+    "sha256": "133acb9e38f9f2bc45b32b8db8dce9fd729e433ff810425a610c84cfb79ae5f6",
+    "version": 1,
+    "size": 4716656
+  },
+  "assets/assets/characters/ue/A_Rifle_Jump_Start.fbx": {
+    "sha256": "22e7fa9268c1f823280dde16a50108e43ebe50e3bba2568d8d3f32eaaa4ab961",
+    "version": 1,
+    "size": 1602544
+  },
+  "assets/assets/characters/ue/RollForward_InPlace.FBX": {
+    "sha256": "661e76ef759705916a8ef98eaac0c41f50c1aff5b07cffbded6d7b9438dd8edd",
+    "version": 1,
+    "size": 1654048
+  },
+  "assets/assets/characters/ue/A_Rifle_Crouch_Idle.fbx": {
+    "sha256": "ce1fda96f846ef1292946676d3798a229109851ac63a7c8ea752e4f010c26779",
+    "version": 1,
+    "size": 1376192
+  },
+  "assets/assets/characters/ue/A_Rifle_Jog_Right.fbx": {
+    "sha256": "7fc47f5dcf4b944517afcfe6ac6d5454d1cc62a2812cd6121c664a8606859121",
+    "version": 1,
+    "size": 1699568
+  },
+  "assets/assets/characters/ue/A_Rifle_Jog_Bwd.fbx": {
+    "sha256": "b51f6935621c73c7c065ddbdd7053978032a90ca0c0e427c4711bb8e98dd8acb",
+    "version": 1,
+    "size": 1806576
+  },
+  "assets/assets/characters/ue/SK_Mannequin_new.glb": {
+    "sha256": "8657bb9f68c85d2566ff46b7522a10370774606e81d5350f722735e133a75e75",
+    "version": 1,
+    "size": 3997792
+  },
+  "assets/assets/characters/ue/A_Rifle_Fire.FBX": {
+    "sha256": "a5a46f5117a2bfb481d30d7716c27ec1d2357eb76efe45efd06f474e9bf2abcb",
+    "version": 1,
+    "size": 1559616
+  },
+  "assets/assets/characters/ue/A_Rifle_Jump_Fall_Loop.fbx": {
+    "sha256": "cd7477efd3ce7c59e262f4b011af4576a6cc1a461ae00bff53018b2940942071",
+    "version": 1,
+    "size": 2168784
+  },
+  "assets/assets/characters/ue/A_Rifle_Jog_Left.fbx": {
+    "sha256": "104bef125b17ee9af27128770077862d622d32bbf0f208c55a70b760ee6bd641",
+    "version": 1,
+    "size": 1814816
+  },
+  "assets/assets/characters/ue/A_Rifle_Aim.fbx": {
+    "sha256": "8c92983f8da5333add87e52c7eb15086b1a504f0ff1bc62cf0428d799d6f6929",
+    "version": 1,
+    "size": 2108800
+  },
+  "assets/assets/characters/ue/A_Rifle_Idle.fbx": {
+    "sha256": "844cbc5c18e56dbaad158917e5afcd60dc98f359e4edcc3df7f76c070fff0e1c",
+    "version": 1,
+    "size": 2108800
+  },
+  "assets/assets/characters/ue/Slide.glb": {
+    "sha256": "d34f5ae7d92eda50b59ee3e392a83b48bea469a6ff46ef43cf6ed3466d9d06b1",
+    "version": 1,
+    "size": 155896
+  },
+  "assets/assets/characters/ue/RollForward.glb": {
+    "sha256": "24079bec6c47d9ce465cd1b3248fb289c61c07b466d90ab7725ad4f937296974",
+    "version": 1,
+    "size": 271800
+  },
+  "assets/assets/characters/ue/A_Rifle_Jog_Fwd.FBX": {
+    "sha256": "84f528d190798b027192a79fe977e0287d4f5565130a37acb6bf2a05d34c24e0",
+    "version": 1,
+    "size": 2555600
+  },
+  "assets/assets/characters/ue/CrouchIdle.glb": {
+    "sha256": "20ba2643fe2d57b892affac16f4b8e45d9c36bda14bf9719d3268a7605c34d08",
+    "version": 1,
+    "size": 668560
+  },
+  "assets/assets/characters/ue/SK_Mannequin.glb": {
+    "sha256": "2dce8d7fb691c2b246b73aeca4c10bc1d7e7946bf29b8c5c9f4938893b6ba914",
+    "version": 1,
+    "size": 4158080
+  },
+  "assets/assets/characters/ue/A_Rifle_Reload_new.fbx": {
+    "sha256": "59e380e43583949aae2df262da36f996e1f2b139a1c3b5848bdc03ba98958413",
+    "version": 1,
+    "size": 1176320
+  },
+  "assets/assets/characters/ue/A_Rifle_Reload.FBX": {
+    "sha256": "38dd424bda7962bf6bdcca2ba75e33b8a2092cec5e26de7a330af92897c70d4e",
+    "version": 1,
+    "size": 2667744
+  },
+  "assets/assets/characters/ue/A_Rifle_Idle_.FBX": {
+    "sha256": "e4d80d70cadebbdfdd519c3b619a9225e13ac9e63c8d0d2ea8f61080deeaa0de",
+    "version": 1,
+    "size": 3616704
+  },
+  "assets/assets/characters/ue/SK_Mannequin.fbm/M_MannequinUE4_Body_Normal.tga": {
+    "sha256": "cfcee8d975c47d5c3ca99af8476edf4ac0872ab1a631a82428987024123e9b8c",
+    "version": 1,
+    "size": 1457673
+  },
+  "assets/assets/characters/ue/SK_Mannequin.fbm/M_MannequinUE4_Body_Normal": {
+    "sha256": "cfcee8d975c47d5c3ca99af8476edf4ac0872ab1a631a82428987024123e9b8c",
+    "version": 1,
+    "size": 1457673
+  },
+  "assets/assets/characters/ue/SK_Mannequin.fbm/M_MannequinUE4_Body_BaseColor.tga": {
+    "sha256": "27cc6a03a2143a8f4b8800b443eec69cccc4721f44d791bda9f9ca320ac2f815",
+    "version": 1,
+    "size": 398058
+  },
+  "assets/assets/characters/ue/SK_Mannequin.fbm/M_MannequinUE4_ChestLogo_BaseColor": {
+    "sha256": "db5545bd229c73911cc72a5b79e734deb233c00034434073270693018c4dffb3",
+    "version": 1,
+    "size": 104206
+  },
+  "assets/assets/characters/ue/SK_Mannequin.fbm/M_MannequinUE4_ChestLogo_Normal": {
+    "sha256": "888bff373357d90df9e09f4dc12a5f7e9cf08bdf3eb2eb2343eb536bc07d8826",
+    "version": 1,
+    "size": 201886
+  },
+  "assets/assets/characters/ue/SK_Mannequin.fbm/M_MannequinUE4_Body_BaseColor": {
+    "sha256": "27cc6a03a2143a8f4b8800b443eec69cccc4721f44d791bda9f9ca320ac2f815",
+    "version": 1,
+    "size": 398058
+  },
+  "assets/assets/hdri/venice_sunset_1k.hdr": {
+    "sha256": "0e72ed46b5316cb5fb67fc81ff85b024a09146fd89ef3811a8d2299647ada118",
+    "version": 1,
+    "size": 1397783
+  },
+  "assets/assets/VFX/Blood_SpriteSheet.png": {
+    "sha256": "65565569a21aeba697e1460ce00c32b0445f476317126a4faa91b4e149f92fa5",
+    "version": 1,
+    "size": 785441
+  },
+  "assets/js/Input.js": {
+    "sha256": "6888968ac72cf56f4cf193bf4738033e8decd6d248fdc732c8e588e1b11773fb",
+    "version": 1,
+    "size": 2587
+  },
+  "assets/js/Component.js": {
+    "sha256": "653ea5f1a9b9c4312415ac6c7f03aeec6b6abdeb6040a01d81c3688e2cf05188",
+    "version": 1,
+    "size": 710
+  },
+  "assets/js/entry.js": {
+    "sha256": "979bcf684ad818976d2d9ba3fd4dda7d63935802b26681e9df0d6d58492ce722",
+    "version": 1,
+    "size": 47203
+  },
+  "assets/js/DebugDrawer.js": {
+    "sha256": "b20374201d0fc643fbd9fa6a2851357cfcfadd503269f43c40dc70c98bfaadc8",
+    "version": 1,
+    "size": 6264
+  },
+  "assets/js/PostFx.js": {
+    "sha256": "74b9a0c0f619a3d4454b1e995b0267403dcb3ed680359f0d3e5377f7d4a65145",
+    "version": 1,
+    "size": 8483
+  },
+  "assets/js/FiniteStateMachine.js": {
+    "sha256": "49a97a8d29dfef771e1581e517a150dfae30d0edbe91fbeaf50588cc54969f90",
+    "version": 1,
+    "size": 800
+  },
+  "assets/js/DebugShapes.js": {
+    "sha256": "d50e9ee8a8fd1c92405d30dbfba18eef7bd94bd6e707c1f896a3d3c5e2881940",
+    "version": 1,
+    "size": 682
+  },
+  "assets/js/AmmoLib.js": {
+    "sha256": "6500af984466a6adb68c93c167578fa166d60a0a55c9a94cbd74ed84fdcacbdb",
+    "version": 1,
+    "size": 9437
+  },
+  "assets/js/Entity.js": {
+    "sha256": "fbade1afd2aa57fdfa73d5fca2401c26e9ef5644e93e405ab9f68da7f66cfa7e",
+    "version": 1,
+    "size": 2201
+  },
+  "assets/js/EntityManager.js": {
+    "sha256": "cf4f942744707170a95f79f7e35ae4ba0315da184b1b6b8ef99cb37813affb77",
+    "version": 1,
+    "size": 2168
+  },
+  "assets/js/entities/Sky/Clouds.js": {
+    "sha256": "58c77a1e2cf0ccb291afae796701aff144bc7c71622d9a96824f20a6803a0512",
+    "version": 1,
+    "size": 5062
+  },
+  "assets/js/entities/Sky/Sky.js": {
+    "sha256": "94117b72c39c8630adf6c8ed4fd00bc5dbe27e5df2561964203fa36461e8a9af",
+    "version": 1,
+    "size": 1812
+  },
+  "assets/js/entities/Sky/Sky2.js": {
+    "sha256": "ff67c75807740b711ff31e60629849185d018c4904d96f05afe03ee031a5918b",
+    "version": 1,
+    "size": 1016
+  },
+  "assets/js/entities/AmmoBox/AmmoBox.js": {
+    "sha256": "42911f9eaf03adb5fcf131de02a12616a1b214a383b276dc4b86b95ea3230e27",
+    "version": 1,
+    "size": 2060
+  },
+  "assets/js/entities/Player/Hands.js": {
+    "sha256": "de5ab16236cb06ba4eaff4394e62f98b8978016265fe0e1a9873c975196d095d",
+    "version": 1,
+    "size": 9684
+  },
+  "assets/js/entities/Player/PlayerBody.js": {
+    "sha256": "10c461cf4ddd9e6552141162facb0b7419c8f1a32da49b9e65069da63a8d2ef9",
+    "version": 1,
+    "size": 190069
+  },
+  "assets/js/entities/Player/WeaponFSM.js": {
+    "sha256": "00f8d30950be79dfdc5bdebaddf1e43cdf73586319b9b18c3c69578840f3da38",
+    "version": 1,
+    "size": 3836
+  },
+  "assets/js/entities/Player/WeaponAimDebug.js": {
+    "sha256": "9e9564a5e2132297a02f698baf104b0e4ec583d0a501e5356df23c3c72e32e8a",
+    "version": 1,
+    "size": 8086
+  },
+  "assets/js/entities/Player/WeaponPlacementDebug.js": {
+    "sha256": "3c1e1f1496762492167be3f8944df38b340696230372d4efc730f3d841a141b9",
+    "version": 1,
+    "size": 16635
+  },
+  "assets/js/entities/Player/WeaponManager.js": {
+    "sha256": "7e7d32c44ba97d256482ae2522f5ddcf03e707f180ad0c88d0743e4729b6ffe0",
+    "version": 1,
+    "size": 18792
+  },
+  "assets/js/entities/Player/FootIK.js": {
+    "sha256": "de5a433cd00366c8b080f78f492876a6ad1aee15bd97ec58ca6299df319c9c93",
+    "version": 1,
+    "size": 37438
+  },
+  "assets/js/entities/Player/WeaponAimIK.js": {
+    "sha256": "cd0244f1cc19d23d6c81a84d6f175dbc41200dbb58307b816ca3d39ac098986f",
+    "version": 1,
+    "size": 58702
+  },
+  "assets/js/entities/Player/PlayerHealth.js": {
+    "sha256": "9cccb0f18acfbf8bc2be9505d5cf106b4cab7dca92acd292abcfc945f97e3838",
+    "version": 1,
+    "size": 2054
+  },
+  "assets/js/entities/Player/PlayerPhysics.js": {
+    "sha256": "752c6848b5350c6abb6d9c2b1c204eb549a4eac7dc099abaf690bc00758b4aa0",
+    "version": 1,
+    "size": 11463
+  },
+  "assets/js/entities/Player/PlayerControls.js": {
+    "sha256": "79c0ca9199171171d33ab4e503c8a280685daf67c51af2b56003bd4299d25fcb",
+    "version": 1,
+    "size": 110636
+  },
+  "assets/js/entities/Player/Weapon.js": {
+    "sha256": "d8901bcf33ea70fd1eafcd1de2354c08a8e8cf682dcc860ecd74fdd37f4d2404",
+    "version": 1,
+    "size": 8329
+  },
+  "assets/js/entities/UI/UIManager.js": {
+    "sha256": "3540fac0c26fc871cc5d2539cd7ca4d6ae5b2ad2bf48c532eada9a9143dcd8b1",
+    "version": 1,
+    "size": 1754
+  },
+  "assets/js/entities/Level/Navmesh.js": {
+    "sha256": "5d90fb6a0bef929739eb00129d1a5a26f0155b13cdffc1c2924dbf08c253eb86",
+    "version": 1,
+    "size": 8679
+  },
+  "assets/js/entities/Level/Terrain.js": {
+    "sha256": "dc1f39732c014c1ba9601a0b8699379bd5d87ed632b3ae4f7e9e757c9cdb7383",
+    "version": 1,
+    "size": 13380
+  },
+  "assets/js/entities/Level/BulletDecals.js": {
+    "sha256": "967f424d7a8d4038f54b3bc261eed1a2d8c94fbd40973ffa4d9ad23b6252ee25",
+    "version": 1,
+    "size": 1976
+  },
+  "assets/js/entities/Level/LevelSetup.js": {
+    "sha256": "48ab0541d0086549e0730b81e8912252c06a2e9f471e5b49034d12db857d3f2a",
+    "version": 1,
+    "size": 3908
+  },
+  "assets/js/entities/NPC/AttackTrigger.js": {
+    "sha256": "a1897c9132539562746d52bcbd5e611c4880a8fbfd20611a4be69e9bba2fcaba",
+    "version": 1,
+    "size": 1967
+  },
+  "assets/js/entities/NPC/DirectionDebug.js": {
+    "sha256": "2fc353194fdda9e177661ef3d11eeb40517a20286e398f947868e6f726959221",
+    "version": 1,
+    "size": 1292
+  },
+  "assets/js/entities/NPC/CharacterFSM.js": {
+    "sha256": "8424a2058f90f79837a6407138572f8c95c973ced9c7a9e0f48455ddf9c479e1",
+    "version": 1,
+    "size": 6826
+  },
+  "assets/js/entities/NPC/Factions.js": {
+    "sha256": "d83687e3621ef3f2185a5aa3afcbf929161aeb655732d63a3e3833bb7ca13f44",
+    "version": 1,
+    "size": 3074
+  },
+  "assets/js/entities/NPC/UeSoldierCollision.js": {
+    "sha256": "a33ea5131ba87095163b636d3ac819490ba7490fae111507bb8f12e972111fdb",
+    "version": 1,
+    "size": 3696
+  },
+  "assets/js/entities/NPC/CharacterCollision.js": {
+    "sha256": "4406b49b884e9bf9aa75170589f62941d263435168232eed54d5b1f75842e92c",
+    "version": 1,
+    "size": 5807
+  },
+  "assets/js/entities/NPC/DroppedWeapon.js": {
+    "sha256": "00013994ac78428dedea86e59f30873309102e21af557f8e8f2a17fc29b4bd75",
+    "version": 1,
+    "size": 11847
+  },
+  "assets/js/entities/NPC/Ragdoll.js": {
+    "sha256": "7057930e16ce18b031d881bd332d6d3f12292ed28545662887e1b87a67a46662",
+    "version": 1,
+    "size": 41741
+  },
+  "assets/js/entities/NPC/UeSoldierController.js": {
+    "sha256": "3fc7f8d9f43b3c3b936ddb8baa50c2d6d48625f4066218bcfa1b008e2161292f",
+    "version": 1,
+    "size": 87534
+  },
+  "assets/js/entities/NPC/CharacterController.js": {
+    "sha256": "531245734c8dfd2f0acd51d1d454de540092143ccc7dd546c7ebe00023077ef7",
+    "version": 1,
+    "size": 49496
+  },
+  "assets/js/entities/NPC/UeSoldierFSM.js": {
+    "sha256": "ad0421b280d83770e75e8279e16830045a2494c2fafd03a5722783e669169566",
+    "version": 1,
+    "size": 15575
+  },
+  "assets/js/entities/World/NavmeshGen.js": {
+    "sha256": "e34ead628001c18177f4cf50e2d3abe94fe6409012d74116cdde5d46831b3e50",
+    "version": 1,
+    "size": 8655
+  },
+  "assets/js/entities/World/Atmosphere.js": {
+    "sha256": "98ea8f751f84c67140d1cb4f235282052de52c7078fd40dce9c375b34d78c406",
+    "version": 1,
+    "size": 14846
+  },
+  "assets/js/entities/World/JourneyWorld.js": {
+    "sha256": "c63e3b5a4ec5d4af1f418416ed9dc0d1f8b73a97941ca33c7bd484acded558e2",
+    "version": 1,
+    "size": 20934
+  },
+  "assets/js/entities/World/DesertSky.js": {
+    "sha256": "fb930880ce6ee0978e4bea8871ae5fff654fc59486040aa52f40cdb7fc2023dc",
+    "version": 1,
+    "size": 10850
+  },
+  "assets/js/entities/World/FarWorld.js": {
+    "sha256": "da333dc6f0b1dda82cfc229cd6f637cc2b3f5a882f1efa9ba3e5a7b32852d287",
+    "version": 1,
+    "size": 24570
+  },
+  "assets/js/entities/World/DesertLook.js": {
+    "sha256": "a68cefead489a27dc1b33836e03a65561195e57f8c8249d646ffa233a4ddbc62",
+    "version": 1,
+    "size": 37865
+  },
+  "assets/js/entities/World/ImpactFx.js": {
+    "sha256": "60a327f9b1972546538d716f411eab4275b1b660b16aa9aa84d1cc87f1491008",
+    "version": 1,
+    "size": 13267
+  },
+  "assets/js/entities/World/DesertSurfaces.js": {
+    "sha256": "dbaa4be68f8984865119e03ac8e9c9f2dbe2159e1819d68219a6ed1d7b21bb79",
+    "version": 1,
+    "size": 2915
+  },
+  "assets/js/entities/World/Structures.js": {
+    "sha256": "ddc549d6368baf1b5f1f715b4791b14f9e551555498d4a1358c7a42a95f5543d",
+    "version": 1,
+    "size": 37164
+  },
+  "assets/js/entities/World/DesertActors.js": {
+    "sha256": "8701899b3516cbb2d406a364baa352662eb2de19ac2355a049f5a361453d0955",
+    "version": 1,
+    "size": 5756
+  },
+  "assets/js/entities/World/DesertClouds.js": {
+    "sha256": "280d87596df15d8e61db5d26e38f97e2a3d5f01910468c2665b24558f6772d64",
+    "version": 1,
+    "size": 7908
+  },
+  "assets/js/entities/World/HdrEnvironment.js": {
+    "sha256": "e8df247dacc78d25b1087caf6ce30bc71b23a6795f85f10cb92f0432b7e19a41",
+    "version": 1,
+    "size": 8886
+  },
+  "assets/js/entities/Common/CameraDither.js": {
+    "sha256": "e91bc000b27f55203dba2d9f814eaf1e17ffa62bc31b250e6ee61f8a89cae8b1",
+    "version": 1,
+    "size": 3705
+  },
+  "assets/js/entities/Common/UeMannequin.js": {
+    "sha256": "8ab9bc61e23aa8ac3ad63f2bdfee118a00532d9db0c24024b847ae0a481b223f",
+    "version": 1,
+    "size": 18759
+  },
+  "assets/js/entities/Common/HurtFlinch.js": {
+    "sha256": "e338fd2e0cd23fe84d85addb527181ad6b3841b94031403c6f6e6f4cb74e1a6c",
+    "version": 1,
+    "size": 8977
+  },
+  "assets/js/entities/Common/IKUtils.js": {
+    "sha256": "b7f74cbc3e90d1064c5cb5c1a2b00e3644b345f9bc92505ebc435fb5ebee3620",
+    "version": 1,
+    "size": 7604
+  },
+  "assets/js/entities/Common/BloodDecals.js": {
+    "sha256": "58a65c0bfaac4eaaccca017038d54cf289da6e56ab1dd1282e73b7e894307cff",
+    "version": 1,
+    "size": 25430
+  },
+  "assets/js/entities/Common/BloodFx.js": {
+    "sha256": "2754cb332ab0252c511b42099ac04982b9c77c77b40c1a1f46503f6b9fab0c0f",
+    "version": 1,
+    "size": 11823
+  },
+  "assets/js/export/UeExporter.js": {
+    "sha256": "3b7e62b1571b8bd1f4b8804589dd13831b55a3128f2c77c0d38bf2fcf841b0ba",
+    "version": 1,
+    "size": 6541
+  },
+  "assets/data/mechanics.schema.json": {
+    "sha256": "243285197172a35aa591a1df19ea234def97c770dd13353765bc7cb7b447dbbb",
+    "version": 1,
+    "size": 3036
+  }
+}

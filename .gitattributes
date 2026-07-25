@@ -1,0 +1,9 @@
+# Git LFS — only the LARGE, newly-added binary assets. Scoped to specific paths on
+# purpose: a broad "*.glb"/"*.fbx" rule would also convert the ~40 already-committed
+# character/animation models (incl. the 100 MB Sandscape_Liz.glb) into LFS, ballooning
+# the push past GitHub's free 1 GB LFS quota. Those stay as-is; only these go to LFS.
+assets/World/meshy_batch/*.glb filter=lfs diff=lfs merge=lfs -text
+assets/World/Alien_Rib_Arch_0723220210_texture.glb filter=lfs diff=lfs merge=lfs -text
+assets/World/Citadel_0723213948_texture.glb filter=lfs diff=lfs merge=lfs -text
+assets/guns/New/SK_VortexBlaster_raw.glb filter=lfs diff=lfs merge=lfs -text
+assets/guns/New/SK_VortexBlaster.fbx filter=lfs diff=lfs merge=lfs -text

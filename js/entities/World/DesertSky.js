@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import Component from '../../Component.js'
-import { PALETTE, GLSL_NOISE, GLSL_SKY, GLSL_ENCODE, sunDirection, PLAY_CENTER } from './DesertLook.js'
+import { PALETTE, GLSL_NOISE, GLSL_SKY, GLSL_ENCODE, sunDirection, setFogTime, PLAY_CENTER } from './DesertLook.js'
 
 
 // Golden-hour desert sky + the whole light rig + atmospheric fog.
@@ -48,6 +48,26 @@ export default class DesertSky extends Component{
     // top — it tracks the procedural dome exactly and costs no texture sample.
 
     BuildDome(){
+        // The moon cluster — the alien-vista reference's signature. Angles are world compass
+        // bearings (same convention as SUN_AZIMUTH); the journey looks toward azimuth ≈ -120°,
+        // so the cluster hangs just right of the castle's silhouette with one stray low on the
+        // left flank. Radii are angular degrees — 5–10× a terrestrial moon, deliberately.
+        // DOME-ONLY, like the sun disc: dl_skyColor stays moon-free so reflections and the
+        // distance-haze fades never pick one up (a ridge dissolving into a moon reads as a bug).
+        const MOONS = [
+            { az: -100, elev: 26, radius: 2.4, seed: 3.0, bright: 1.0 },   // the big one
+            { az: -88,  elev: 21, radius: 1.5, seed: 7.0, bright: 0.9 },   // companion, lower right
+            { az: -108, elev: 34, radius: 0.95, seed: 11.0, bright: 0.8 }, // high stray
+            { az: -152, elev: 19, radius: 0.7, seed: 17.0, bright: 0.65 }, // dim one off the left flank
+        ]
+        const moonCalls = MOONS.map((m) => {
+            const az = THREE.MathUtils.degToRad(m.az), el = THREE.MathUtils.degToRad(m.elev)
+            const d = new THREE.Vector3(Math.cos(az) * Math.cos(el), Math.sin(el), Math.sin(az) * Math.cos(el))
+            return `mcol += dl_moonShade(dir, sun, vec3(${d.x.toFixed(5)}, ${d.y.toFixed(5)}, ${d.z.toFixed(5)}), ` +
+                `${THREE.MathUtils.degToRad(m.radius).toFixed(5)}, ${m.seed.toFixed(1)}, ${m.bright.toFixed(2)}, mcover);`
+        }).join('\n                    ')
+        const cc = (col) => `vec3(${col.r.toFixed(4)}, ${col.g.toFixed(4)}, ${col.b.toFixed(4)})`
+
         const mat = new THREE.ShaderMaterial({
             side: THREE.BackSide,
             depthWrite: false,
@@ -68,10 +88,73 @@ export default class DesertSky extends Component{
                 ${GLSL_NOISE}
                 ${GLSL_SKY}
                 ${GLSL_ENCODE}
+
+                // Starfield. Cell-point stars on the direction sphere: one candidate per cell,
+                // pulled toward the cell centre so no star is ever clipped by its cell wall.
+                // Gated by altitude (the horizon dust drowns them) and away from the sunset
+                // quadrant (a star inside the glow reads as noise, not night).
+                vec3 dl_stars(vec3 dir, vec3 sunDir){
+                    vec3 p = dir * 56.0;
+                    vec3 cell = floor(p);
+                    float h = dl_hash(cell + 0.19);
+                    vec3 jit = vec3(dl_hash(cell + 0.31), dl_hash(cell + 0.73), dl_hash(cell + 1.71));
+                    vec3 sp = cell + 0.5 + (jit - 0.5) * 0.6;
+                    float d = length(p - sp);
+                    float star = smoothstep(0.16, 0.03, d);
+                    // Magnitude distribution: most cells empty, a few bright — squared so the
+                    // handful of hero stars stand well proud of the dust of faint ones.
+                    float mag = smoothstep(0.72, 1.0, h);
+                    mag *= mag;
+                    float warmside = pow(clamp(dot(dir, sunDir) * 0.5 + 0.5, 0.0, 1.0), 3.0);
+                    float vis = smoothstep(0.08, 0.50, dir.y) * (1.0 - warmside * 0.92);
+                    vec3 tint = mix(vec3(1.0, 0.93, 0.84), vec3(0.80, 0.89, 1.0), dl_hash(cell + 2.9));
+                    return tint * (star * mag * vis * 1.1);
+                }
+
+                // One moon: an actual sphere, phase-shaded by the REAL sun direction — so every
+                // moon hangs lit-side-down toward the sunset and the sky stays one light. fbm
+                // maria + ridged craters on the sphere normal give the face; a soft cold halo
+                // seats it in the haze. The cover out-param reports disc opacity so the caller
+                // can REPLACE the sky behind it (a moon is rock, not an additive glow).
+                vec3 dl_moonShade(vec3 dir, vec3 sunDir, vec3 mdir, float ang, float seed, float bright, inout float cover){
+                    float cd = clamp(dot(dir, mdir), -1.0, 1.0);
+                    float a = acos(cd);
+                    vec3 col = vec3(0.0);
+                    if(a < ang){
+                        vec3 u = normalize(cross(mdir, vec3(0.0, 1.0, 0.0)));
+                        vec3 v = cross(u, mdir);
+                        vec2 off = vec2(dot(dir, u), dot(dir, v)) / sin(ang);
+                        float r2 = min(dot(off, off), 1.0);
+                        float w = sqrt(1.0 - r2);
+                        vec3 n = normalize(u * off.x + v * off.y - mdir * w);
+                        float ndl = clamp(dot(n, sunDir), 0.0, 1.0);
+                        float mare = dl_fbm(n * (4.0 + seed) + seed * 7.3);
+                        float crater = dl_ridge(n * (9.0 + seed * 0.7) + seed * 3.1);
+                        float albedo = 0.74 + 0.18 * mare + 0.08 * crater;
+                        // NOT honest lambert. This close to the sun's bearing a real moon is a
+                        // hairline crescent — measured: the cluster rendered as black holes in
+                        // the glow. The reference paints pale lit balls regardless, so the phase
+                        // term is softened onto a high skyshine floor: the sun side still
+                        // brightens, but the whole face stays luminous against the dusk.
+                        vec3 lit = ${cc(PALETTE.moon)} * (albedo * (ndl * 0.50 + 0.42)) * bright;
+                        float edge = smoothstep(1.0, 0.955, r2);
+                        col = lit * edge;
+                        cover = max(cover, edge);
+                    }
+                    col += ${cc(PALETTE.moon)} * exp(-a / (ang * 1.7)) * 0.05 * bright;
+                    return col;
+                }
+
                 void main(){
                     vec3 dir = normalize(vDir);
                     vec3 sun = normalize(uSunDir);
-                    vec3 col = dl_skyColor(dir, sun) + dl_sunDisc(dir, sun);
+                    vec3 col = dl_skyColor(dir, sun);
+                    col += dl_stars(dir, sun);
+                    float mcover = 0.0;
+                    vec3 mcol = vec3(0.0);
+                    ${moonCalls}
+                    col = col * (1.0 - mcover) + mcol;
+                    col += dl_sunDisc(dir, sun);
                     // Break up the gradient so the huge smooth areas do not band on 8-bit output.
                     col += (dl_hash(vec3(gl_FragCoord.xy, 0.0)) - 0.5) * 0.012;
                     gl_FragColor = vec4(dl_toLinear(col), 1.0);
@@ -143,7 +226,7 @@ export default class DesertSky extends Component{
         // Between them they own the shadow floor: the old probe-less balance (hemi 0.34 alone)
         // crushed anything in shadow to near-black, which read as "shadows too dark" — the fix is
         // exactly this floor, not softening the key (golden hour still needs its contrast).
-        const hemi = new THREE.HemisphereLight(PALETTE.skyAmbient.getHex(), PALETTE.sandBounce.getHex(), 0.40)
+        const hemi = new THREE.HemisphereLight(PALETTE.skyAmbient.getHex(), PALETTE.sandBounce.getHex(), 0.46)
         hemi.position.set(0, 60, 0)
         this.scene.add(hemi)
         this.hemi = hemi
@@ -160,19 +243,25 @@ export default class DesertSky extends Component{
     }
 
     BuildFog(){
-        // Exponential-squared haze in the sky's own horizon colour.
+        // scene.fog still carries the COLOUR + BASE DENSITY, but the fog itself is the custom
+        // height/noise/sun fog DesertLook installs over three's fog chunks (see CUSTOM FOG there).
         //
-        // Density is chosen against two fixed points. COMBAT: at 40 m — beyond any engagement —
-        // it removes under 1% of contrast, so enemies, muzzle flashes and attack telegraphs are
-        // untouched. THE LANDMARK: the castle stands ~600 m from the start overlook and the brief
-        // requires it readable from most outdoor areas; at 0.0011 it keeps ~60% of its contrast
-        // there — present, solid, convincingly distant. (The old depot value of 0.0028 was tuned
-        // for a 56 m playfield and erased 95% of anything at 600 m — the vista simply vanished.)
-        this.scene.fog = new THREE.FogExp2(PALETTE.haze.getHex(), 0.0011)
+        // Density is chosen against the same two fixed points as ever — plus a third, new one.
+        // COMBAT: at 40 m the (density·m)² curve removes well under 1% of contrast (and the haze
+        // banks are hard-gated to zero inside 55 m), so enemies and telegraphs are untouched.
+        // THE LANDMARK: the castle at ~600 m now sits HIGH in a thin-air band — the height
+        // falloff pays for a denser base, so the keep stays ~80% readable while the basin floors
+        // below it drown at the same range. THE DEPTH: 0.0014 (up from the flat fog's 0.0011)
+        // is what buys the pooled-mist vista — low, far ground vanishing into cold haze is the
+        // depth cue the flat fog could never afford without erasing the castle too.
+        this.scene.fog = new THREE.FogExp2(PALETTE.haze.getHex(), 0.0014)
     }
 
     Update(t){
         this.time += t
+        // Drive the custom fog's clock — the wind-drifted haze banks (see DesertLook's CUSTOM
+        // FOG). One call fans out to every fogged material in the scene.
+        setFogTime(this.time)
         // Park the dome on the camera so the horizon stays put as the player crosses the level.
         // A fixed dome parallaxes visibly even over a short walk, which reads as the sky sliding.
         if(this.dome && this.camera){ this.dome.position.copy(this.camera.position) }

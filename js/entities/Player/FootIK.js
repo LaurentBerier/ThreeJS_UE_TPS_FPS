@@ -37,6 +37,26 @@ export default class FootIK{
         this.ik = new IKChainSolver();
 
         // ---- Tuning ----
+        // FOOT-ORIENTATION CONFORM master switch. TRUE (default): the feet are rotated to conform to the
+        // ground — slope tilt (_orientFoot), whole-foot level (_levelFoot), toe-ground plant (_conformToe)
+        // and crouch flatten (_flattenFoot) all run, so the soles hug the terrain. FALSE: NONE of those run;
+        // the leg two-bone solve still plants the ANKLE at the terrain height (the legs adapt to the ground),
+        // but the foot bone keeps EXACTLY the animation clip's orientation. Set false for the alien player
+        // rig, whose retargeted foot bone made the conform passes read as crooked/twisted feet — the clip's
+        // own foot pose looks correct, so we keep it and only IK the leg height. See PlayerBody (keepClipFootOrient).
+        this.conformFootOrient = opts.conformFootOrient ?? true;
+        // DEFAULT FOOT PITCH OFFSET (rad, + = toe DOWN). A fixed extra pitch added to the foot on top of
+        // whatever orientation it has (clip or conformed), so a rig whose resting foot reads too flat / toe-up
+        // gets a natural downward point. Rotates the foot about its heading-side axis (keeps the ankle plant),
+        // weighted by the plant weight so it's full when planted and fades out with the swing at speed. This is
+        // NOT terrain conform, so it runs even when conformFootOrient is false. 0 (default) = off.
+        this.footPitchOffset = opts.footPitchOffset ?? 0;
+        // Cap on the RESULTING metatarsal pitch after the offset. The offset only ever adds toward this cap and
+        // never past it, so a foot the clip already plants steep (the crouch trailing foot rides ~75° on its
+        // toe) keeps its clip pitch instead of the offset over-rotating the toe DOWN THROUGH the ground. A flat
+        // resting foot (~38°) still gets the full offset since 38+offset stays under the cap. Only matters for
+        // the alien (the sole caller with footPitchOffset != 0).
+        this.footPitchMax = opts.footPitchMax ?? THREE.MathUtils.degToRad(62);
         this.rayUp        = opts.rayUp        ?? 0.8;   // ground ray starts this far ABOVE the foot (m) — wider for stronger slopes
         this.maxDrop      = opts.maxDrop      ?? 1.15;  // ...and reaches this far below it (m) — deeper so a foot over a dip still finds ground
         this.maxHipDrop   = opts.maxHipDrop   ?? 0.55;  // most the avatar lowers for terrain (m) — more headroom for the stronger terrain
@@ -61,18 +81,34 @@ export default class FootIK{
         // the leg points) and tilted to the live ground normal (slopes) — blended by crouch. This corrects
         // BOTH pitch and roll, unlike a toe-only projection. 0 standing (clip foot preserved).
         this.crouchFootFlatten = opts.crouchFootFlatten ?? 1.0;
-        // PENETRATION GUARD ease rate (1/s). The guard is a one-sided anti-clip pass that runs even while
-        // the full plant has faded out for a fast jog, lifting ONLY feet that have sunk below their planted
-        // rest height back onto the ground — so the feet never disappear into the uneven terrain (and never
-        // pin a swing foot, so no skate). See _guardPenetration. Fast ease so a sudden bump is caught quickly.
-        this.guardLerp = opts.guardLerp ?? 14;
-        // CROUCH-WALK guard ATTACK ease rate (1/s). Standing, the guard snaps a clipping foot up INSTANTLY
-        // (a fast jog onto a rise must never flash a foot through the ground). But crouch-WALKING the body
-        // rides a touch low, so the planted foot sits just under its rest height every footfall — an instant
-        // snap there re-solves the knee in ONE frame (the residual footfall "leg snap"). While crouched we
-        // ease the attack over a few frames instead (still fast — the shallow crouch-walk drop can't visibly
-        // clip in 3-4 frames), blended in by the crouch amount so standing terrain safety is untouched.
-        this.guardCrouchAttackLerp = opts.guardCrouchAttackLerp ?? 22;
+        // PENETRATION GUARD response. The guard is a one-sided anti-clip pass that runs even while the full
+        // plant has faded out for a fast jog, lifting ONLY feet that have sunk below their planted rest
+        // height back onto the ground — so the feet never disappear into the uneven terrain (and never pin a
+        // swing foot, so no skate). See _guardPenetration.
+        //
+        // The lift is carried in METRES and eased, NOT as a 0..1 blend of the raw penetration depth. That
+        // distinction is the whole fix for the residual "knee popping" while moving: the old form snapped a
+        // 0..1 weight to 1 the instant a foot dipped under, and multiplied it by a depth that the animation
+        // was changing fast — so a foot that dropped a few cm mid-stride was yanked all the way back to rest
+        // in ONE frame. Near full extension the knee angle is brutally sensitive to ankle height (the
+        // law-of-cosines derivative blows up), so a ~1 cm ankle yank re-solved the knee by ~15-25° in a
+        // single frame, every footfall. Easing the lift itself makes the correction PROPORTIONAL — small
+        // dips get small, smooth corrections — and the speed caps bound the worst single-frame move on a
+        // genuinely deep intrusion. Measured on the alien player rig (see the crouch/jog IK-jerk probe):
+        // 95th-percentile per-frame knee correction fell from 7.7° to 5.2° jogging and 11.2° to 7.1°
+        // crouch-walking, and the one-frame worst case from 13.8° to 9.8° jogging — while NO frame let a
+        // foot sink more than 3 cm (a fifth of this rig's ankle height, so nothing reads as sinking).
+        // The rates below are that measured sweep's knee: easing much slower buys little extra smoothness
+        // and starts to show the feet dipping; easing faster walks back toward the old one-frame snap.
+        this.guardAttackLerp   = opts.guardAttackLerp   ?? 60;   // ease rate (1/s) as the lift GROWS (clip appearing)
+        this.guardReleaseLerp  = opts.guardReleaseLerp  ?? 8;    // ...and as it RELEASES (foot rising off the surface)
+        this.guardLiftSpeed    = opts.guardLiftSpeed    ?? 6.0;  // hard cap on the lift rate (m/s) — bounds a one-frame correction
+        this.guardReleaseSpeed = opts.guardReleaseSpeed ?? 1.2;  // ...and on the release rate (m/s)
+        // Tolerance (m) before the guard engages at all. The clip's own plant height never matches the rig's
+        // measured ankle rest to the millimetre, so without a deadband the guard fires on EVERY stance phase
+        // and drives the pose instead of guarding it. Subtracted smoothly (not thresholded), so engaging
+        // stays continuous.
+        this.guardDeadband = opts.guardDeadband ?? 0.008;
         // TOE-GROUND CONFORM. The leg solve plants the ANKLE (foot bone) but the toe (ball bone) is a LEAF
         // the solve never touches, so the clip's toe angle is carried rigidly. On this UE rig the foot plants
         // with the ANKLE ~0.12 m up and a steep ~33° metatarsal (ankle->ball), and the pointed boot toe —
@@ -88,6 +124,23 @@ export default class FootIK{
         this.toeMaxAngle    = opts.toeMaxAngle    ?? THREE.MathUtils.degToRad(40); // clamp on the toe pitch correction
         this.toeFadeLow     = opts.toeFadeLow     ?? 0.6;  // full toe conform at/below this ground speed (m/s)
         this.toeFadeHigh    = opts.toeFadeHigh    ?? 1.9;  // ...fading to OFF by here so the walk toe-off reads naturally
+        // WHOLE-FOOT LEVEL (player rig only). The toe conform above lifts the toe LEAF, but on the alien
+        // player rig the retargeted idle clip leaves the whole FOOT plantar-flexed (~35° toe-down metatarsal),
+        // so the boot dangles toe-down with the heel lifted — it reads as "feet not flat on the ground". This
+        // pass rotates the FOOT bone about its side axis to bring the metatarsal (foot->ball) UP to a target
+        // pitch, leveling the sole onto the ground. The ankle plant height is preserved (it rotates about the
+        // ankle origin, moving only the toe/heel). Weighted by the plant weight and faded out at speed (swing
+        // feet keep their natural toe-off). 0 => off, so the soldier + mannequin (whose clip lands flat) are
+        // unchanged. Tunable per rig via footLevelPitch (see entry.js alienPlayerRig).
+        this.footLevelStrength = opts.footLevelStrength ?? 0;                            // 0 = off
+        this.footLevelPitch    = opts.footLevelPitch    ?? THREE.MathUtils.degToRad(10); // target metatarsal pitch below horizontal
+        // Per-frame correction clamp. Must exceed the STEEPEST toe-down the clip produces (the crouch pose
+        // plantar-flexes the trailing foot to ~80° metatarsal) MINUS the target, or the correction plateaus
+        // short of flat (a 35° clamp left the crouch foot stuck at ~45°). 75° covers the full crouch range.
+        // No snap risk: the target is constant, so a planted foot's OUTPUT stays at footLevelPitch every frame.
+        this.footLevelMaxAngle = opts.footLevelMaxAngle ?? THREE.MathUtils.degToRad(75); // clamp on the per-frame correction
+        this.footLevelFadeLow  = opts.footLevelFadeLow  ?? 0.6;   // full level at/below this ground speed (m/s)
+        this.footLevelFadeHigh = opts.footLevelFadeHigh ?? 2.2;   // ...fading OFF by here so swing feet keep their motion
         this._ball = new THREE.Vector3();
         this._toe  = new THREE.Vector3();
         this._flatQ = new THREE.Quaternion();
@@ -109,6 +162,14 @@ export default class FootIK{
         this.ankleRestDefault = 0.12;
         this.calibFrames = 30;     // idle frames to take the planted minimum over
         this._calibCount = 0;
+        // AUTHORITATIVE ankle-rest override (m). The observation above trusts the live clip to plant the
+        // feet at some point — but the alien player rig's idle DANGLES the feet toe-down (ankles high),
+        // so the observed minimum bakes an inflated rest (pinned at ankleRestMax) and every subsequent
+        // plant holds the ankles ABOVE the ground: the body and its leveled soles visibly FLOAT. The
+        // caller can instead measure the true ankle-above-sole height from the flat-footed BIND pose
+        // (see PlayerBody.Initialize) and pass it here; the latch then uses it directly and engages on
+        // the FIRST grounded frame (no observation window needed). null => observe the clip as before.
+        this.ankleRestOverride = opts.ankleRest ?? null;
 
         // ---- Eased state ----
         this._weight = 0;          // master 0..1 (grounded & slow => 1, airborne/fast => 0)
@@ -137,6 +198,7 @@ export default class FootIK{
         this._toeTarget  = new THREE.Vector3();      // desired toe-forward (world, rest-pitched)
         this._toeRot     = new THREE.Quaternion();   // current -> target rotation
         this._toeApplied = new THREE.Quaternion();   // weighted, clamped toe rotation
+        this._footPitchAxis = new THREE.Vector3();   // heading-side axis for the default toe-down pitch offset
     }
 
     // Resolve the two leg chains by UE bone name. Ball (toe) is optional (used only as a reference).
@@ -152,7 +214,7 @@ export default class FootIK{
                     ankleRest: this.ankleRestDefault, calibMin: Infinity,
                     hit: false, ground: 0, fx: 0, fy: 0, fz: 0,
                     nx: 0, ny: 1, nz: 0,
-                    guard: 0,   // eased 0..1 penetration-guard amount (anti-ground-clip; see _guardPenetration)
+                    lift: 0,    // eased penetration-guard lift in METRES (anti-ground-clip; see _guardPenetration)
                     // The foot's flat (standing) world orientation + heading, snapshot at calibration; the
                     // crouch flatten drives the foot back to this (re-aimed to the live heading). See _flattenFoot.
                     restQuat: new THREE.Quaternion(), restHeading: new THREE.Vector3(0, 0, 1),
@@ -167,7 +229,7 @@ export default class FootIK{
     Reset(){
         this._weight = 0;
         this._hipDrop = 0;
-        if(this.legs){ for(const leg of this.legs){ leg.guard = 0; } }
+        if(this.legs){ for(const leg of this.legs){ leg.lift = 0; } }
     }
 
     // Per frame. opts:
@@ -236,9 +298,13 @@ export default class FootIK{
         // Latch the ankle rest after the window of GROUNDED idle frames. ankleRest is a RIG constant (same
         // for both feet), so take the MIN across both feet (the most-planted offset) and SHARE it — a sloped
         // or asymmetric settle then can't bake a left/right difference that tilts the body ("crooked feet").
-        if(!this._calibrated && anyHit && slow && enabled && ++this._calibCount >= this.calibFrames){
+        // With an authoritative override the height is already known, so latch on the FIRST grounded frame
+        // (the latch still snapshots restQuat below, which needs a live grounded pose).
+        const calibNeed = this.ankleRestOverride != null ? 1 : this.calibFrames;
+        if(!this._calibrated && anyHit && slow && enabled && ++this._calibCount >= calibNeed){
             let shared = Infinity;
-            for(const leg of this.legs){ if(Number.isFinite(leg.calibMin)){ shared = Math.min(shared, leg.calibMin); } }
+            if(this.ankleRestOverride != null){ shared = this.ankleRestOverride; }   // bind-measured rig constant wins
+            else{ for(const leg of this.legs){ if(Number.isFinite(leg.calibMin)){ shared = Math.min(shared, leg.calibMin); } } }
             shared = Number.isFinite(shared)
                 ? THREE.MathUtils.clamp(shared, this.ankleRestMin, this.ankleRestMax) : this.ankleRestDefault;
             for(const leg of this.legs){
@@ -282,7 +348,7 @@ export default class FootIK{
         // only foot pass — run it and bail before the full plant (Pass B/C), so the foot-synced jog isn't
         // fought into a skate. (When the plant DOES run, the guard instead runs LAST — see end of Update.)
         if(this._weight < 1e-3){
-            if(guard){ this._guardPenetration(t, bodyYaw, kneeAlign, poleStab, crouchAmt); }
+            if(guard){ this._guardPenetration(t, bodyYaw, kneeAlign, poleStab); }
             this._hipDrop *= Math.exp(-this.hipDropLerp * t);
             return;
         }
@@ -338,26 +404,46 @@ export default class FootIK{
                 this._kneePole(leg, bodyYaw, kneeAlign, this._pole);
                 this.ik.solveTwoBone(leg.thigh, leg.calf, leg.foot, this._target, this._pole, poleStab);
             }
-            // Crouch flatten runs on EVERY foot — planted OR swinging — so a planted crouch-idle foot lies
-            // flat; the speed taper (flatCrouch) lets a crouch-walk swing foot follow the clip instead.
-            this._flattenFoot(leg, flatCrouch, bodyYaw);
-            // Slope tilt only where we have a fresh ground normal, and fading out as the flatten takes over.
-            if(leg.hit){ this._orientFoot(leg, 1 - Math.min(1, flattenAmt)); }
+            // FOOT-ORIENTATION CONFORM (skipped entirely when conformFootOrient is false — the alien player
+            // rig keeps the clip's foot pose and only the leg height above adapts to the ground).
+            if(this.conformFootOrient){
+                // Crouch flatten runs on EVERY foot — planted OR swinging — so a planted crouch-idle foot lies
+                // flat; the speed taper (flatCrouch) lets a crouch-walk swing foot follow the clip instead.
+                this._flattenFoot(leg, flatCrouch, bodyYaw);
+                // Whole-foot LEVEL (player rig): lift the plantar-flexed idle foot so the sole lies flat on the
+                // ground. Runs before the slope tilt so a slope still orients the leveled foot. Weighted by
+                // plant weight + faded out at speed. No-op when footLevelStrength is 0 (soldier + mannequin).
+                if(leg.hit && this.footLevelStrength > 0){
+                    const lw = this._weight * this.footLevelStrength *
+                        (1 - THREE.MathUtils.smoothstep(speed, this.footLevelFadeLow, this.footLevelFadeHigh));
+                    this._levelFoot(leg, lw);
+                }
+                // Slope tilt only where we have a fresh ground normal, and fading out as the flatten takes over.
+                if(leg.hit){ this._orientFoot(leg, 1 - Math.min(1, flattenAmt)); }
+            }
+            // DEFAULT foot pitch offset (rig knob): pitch the toe DOWN by a fixed angle on top of the clip/
+            // conformed orientation — the LAST orientation write, so it composes with either. Independent of
+            // conformFootOrient; weighted by the plant weight so a planted foot points down and a fast swing
+            // foot keeps the clip. 0 (default) => off (soldier + mannequin).
+            if(leg.hit && this.footPitchOffset !== 0){ this._pitchFoot(leg, this._weight); }
         }
 
         // --- FINAL PENETRATION GUARD (anti-ground-clip). Runs AFTER the plant + hip-drop so it catches a
         // foot the body-lower (Pass B) pushed below the surface that a partial plant (Pass C at a faded
-        // weight) didn't fully re-seat — the residual mid-stride ground-clip at walk-start. One-sided +
-        // attack-instant (standing); crouch eases the attack so footfalls don't snap the knee. ---
-        if(guard){ this._guardPenetration(t, bodyYaw, kneeAlign, poleStab, crouchAmt); }
+        // weight) didn't fully re-seat — the residual mid-stride ground-clip at walk-start. One-sided and
+        // rate-eased in metres, so catching it can't snap the knee. ---
+        if(guard){ this._guardPenetration(t, bodyYaw, kneeAlign, poleStab); }
 
         // --- TOE-GROUND CONFORM (absolute last foot write). The foot bone is now planted + oriented; the
         // ball/toe leaf still carries the clip's (drooping) toe angle. Pitch it so the toe tip plants on the
         // ground. Faded by the master weight AND a tighter speed taper, so it flattens the toe on a planted
-        // (idle / crouch-idle / slow) foot but releases for a moving foot's natural toe-off. ---
-        const toeFade = (1 - THREE.MathUtils.smoothstep(speed, this.toeFadeLow, this.toeFadeHigh)) * this.toeFlatten;
-        if(toeFade > 1e-3){
-            for(const leg of this.legs){ if(leg.hit){ this._conformToe(leg, this._weight * toeFade); } }
+        // (idle / crouch-idle / slow) foot but releases for a moving foot's natural toe-off. Skipped when
+        // conformFootOrient is false — the toe is part of the foot pose we're keeping from the clip. ---
+        if(this.conformFootOrient){
+            const toeFade = (1 - THREE.MathUtils.smoothstep(speed, this.toeFadeLow, this.toeFadeHigh)) * this.toeFlatten;
+            if(toeFade > 1e-3){
+                for(const leg of this.legs){ if(leg.hit){ this._conformToe(leg, this._weight * toeFade); } }
+            }
         }
     }
 
@@ -385,36 +471,37 @@ export default class FootIK{
 
     // One-sided vertical PENETRATION GUARD (anti-ground-clip). For each foot with a ground hit, if its
     // ankle has dropped below its planted rest height (ground + ankleRest) — i.e. the foot mesh is
-    // clipping INTO the terrain — lift the ankle back to that height. It NEVER lowers a foot or pins one
-    // that's above the surface, so a swing foot keeps its full lift (no skate). The lift is ATTACK-INSTANT
-    // (correct the clip the very frame it appears — a fast stride onto a rise, or the body dropping into a
-    // crouch, can't flash a foot through the ground) and RELEASE-EASED (no knee pop when the foot rises off
-    // the surface). Full strength: it lifts exactly to the surface, so Pass C (which also targets that
-    // height) just re-confirms it — they never fight. Reuses Pass A's raycast hit (no extra raycast).
-    _guardPenetration(t, bodyYaw, kneeAlign = 0, poleStab = this.poleStabilize, crouchAmt = 0){
-        const ease = 1 - Math.exp(-this.guardLerp * t);
-        // Attack ease: INSTANT standing (terrain anti-clip must not lag a fast stride onto a rise), but
-        // eased while crouched (footfalls of the slightly-low crouch-walk body must not snap the knee).
-        // Blended by the crouch amount, so standing behaviour is byte-for-byte unchanged.
-        const attack = THREE.MathUtils.lerp(1, 1 - Math.exp(-this.guardCrouchAttackLerp * t),
-            THREE.MathUtils.clamp(crouchAmt, 0, 1));
+    // clipping INTO the terrain — lift the ankle back toward that height. It NEVER lowers a foot or pins
+    // one that's above the surface, so a swing foot keeps its full lift (no skate).
+    //
+    // The lift is a per-leg quantity in METRES, eased toward the live penetration depth and rate-capped
+    // (guardAttackLerp/guardLiftSpeed rising, guardReleaseLerp/guardReleaseSpeed falling) — see the
+    // constructor for why that shape, and not a 0..1 blend of the raw depth, is what stops the guard from
+    // re-solving the knee tens of degrees in a single frame on every footfall. `guardDeadband` is
+    // subtracted from the depth first, so the millimetre mismatch between the clip's plant height and the
+    // rig's measured ankle rest doesn't keep the guard permanently engaged.
+    //
+    // Pass C targets the same rest height, so when the full plant is running the two agree and the guard
+    // just holds what the plant already did — they never fight. Reuses Pass A's raycast hit (no extra ray).
+    _guardPenetration(t, bodyYaw, kneeAlign = 0, poleStab = this.poleStabilize){
+        const kUp = 1 - Math.exp(-this.guardAttackLerp * t);
+        const kDown = 1 - Math.exp(-this.guardReleaseLerp * t);
+        const maxUp = this.guardLiftSpeed * t, maxDown = this.guardReleaseSpeed * t;
         const align = THREE.MathUtils.clamp(kneeAlign, 0, 1);   // speed-tapered crouch knee/foot alignment
         for(const leg of this.legs){
-            let target = 0;
+            let need = 0;
             if(leg.hit){
                 leg.foot.getWorldPosition(this._footPos);
-                if(this._footPos.y < leg.ground + leg.ankleRest){ target = 1; }   // ankle below rest => clipping
+                // How far the ankle has sunk below its planted rest height, past the tolerance.
+                need = Math.max(0, (leg.ground + leg.ankleRest - this._footPos.y) - this.guardDeadband);
             }
-            // Attack (snap/ease UP), release eased (glide DOWN) — penetration never shows, exit never pops.
-            leg.guard = target > leg.guard ? leg.guard + (target - leg.guard) * attack
-                                           : leg.guard + (target - leg.guard) * ease;
-            if(leg.guard < 1e-3 || !leg.hit){ continue; }
-            const restY = leg.ground + leg.ankleRest;
-            this._target.set(this._footPos.x,
-                THREE.MathUtils.lerp(this._footPos.y, restY, leg.guard), this._footPos.z);
-            // Same speed-tapered knee pole AND the same crouch-aware pole stabilization as Pass C —
-            // the guard's attack-instant lift previously solved with the raw (0) stabilize, so its
-            // one-frame correction was free to flip the knee's bend plane.
+            const step = THREE.MathUtils.clamp(
+                (need - leg.lift) * (need > leg.lift ? kUp : kDown), -maxDown, maxUp);
+            leg.lift = Math.max(0, leg.lift + step);
+            if(leg.lift < 1e-4 || !leg.hit){ continue; }
+            this._target.set(this._footPos.x, this._footPos.y + leg.lift, this._footPos.z);
+            // Same speed-tapered knee pole AND the same crouch-aware pole stabilization as Pass C — solving
+            // the guard's correction with the raw (0) stabilize let it flip the knee's bend plane.
             this._kneePole(leg, bodyYaw, align, this._pole);
             this.ik.solveTwoBone(leg.thigh, leg.calf, leg.foot, this._target, this._pole, poleStab);
         }
@@ -462,6 +549,59 @@ export default class FootIK{
         if(angle > this.footOrientMax && angle > 1e-5){ s *= this.footOrientMax / angle; }
         this._orientApplied.copy(this._idQ).slerp(this._orientQ, s);
         this.ik.applyWorldQuat(leg.foot, this._orientApplied);
+    }
+
+    // Whole-foot LEVEL: rotate the FOOT bone about its side axis so the metatarsal (foot->ball) sits at
+    // footLevelPitch below horizontal, leveling a plantar-flexed (toe-down) idle foot onto the ground. Only
+    // ever LIFTS a toe-down foot (skips a foot already flatter/raised than the target, so it never forces a
+    // swing/toe-up foot down), is clamped to footLevelMaxAngle, weighted by `w`, and applied about the FOOT
+    // origin (the ankle) so the plant height is unchanged — only the toe/heel rotate. No-op before calibration.
+    _levelFoot(leg, w){
+        if(w < 1e-3 || !leg.ball || !this._calibrated){ return; }
+        leg.foot.getWorldPosition(this._footPos);
+        leg.ball.getWorldPosition(this._ballPos);
+        this._toeDir.copy(this._ballPos).sub(this._footPos);           // metatarsal (foot->ball), world
+        this._toeHeading.set(this._toeDir.x, 0, this._toeDir.z);
+        if(this._toeDir.lengthSq() < 1e-8 || this._toeHeading.lengthSq() < 1e-8){ return; }
+        this._toeDir.normalize(); this._toeHeading.normalize();
+        // Current metatarsal pitch below horizontal; skip if already at/above the target (don't push a flat
+        // or raised foot down — that would over-flatten a swing foot or the natural toe-off).
+        const curPitch = Math.asin(THREE.MathUtils.clamp(-this._toeDir.y, -1, 1));
+        if(curPitch <= this.footLevelPitch){ return; }
+        const cp = Math.cos(this.footLevelPitch), sp = Math.sin(this.footLevelPitch);
+        this._toeTarget.set(this._toeHeading.x * cp, -sp, this._toeHeading.z * cp).normalize();
+        this._toeRot.setFromUnitVectors(this._toeDir, this._toeTarget);
+        const angle = 2 * Math.acos(THREE.MathUtils.clamp(this._toeRot.w, -1, 1));
+        let s = w;
+        if(angle > this.footLevelMaxAngle && angle > 1e-5){ s *= this.footLevelMaxAngle / angle; }
+        this._toeApplied.copy(this._idQ).slerp(this._toeRot, s);
+        this.ik.applyWorldQuat(leg.foot, this._toeApplied);   // apply to the FOOT bone => rotates the whole foot
+    }
+
+    // DEFAULT toe-down pitch: rotate the FOOT bone about its heading-side axis by a fixed footPitchOffset so
+    // the toe points further DOWN, on top of the current (clip/conformed) orientation. The axis is world-up ×
+    // heading, so a POSITIVE angle pitches the toe down (ball toward the ground); applied about the foot origin
+    // (the ankle) so the plant height is unchanged — only the toe/heel rotate. Weighted by `w` (the plant
+    // weight) so a fast swing foot keeps the clip. Needs the ball to define the heading; no-op without it.
+    _pitchFoot(leg, w){
+        if(w < 1e-3 || !leg.ball){ return; }
+        leg.foot.getWorldPosition(this._footPos);
+        leg.ball.getWorldPosition(this._ballPos);
+        const dx = this._ballPos.x - this._footPos.x, dy = this._ballPos.y - this._footPos.y, dz = this._ballPos.z - this._footPos.z;
+        this._toeHeading.set(dx, 0, dz);
+        if(this._toeHeading.lengthSq() < 1e-8){ return; }
+        const len = Math.hypot(dx, dy, dz) || 1;
+        const curPitch = Math.asin(THREE.MathUtils.clamp(-dy / len, -1, 1));   // current toe-down pitch (rad)
+        // Add the offset but never past footPitchMax: an already-steep foot keeps its clip pitch (no toe
+        // clip-through), a flat one gets the full offset. Never negative (never lifts a steep foot).
+        const delta = Math.min(this.footPitchOffset * w, Math.max(0, this.footPitchMax - curPitch));
+        if(delta < 1e-4){ return; }
+        this._toeHeading.normalize();
+        this._footPitchAxis.crossVectors(this._up, this._toeHeading);   // up × heading => +angle pitches toe DOWN
+        if(this._footPitchAxis.lengthSq() < 1e-8){ return; }
+        this._footPitchAxis.normalize();
+        this._toeRot.setFromAxisAngle(this._footPitchAxis, delta);
+        this.ik.applyWorldQuat(leg.foot, this._toeRot);
     }
 
     // Toe-ground conform: pitch the ball (toe) bone up so the pointed boot toe stops drooping through the

@@ -18,22 +18,32 @@ import * as THREE from 'three'
 //
 // Everything here is fragment-stage only. No geometry, no transforms, no collision.
 export const PALETTE = {
-    // Sun / key light through late-afternoon dust.
-    sun:          new THREE.Color(0xffb063),
-    sunDeep:      new THREE.Color(0xff7a2a),   // low-horizon core, hotter and more saturated
-    // Sky + shadow. Shadows in a desert dusk go cool and slightly violet, never neutral grey.
-    skyHigh:      new THREE.Color(0x2a3a5c),
-    skyLow:       new THREE.Color(0xc98a52),
-    shadowTint:   new THREE.Color(0x4a5170),
-    // Ground bounce — a huge warm reflector under everything.
-    sandBounce:   new THREE.Color(0xc98a4e),
+    // Sun / key light through late-afternoon dust. Re-graded 2026-07-24 toward the reference
+    // render: GOLD, not red-orange — the previous grade sat everything a band redder than the
+    // luminous honey the ref bathes in.
+    sun:          new THREE.Color(0xffbe74),
+    sunDeep:      new THREE.Color(0xffa04a),   // low-horizon core — hot amber
+    // Sky + shadow. Re-graded 2026-07-24 toward the alien-vista reference: the zenith is now a
+    // deep space indigo (dark enough to carry a starfield and the moon cluster) falling through
+    // cool slate to the warm horizon band, instead of the old violet-brown cloud deck. Shadows
+    // cool off further against the gold — the ref's rock shadows are steel-blue.
+    skyHigh:      new THREE.Color(0x1d2336),
+    skyLow:       new THREE.Color(0xeaa76b),   // luminous peach-gold horizon band
+    shadowTint:   new THREE.Color(0x465878),
+    // Ground bounce — a huge warm reflector under everything. (Follows the sand's 2026-07-24
+    // desaturation below — bounce light is the sand's colour by definition.)
+    sandBounce:   new THREE.Color(0xc7a077),
     // Ambient coming DOWN out of the sky. Not the zenith blue: at dusk a flat desert floor sees
     // mostly the warm horizon band, so a literally-blue hemisphere light desaturates the sand to
-    // grey. This is the dusty violet-warm average the ground actually receives.
-    skyAmbient:   new THREE.Color(0x5c5262),
-    // Surfaces.
-    sandLit:      new THREE.Color(0xd8a25c),
-    sandDark:     new THREE.Color(0x966640),
+    // grey. Warmed + lifted with the 2026-07-24 grade: the ref's shadows are readable and warm,
+    // not crushed.
+    skyAmbient:   new THREE.Color(0x6b5e5a),
+    // Surfaces. Desaturated ~35% toward pale grey-tan with the Dark Alien re-grade (2026-07-24):
+    // the reference ground is cool pale rock under warm LIGHT — the gold now comes from the key
+    // and the horizon, not from orange pigment in the sand. Value (luminance) deliberately
+    // unchanged: the sand stays the bright surface silhouettes read against.
+    sandLit:      new THREE.Color(0xccaa80),
+    sandDark:     new THREE.Color(0x8a6a52),
     stoneDark:    new THREE.Color(0x2f2a26),
     // Structure albedos are deliberately DARK. three treats material.color as linear, and under a
     // 3.2-intensity key a mid-grey albedo tone-maps to near-white — which made the containers the
@@ -49,10 +59,15 @@ export const PALETTE = {
     steelBlack:   new THREE.Color(0x161719),
     rust:         new THREE.Color(0x6b3417),
     bronze:       new THREE.Color(0x3a2413),
-    dust:         new THREE.Color(0xb9945f),
+    dust:         new THREE.Color(0xaf957a),
     // Very limited cyan-blue emissive technology — the ONLY cool accent in the world.
     techCyan:     new THREE.Color(0x2fd4e0),
-    haze:         new THREE.Color(0xb87a45),
+    haze:         new THREE.Color(0xc09a70),
+    // The cold layer of the alien vista: pale mist pooling at the feet of the far spires, and the
+    // grey-blue moonlight family. Neither ever touches near/combat surfaces — mist lives in
+    // FarWorld's distance fade, moon in the sky dome only.
+    mist:         new THREE.Color(0xb4bfcc),
+    moon:         new THREE.Color(0xccd4e2),
 }
 
 // Where the sun sits. Everything else in the world orients to this: the fortress is placed just
@@ -60,12 +75,13 @@ export const PALETTE = {
 // bounce comes from it, and the light shafts fan out from it.
 // azimuth: compass angle in radians (0 = +X, increasing toward +Z). elevation: above the horizon.
 export const SUN_AZIMUTH = THREE.MathUtils.degToRad(-118)
-// 15 degrees is the compromise the whole look balances on. Lower reads more dramatic in the sky,
-// but the ground only receives sin(elevation) of the key — at 6 degrees the sand gets 10% of the
-// sun and goes dead grey under ambient, losing the ochre the entire brief is built around. At 15
-// the dunes take real warm light, the grazing angle rakes across the wind ripples, and shadows
-// still run nearly four times the height of what casts them.
-export const SUN_ELEVATION = THREE.MathUtils.degToRad(15)
+// The compromise the whole look balances on. Lower reads more dramatic in the sky, but the
+// ground only receives sin(elevation) of the key — at 6 degrees the sand gets 10% of the sun and
+// goes dead grey under ambient, losing the ochre the entire brief is built around. Raised 15→18
+// with the 2026-07-24 reference grade: the ref's sun sits a touch higher, the sand takes ~20%
+// more warm key (the golden wash the ref is soaked in), and shadows still run over three times
+// the height of what casts them.
+export const SUN_ELEVATION = THREE.MathUtils.degToRad(18)
 
 export function sunDirection(){
     // Unit vector pointing FROM the world TOWARD the sun.
@@ -75,6 +91,35 @@ export function sunDirection(){
         Math.sin(SUN_ELEVATION),
         Math.sin(SUN_AZIMUTH) * c,
     ).normalize()
+}
+
+// THE WIND. One direction for the whole world — sand ripples, drifting motes, cloud layers,
+// smoke lean and every piece of cloth all answer to this, which is what makes it read as weather
+// rather than as effects. It blows FROM THE ENEMY CITADEL (2026-07-24 direction flip): the
+// castle owns the sun's bearing, so a wind out of that quarter carries the whole journey's
+// hostility with it — walking the trail means walking INTO the citadel's wind, and the player's
+// cape billows back the moment they face their goal. The 14° skew keeps cloth from streaming
+// exactly parallel to the vista camera axis (measured: an edge-on flag foreshortens to a dead
+// hanging rectangle), so every banner still shows a visible cross-screen stream.
+export const WIND_AZIMUTH = SUN_AZIMUTH + THREE.MathUtils.degToRad(180 - 14)
+export const WIND_SPEED = 9.0      // m/s — a hard steppe wind off the citadel; gusts ride on top
+export function windDirection(){
+    return new THREE.Vector3(Math.cos(WIND_AZIMUTH), 0, Math.sin(WIND_AZIMUTH))
+}
+// Gust envelope: three incommensurate sines around a warm mean — deterministic (driven by the
+// caller's clock), cheap, and it never dies to zero, so cloth keeps living between gusts.
+// On top of that, BURSTS: two slow incommensurate sines only align every ~15–30 s, and raising
+// their product to the 6th power turns those alignments into brief, sharp surges (~+50% for a
+// couple of seconds) — the "sudden gust off the citadel" beat. One envelope for the whole world:
+// flags crack, the cape snaps, the streak field flares, all in the same moment.
+export function windStrengthAt(time){
+    const align = Math.sin(time * 0.31) * Math.sin(time * 0.117 + 2.1)
+    const burst = Math.pow(Math.max(0, align), 6.0)
+    return WIND_SPEED * (0.72
+        + 0.19 * Math.sin(time * 0.9)
+        + 0.12 * Math.sin(time * 2.33 + 1.7)
+        + 0.09 * Math.sin(time * 0.31 + 0.6)
+        + 0.50 * burst)
 }
 
 // The playable footprint (matches the journey terrain's centre/size — see JourneyWorld.WORLD).
@@ -129,9 +174,11 @@ vec3 dl_skyColor(vec3 dir, vec3 sunDir){
     float t = clamp(dir.y, -1.0, 1.0);
     float sd = dot(normalize(dir), sunDir);
 
-    // Vertical gradient: cool violet zenith -> dusty mauve -> hot amber at the horizon.
-    vec3 zenith = ${c(PALETTE.skyHigh)} * 0.55;
-    vec3 mid    = mix(${c(PALETTE.skyHigh)}, ${c(PALETTE.skyLow)}, 0.55) * 0.9;
+    // Vertical gradient: near-black space indigo -> cool slate -> hot amber at the horizon.
+    // The mid mix leans toward skyHigh (0.38, was 0.55): the reference sky stays cool almost all
+    // the way down and only ignites in the last ~15 degrees above the horizon.
+    vec3 zenith = ${c(PALETTE.skyHigh)} * 0.50;
+    vec3 mid    = mix(${c(PALETTE.skyHigh)}, ${c(PALETTE.skyLow)}, 0.38) * 0.95;
     vec3 horiz  = ${c(PALETTE.skyLow)};
 
     vec3 col = mix(mid, zenith, smoothstep(0.10, 0.70, t));
@@ -155,11 +202,13 @@ vec3 dl_skyColor(vec3 dir, vec3 sunDir){
 // into a value of 14.0 blows out to white.
 vec3 dl_sunDisc(vec3 dir, vec3 sunDir){
     float sd = clamp(dot(normalize(dir), sunDir), 0.0, 1.0);
-    float disc = smoothstep(0.9982, 0.9994, sd);
-    float glow = pow(sd, 260.0) * 2.2 + pow(sd, 22.0) * 0.45;
+    float disc = smoothstep(0.9978, 0.9992, sd);
+    // Wider, softer halo than the first grade (pow 260 read as a bare bulb) — the reference sun
+    // sits inside a broad gradient of glow that owns a whole quadrant of sky.
+    float glow = pow(sd, 120.0) * 2.8 + pow(sd, 16.0) * 0.6;
     // Deliberately far above 1.0 so filmic tone mapping keeps a hot white core and the bloom pass
     // has something real to catch.
-    return ${c(PALETTE.sunDeep)} * glow + vec3(1.0, 0.86, 0.66) * disc * 14.0;
+    return ${c(PALETTE.sunDeep)} * glow + vec3(1.0, 0.9, 0.72) * disc * 14.0;
 }
 `
 
@@ -189,6 +238,153 @@ vec3 dl_toLinear(vec3 c){
     return mix(pow((c + 0.055) / 1.055, vec3(2.4)), c / 12.92, step(c, vec3(0.04045)));
 }
 `
+
+
+// ---------------------------------------------------------------------------------------------
+// CUSTOM FOG — the whole scene's aerial perspective, replacing three's flat FogExp2 mix.
+//
+// three's stock fog is one colour at one density: every pixel at 300 m gets the same 20% wash of
+// the same beige, which is precisely why the mid-ground read as a flat cardboard cutout. This
+// override (the WebGL port of the three.js webgpu_custom_fog idea: fog as a function of the
+// world-space ray, not of depth alone) rebuilds the fog term per-pixel from four ingredients:
+//
+//   HEIGHT   — density falls off exponentially with altitude (analytic integral along the view
+//              ray, so a tower fades smoothly across its own height). Basins drown, crests punch
+//              through: the single biggest depth cue the flat fog was throwing away.
+//   NOISE    — a wind-drifted 3D value-noise field modulates optical depth into slowly-moving
+//              BANKS of haze instead of a uniform bath. Gated to zero inside 55 m so combat
+//              contrast is untouchable, and weighted toward low altitude (mist pools, it does
+//              not float).
+//   SUN      — the fog colour warms toward the sun's quadrant (forward scattering: dusk dust is
+//              brightest looking INTO the light) and cools toward PALETTE.mist for low, far
+//              targets — the same altitude-pooled cold mist FarWorld's haze already speaks.
+//   DISTANCE — the FogExp2 (density·metres)² curve is kept bit-compatible at mid altitude, so
+//              the two fixed points the old density was tuned against still hold: <1% contrast
+//              loss at 40 m (combat), and a readable castle at 600 m.
+//
+// It is installed by OVERRIDING three's fog ShaderChunk entries at module load, which means every
+// material with fog:true — graded or stock, on meshes or points — compiles the same fog with no
+// per-material wiring. The only per-material step is capturing a `fogTime` uniform handle, which
+// happens automatically: a default `Material.prototype.onBeforeCompile` hook catches every stock
+// material, addWorldVaryings catches every graded one, and the few bespoke onBeforeCompile sites
+// (Structures' banners) call captureFogUniforms themselves. Materials that somehow skip capture
+// still compile and render — their banks just don't drift (fogTime stays 0).
+//
+// scene.fog keeps supplying colour + density (DesertSky owns the values), so the tuning story is
+// unchanged: FogExp2(haze, density) in BuildFog, everything else baked here as constants.
+// ---------------------------------------------------------------------------------------------
+const FOG_H0 = 6.0          // altitude (m) of reference density — roughly the basin floors
+const FOG_FALLOFF = 0.028   // 1/m — density scale height ~36 m: summit air is ~5x clearer than basin air
+const FOG_NOISE_M = 115.0   // metres per noise feature: banks read at vista scale, not as texture
+const FOG_DRIFT_MPS = 3.2   // how fast the banks ride the world wind (slower than the gusts — mass)
+
+const _fogUniformSets = new Set()
+let _fogTime = 0
+// Adds the animated-fog clock to a compiling shader and remembers the uniform set. Never cleared:
+// renderer program caches outlive game restarts (scene.clear does not drop compiled materials),
+// so a session-scoped registry would orphan every shared-asset material on the second run.
+export function captureFogUniforms(shader){
+    if(!shader || !shader.uniforms){ return }
+    if(!shader.uniforms.fogTime){ shader.uniforms.fogTime = { value: _fogTime } }
+    _fogUniformSets.add(shader.uniforms)
+}
+export function setFogTime(t){
+    _fogTime = t
+    for(const u of _fogUniformSets){ if(u.fogTime){ u.fogTime.value = t } }
+}
+
+{
+    // Bake the direction/colour constants into the chunk source. Display-space components on
+    // purpose: fog_fragment runs AFTER tone mapping + encoding in r127's fragment order, so fog
+    // colours land on screen as authored — exactly how the old FogExp2 haze was tuned.
+    const w = windDirection()
+    const s = sunDirection()
+    const v3 = (v) => `vec3(${v.x.toFixed(5)}, ${v.y.toFixed(5)}, ${v.z.toFixed(5)})`
+    const c3 = (c) => `vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)})`
+    const f1 = (x) => x.toFixed(6)
+    const freq = 1 / FOG_NOISE_M
+
+    THREE.ShaderChunk.fog_pars_vertex = /* glsl */`#ifdef USE_FOG
+	varying vec3 vFogWorldPos;
+#endif`
+    // `transformed` is post-skinning model space in every built-in mesh/points shader, so the
+    // varying is the true world position even on characters. (Sprites lack `transformed` and
+    // would not compile this chunk — the game's only sprites, BloodFx droplets, are fog:false.)
+    THREE.ShaderChunk.fog_vertex = /* glsl */`#ifdef USE_FOG
+	vFogWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+#endif`
+    THREE.ShaderChunk.fog_pars_fragment = /* glsl */`#ifdef USE_FOG
+	uniform vec3 fogColor;
+	uniform float fogTime;
+	varying vec3 vFogWorldPos;
+	#ifdef FOG_EXP2
+		uniform float fogDensity;
+	#else
+		uniform float fogNear;
+		uniform float fogFar;
+	#endif
+	float fgHash(vec3 p){
+		p = fract(p * 0.3183099 + vec3(0.71, 0.113, 0.419));
+		p *= 17.0;
+		return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+	}
+	float fgNoise(vec3 x){
+		vec3 i = floor(x), f = fract(x);
+		f = f * f * (3.0 - 2.0 * f);
+		return mix(mix(mix(fgHash(i + vec3(0,0,0)), fgHash(i + vec3(1,0,0)), f.x),
+		               mix(fgHash(i + vec3(0,1,0)), fgHash(i + vec3(1,1,0)), f.x), f.y),
+		           mix(mix(fgHash(i + vec3(0,0,1)), fgHash(i + vec3(1,0,1)), f.x),
+		               mix(fgHash(i + vec3(0,1,1)), fgHash(i + vec3(1,1,1)), f.x), f.y), f.z);
+	}
+#endif`
+    THREE.ShaderChunk.fog_fragment = /* glsl */`#ifdef USE_FOG
+	vec3 fgRay = vFogWorldPos - cameraPosition;
+	float fgDist = max(length(fgRay), 0.001);
+	vec3 fgDir = fgRay / fgDist;
+	// Analytic integral of exp(-falloff*(y-H0)) along the ray, as an EFFECTIVE DISTANCE: flat
+	// rays at the reference altitude integrate to exactly fgDist, so the FogExp2 curve below is
+	// bit-compatible with the old flat fog at mid heights.
+	float fgT = ${f1(FOG_FALLOFF)} * fgRay.y;
+	float fgG = (abs(fgT) > 0.001) ? (1.0 - exp(-fgT)) / fgT : (1.0 - 0.5 * fgT);
+	float fgI = fgDist * exp(-${f1(FOG_FALLOFF)} * (cameraPosition.y - ${f1(FOG_H0)})) * fgG;
+	// Wind-drifted haze banks. Amplitude is zero inside 55 m (combat readability is untouchable)
+	// and grows where the LOOKED-AT ground sits low — mist pools in the basins, it does not float
+	// past the parapets. Two octaves; the vertical axis is compressed so banks lie flat.
+	// SAMPLED AT A CAPPED MID-RAY POINT, not at the fragment: at grazing incidence over a flat
+	// plain, neighbouring pixels land hundreds of metres apart, and fragment-anchored noise turns
+	// into razor stripes of hot fog (measured — it read as sheets of molten water). Capping the
+	// sample at 220 m along the ray bounds the field's screen-space gradient everywhere; past the
+	// cap the banks become one smooth slowly-drifting modulation per view ray, which is exactly
+	// how a distant bank reads anyway.
+	float fgLow = smoothstep(95.0, 6.0, vFogWorldPos.y);
+	vec3 fgSp = cameraPosition + fgRay * min(1.0, 220.0 / fgDist);
+	vec3 fgNp = (fgSp + ${v3(w)} * (fogTime * ${f1(FOG_DRIFT_MPS)})) * vec3(${f1(freq)}, ${f1(freq * 2.6)}, ${f1(freq)});
+	float fgBank = fgNoise(fgNp) * 0.65 + fgNoise(fgNp * 2.7 + 13.1) * 0.35;
+	float fgAmp = (0.20 + 0.33 * fgLow) * smoothstep(55.0, 170.0, fgDist);
+	fgI *= 1.0 + (fgBank * 2.0 - 1.0) * fgAmp;
+	#ifdef FOG_EXP2
+		float fogFactor = 1.0 - exp(-fogDensity * fogDensity * fgI * fgI);
+	#else
+		float fogFactor = smoothstep(fogNear, fogFar, fgDist);
+	#endif
+	// Aerial colour: warm forward-scatter into the sun's quadrant, cold mist claiming whatever
+	// sits low and far — the same temperature split FarWorld's haze and the reference render use.
+	// The warm term is TEMPERED where the target pools low: deep mist reads cold even against
+	// the light (per the reference), and untempered it painted the whole sunward basin floor as
+	// glowing amber sheets.
+	float fgSun = pow(clamp(dot(fgDir, ${v3(s)}) * 0.5 + 0.5, 0.0, 1.0), 5.0) * (1.0 - fgLow * 0.45);
+	vec3 fgCol = mix(fogColor, ${c3(PALETTE.sunDeep)} * 1.06, fgSun * 0.62);
+	fgCol = mix(fgCol, ${c3(PALETTE.mist)}, fgLow * 0.45 * (1.0 - fgSun * 0.55));
+	gl_FragColor.rgb = mix(gl_FragColor.rgb, fgCol, fogFactor);
+#endif`
+
+    // Catch every STOCK material (weapons, pickups, decals, cloth, GLB props…) at compile time so
+    // its fogTime uniform is registered. Graded materials assign their own onBeforeCompile and are
+    // captured inside addWorldVaryings instead; bespoke sites (Structures' banner sway) call
+    // captureFogUniforms explicitly. The default customProgramCacheKey is onBeforeCompile's
+    // source text, identical for every material inheriting this hook — no program permutations.
+    THREE.Material.prototype.onBeforeCompile = function(shader){ captureFogUniforms(shader) }
+}
 
 
 // Inject `code` around the first `token` present in a shader source, falling back through a list
@@ -224,6 +420,9 @@ function addWorldVaryings(shader){
     shader.vertexShader = injectBefore(shader.vertexShader,
         ['#include <project_vertex>'], WORLD_VARYINGS_VERT)
     shader.fragmentShader = WORLD_VARYINGS_DECL + GLSL_NOISE + shader.fragmentShader
+    // Every grader replaces the material's onBeforeCompile, which is what normally registers the
+    // animated-fog clock — so re-register here, the one line all four graders share.
+    captureFogUniforms(shader)
 }
 
 // Chunk anchors, most-specific first.
@@ -381,17 +580,126 @@ export function gradeStructure(material, family){
 // pure NORMAL perturbation: the surface the player walks on, the foot IK samples and the camera
 // sweeps against is bit-for-bit the same heightfield as before.
 // ---------------------------------------------------------------------------------------------
-export function gradeGround(material){
+// Mean LINEAR colour of assets/World/ground_sand_D.jpg, measured over all 1024x1024 texels
+// (linearise first, then average — averaging the sRGB bytes and linearising after is a different,
+// wrong number for a texture with this much contrast).
+//
+// This exists because the photo cannot be used as a literal albedo. Its mean linear luminance is
+// 0.219; the sand palette this world is balanced around sits at 0.660, and the structures at 0.16
+// (see the PALETTE notes above). Dropping the photo in raw would darken the ground threefold, put
+// it within a stone's throw of the containers, and break the one thing the whole look is built to
+// protect: sand as the bright background that dark enemy silhouettes stay legible against.
+//
+// So the shader normalises the photo's LUMINANCE against this to recover a ~1.0-mean detail field
+// — all of the photo's grain, crust and pebbles, none of its absolute level — and multiplies that
+// onto the palette instead.
+//
+// SWAPPING THE TEXTURE means re-measuring this, or the ground's brightness moves with whatever the
+// new image happens to average to. In a browser console, against the loaded texture:
+//   const c = document.createElement('canvas'); c.width = c.height = 256
+//   const x = c.getContext('2d'); x.drawImage(_APP.assets.groundTex.image, 0, 0, 256, 256)
+//   const d = x.getImageData(0, 0, 256, 256).data, L = v => (v /= 255) <= 0.04045 ? v/12.92 : ((v+0.055)/1.055)**2.4
+//   let s = [0,0,0]; for(let i = 0; i < d.length; i += 4){ for(let k = 0; k < 3; k++) s[k] += L(d[i+k]) }
+//   s.map(v => (v / (256*256)).toFixed(4))
+const GROUND_TEX_MEAN = new THREE.Vector3(0.4737, 0.1613, 0.0393)
+// How far the ground adopts the photo's own hue (0 = keep the tuned palette exactly, 1 = fully the
+// photo's red-orange). Applied at CONSTANT luminance, so this knob can never affect readability.
+// Dropped 0.45 -> 0.32 with the Dark Alien re-grade: the pack's grey-teal macro chroma now does
+// more of the talking, and the photo supplies mostly grain.
+const GROUND_TEX_HUE = 0.32
+// Metres per tile. 2.6 m puts roughly a stride-and-a-half of ground across one 1024 tile, which is
+// the scale the pebbles in this photo were shot at; much larger and they read as boulders.
+const GROUND_TEX_TILE = 2.6
+
+// Warm grade applied to the ground's OUTGOING LIGHT, after shading, to bring the near sand into
+// agreement with the ochre of the far dune sea.
+//
+// It has to happen here rather than in the albedo, and the measurement is unambiguous about why.
+// Sweeping GROUND_TEX_HUE across its whole range — all the way to 1.0, the photo's own chromaticity
+// — moved the ground's on-screen colour from 1.202/0.967/0.730 to only 1.284/0.953/0.634, closing
+// the gap to the dunes by 11%. The ground is a BRIGHT surface (screen luma 0.68) under a strong
+// warm key, and ACES tone-maps bright saturated values toward white; whatever hue the albedo
+// carries is washed out of it downstream. Tinting the albedo is fighting the tonemapper.
+//
+// So the grade goes in after the lighting sum, where it survives: applied there the same warming
+// closes 37% of the gap instead of 11%.
+//
+// 0.40 warms the sand out of the washed-out cream it sits at unaided, without pushing it to the
+// saturated orange the higher end of this knob produces. It was 0.80 briefly — chasing the closest
+// possible numerical match to the far dunes — and that read as oversaturated in play: the ground
+// competes with the sky rather than sitting under it. Chasing that match was the wrong target
+// anyway. The dunes sit at screen luma 0.29, where a chromaticity of 2.13 is reachable; the near
+// sand is a brightly lit 0.68, and at that luminance sRGB caps red chromaticity at 1/0.68 = 1.47.
+// The two CANNOT converge while the sand stays bright enough to read silhouettes against, and the
+// residue is aerial perspective doing its job.
+// Eased 0.46 -> 0.30 for the Dark Alien ground: the pack's rock reads cool by design, and the
+// full warm push was fighting the grey-blue macro layer it now sits under.
+const GROUND_WARM = 0.30
+
+// --- Rugged erosion look (the "Dark Alien Landscape" bake — tools/terrain_prep) ---------------
+// The geometry side of the pack lives in JourneyWorld (ENV_AMP/TRAIL_AMP); these knobs own how
+// the LOOK layers read. All of them ride uniforms, so a whole tuning sweep can run against a
+// single page load via material.userData.dlShader.uniforms.
+const RUG_ALB_STR = 0.92     // macro luminance detail from the pack's diffuse (0 = palette only)
+const RUG_HUE = 0.55         // how much of the pack's own chromaticity survives the desert grade
+                             // (raised 0.38 -> 0.55 for Dark Alien: its grey-teal IS the look)
+const RUG_NRM_AMP_M = 1.0    // metres of relief the residual normal map portrays at full mask
+                             // (0.5 measured too soft: staining outran shading in the first pass)
+const RUG_FLOW = 0.9         // drainage-wash darkening + sediment fans
+const RUG_RIDGE = 0.75       // scoured-crest hardpan exposure
+const RUG_AO = 1.0           // baked terrain AO on indirect light
+// Erosion-REGIME layers (the ero_1024 sheet: R activity, G deposition, B varnish). These drive
+// the broad luma + hue variation across the open sand — surface AGE, which the shape-driven
+// layers above cannot express. Varnished flats darken and cool, active cuts pale slightly, silt
+// floors go palest-warm. Bounded so sand never leaves its readability budget (see the clamp).
+const RUG_ERO_LUMA = 0.55    // strength of the signed luminance drive
+const RUG_ERO_HUE = 0.65     // strength of the patina/silt hue split
+
+// rugged: { albedo, normal, ctrl, mask, meta } — world-mapped textures + the bake's meta.json.
+// Optional, like tex: absent, the ground renders exactly as before.
+export function gradeGround(material, tex = null, rugged = null){
     material.color.copy(PALETTE.sandLit)
     material.roughness = 0.96
     material.metalness = 0.0
-    material.customProgramCacheKey = () => 'dl-ground'
+    // The textures arrive as uniforms, not material.map, so they do NOT change the shader three
+    // generates — but they do change the shader THIS file injects, and the variants must not
+    // share a compiled program.
+    material.customProgramCacheKey = () => 'dl-ground' + (tex ? '-tex' : '') + (rugged ? '-rug' : '') + (rugged && rugged.ero ? '-ero' : '')
 
     material.onBeforeCompile = (shader) => {
         addWorldVaryings(shader)
         shader.uniforms.dlSandLit = { value: PALETTE.sandLit.clone() }
         shader.uniforms.dlSandDark = { value: PALETTE.sandDark.clone() }
         shader.uniforms.dlGravel = { value: PALETTE.stoneDark.clone() }
+        if(tex){
+            shader.uniforms.dlGroundTex = { value: tex }
+            shader.uniforms.dlTexMean = { value: GROUND_TEX_MEAN.clone() }
+            shader.uniforms.dlTexHue = { value: GROUND_TEX_HUE }
+            shader.uniforms.dlGroundWarm = { value: GROUND_WARM }
+        }
+        if(rugged){
+            const meta = rugged.meta || {}
+            const mean = meta.albedoMeanLinear || [0.4, 0.43, 0.39]
+            const refAmp = (meta.residual && meta.residual.refAmpM) || 0.5
+            shader.uniforms.dlRugAlb = { value: rugged.albedo }
+            shader.uniforms.dlRugNrm = { value: rugged.normal }
+            shader.uniforms.dlRugCtrl = { value: rugged.ctrl }
+            shader.uniforms.dlRugMask = { value: rugged.mask }
+            shader.uniforms.dlRugMean = { value: new THREE.Vector3(mean[0], mean[1], mean[2]) }
+            shader.uniforms.dlRugHalf = { value: (meta.worldSize || 640) / 2 }
+            shader.uniforms.dlRugSize = { value: meta.worldSize || 640 }
+            shader.uniforms.dlRugNrmStr = { value: RUG_NRM_AMP_M / refAmp }
+            shader.uniforms.dlRugAlbStr = { value: RUG_ALB_STR }
+            shader.uniforms.dlRugHue = { value: RUG_HUE }
+            shader.uniforms.dlRugFlow = { value: RUG_FLOW }
+            shader.uniforms.dlRugRidge = { value: RUG_RIDGE }
+            shader.uniforms.dlRugAo = { value: RUG_AO }
+            if(rugged.ero){
+                shader.uniforms.dlRugEro = { value: rugged.ero }
+                shader.uniforms.dlRugEroLuma = { value: RUG_ERO_LUMA }
+                shader.uniforms.dlRugEroHue = { value: RUG_ERO_HUE }
+            }
+        }
 
         shader.fragmentShader = shader.fragmentShader.replace(
             'void main() {',
@@ -399,15 +707,101 @@ export function gradeGround(material){
             uniform vec3 dlSandLit;
             uniform vec3 dlSandDark;
             uniform vec3 dlGravel;
+            ${(tex || rugged) ? /* glsl */`
+            const vec3 dlLuma = vec3(0.2126, 0.7152, 0.0722);
+
+            // Hand-rolled sRGB decode. three generates one of these automatically for material.map,
+            // but these textures ride plain uniforms (the heightfield has no uv attribute), so
+            // nothing upstream has decoded them.
+            vec3 dlSrgbToLinear(vec3 c){
+                return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+            }
+            ` : ''}
+            ${rugged ? /* glsl */`
+            // Rugged erosion bake — one world-mapped sheet each (NOT tiled): macro albedo, the
+            // sub-heightfield-grid residual normals, the flow/ridge/AO control channels, and the
+            // per-cell detail-weight mask JourneyWorld recorded while compositing the geometry.
+            uniform sampler2D dlRugAlb;
+            uniform sampler2D dlRugNrm;
+            uniform sampler2D dlRugCtrl;
+            uniform sampler2D dlRugMask;
+            uniform vec3 dlRugMean;
+            uniform float dlRugHalf;
+            uniform float dlRugSize;
+            uniform float dlRugNrmStr;
+            uniform float dlRugAlbStr;
+            uniform float dlRugHue;
+            uniform float dlRugFlow;
+            uniform float dlRugRidge;
+            uniform float dlRugAo;
+            ${rugged.ero ? /* glsl */`
+            uniform sampler2D dlRugEro;
+            uniform float dlRugEroLuma;
+            uniform float dlRugEroHue;
+            ` : ''}
+            vec2 dlRugUV(vec2 xz){ return (xz + dlRugHalf) / dlRugSize; }
+            // Terrain AO rides indirect light only — written in the surface block, applied after
+            // three's own aomap chunk (same carried-local pattern as gradeStructure's dlSkyRefl).
+            float dlAO = 1.0;
+            ` : ''}
+            ${tex ? /* glsl */`
+            uniform sampler2D dlGroundTex;
+            uniform vec3 dlTexMean;
+            uniform float dlTexHue;
+            uniform float dlGroundWarm;
+
+            vec3 dlTap(vec2 uv){ return dlSrgbToLinear(texture2D(dlGroundTex, uv).rgb); }
+
+            // TRIPLANAR projection.
+            //
+            // Sampling on world XZ alone — which is what this did first — stretches the texture by
+            // 1/cos(slope) on anything that isn't flat. That is 1.6x on the ~50 degree boss ramp and
+            // worse on the dune scarps, and it reads as the ground being smeared downhill exactly
+            // where the terrain silhouette is most visible. Projecting from all three axes and
+            // weighting by the normal removes it: each face gets the projection that faces it.
+            //
+            // The two side projections are branched, not just weighted to zero, because most of a
+            // heightfield on screen is flat enough to need only the Y plane. Flat ground therefore
+            // pays ONE fetch here as before, and only genuinely steep pixels pay three. The weights
+            // are raised to a high power first so that "flat enough" covers as much of the screen as
+            // possible before the branch is taken.
+            vec3 dlTriplanar(vec3 wp, vec3 n, float tile){
+                vec3 w = abs(n);
+                w = pow(w, vec3(6.0));
+                w /= max(w.x + w.y + w.z, 1e-4);
+                vec3 c = dlTap(wp.xz / tile) * w.y;
+                if(w.x > 0.004){ c += dlTap(wp.zy / tile) * w.x; }
+                if(w.z > 0.004){ c += dlTap(wp.xy / tile) * w.z; }
+                return c;
+            }
+
+            // De-tiled albedo. One texture repeating every 2.6 m over an 800 m trek would otherwise
+            // show its grid the moment the player looks down the path, and no amount of procedural
+            // noise on top hides a regular grid. A second, much coarser tap at a non-integer scale
+            // ratio (7.3x) and an offset breaks the period: the two only realign after hundreds of
+            // metres, by which point aerial haze owns the frame anyway.
+            //
+            // The macro tap stays PLANAR. It is the library's "macro variation" idea — large-scale
+            // colour drift — and at a 19 m repeat the stretching triplanar exists to fix is far too
+            // gradual to see, so paying three fetches for it would buy nothing.
+            vec3 dlGroundAlbedo(vec3 wp, vec3 n){
+                vec3 a = dlTriplanar(wp, n, ${GROUND_TEX_TILE.toFixed(2)});
+                vec3 b = dlTap(wp.xz / ${(GROUND_TEX_TILE * 7.3).toFixed(2)} + vec2(0.37, 0.61));
+                return mix(a, b, 0.35);
+            }
+            ` : ''}
 
             // Wind-ripple field. Two crossed, noise-warped wave trains — the classic aeolian
             // pattern. Returns a height so the normal can be taken as its analytic gradient.
             // Wavelengths are ~0.7 m and ~1.1 m: real sand ripples are this tight, and an earlier
             // 2 m version just read as a vague swell under the grazing key rather than as sand.
+            // Crest orientation follows THE WIND (wave vectors from WIND_AZIMUTH): the primary
+            // train runs perpendicular to the wind, the secondary crosses it at ~65°, so the sand
+            // agrees with the flags, smoke and drifting dust about which way the air moves.
             float dlRipple(vec2 p){
                 float warp = dl_fbm(vec3(p * 0.09, 0.0)) * 2.6;
-                float a = sin((p.x * 0.94 + p.y * 0.34) * 6.2 + warp * 3.0);
-                float b = sin((p.x * -0.36 + p.y * 0.93) * 3.9 - warp * 2.0);
+                float a = sin(dot(p, vec2(${Math.cos(WIND_AZIMUTH).toFixed(4)}, ${Math.sin(WIND_AZIMUTH).toFixed(4)})) * 6.2 + warp * 3.0);
+                float b = sin(dot(p, vec2(${Math.cos(WIND_AZIMUTH + 1.13).toFixed(4)}, ${Math.sin(WIND_AZIMUTH + 1.13).toFixed(4)})) * 3.9 - warp * 2.0);
                 return a * 0.62 + b * 0.38;
             }
             void main() {`)
@@ -418,6 +812,14 @@ export function gradeGround(material){
         shader.fragmentShader = injectBefore(shader.fragmentShader, NORMAL_ANCHOR, /* glsl */`
         {
             vec2 p = dlWorldPos.xz;
+            // SLOPE-SPACE normal composition. Every detail layer of a heightfield is a height
+            // gradient, and gradients ADD — so instead of chaining mix/reorient hacks per layer,
+            // accumulate d(h)/d(xz) from each source and rebuild one normal at the end. This is
+            // the planar-projection equivalent of reoriented normal-map blending, exact for any
+            // number of layers, and it is what keeps the vertex normals, the residual erosion
+            // map and the wind ripples from washing each other out.
+            vec3 baseN = normalize(dlWorldNrm);
+            vec2 s = -baseN.xz / max(baseN.y, 0.06);
             float e = 0.06;
             float h = dlRipple(p);
             float hx = dlRipple(p + vec2(e, 0.0));
@@ -427,11 +829,27 @@ export function gradeGround(material){
             // LOW for the same reason: at 0.045 the crossed wave trains interfered into a visible
             // checkerboard wherever the view skimmed the surface.
             float fade = 1.0 - smoothstep(16.0, 42.0, length(vViewPosition));
-            float amp = 0.022 * fade;
-            vec3 wn = normalize(vec3(-(hx - h) / e * amp, 1.0, -(hz - h) / e * amp));
-            // Blend against the real surface normal so slopes keep their shape.
-            vec3 baseN = normalize(dlWorldNrm);
-            wn = normalize(mix(baseN, normalize(baseN + wn - vec3(0.0, 1.0, 0.0)), fade));
+            // 0.022 predates the erosion normals; against real drainage shading the crossed sine
+            // trains read as a printed checkerboard, so they drop to a supporting role.
+            float amp = 0.016 * fade;
+            ${rugged ? /* glsl */`
+            // Aeolian ripples form in loose sand, not on the packed floors of drainage washes —
+            // and killing them there is also what lets the wash lanes read as SMOOTH under the
+            // grazing key, which sells the erosion more than their darkening does.
+            amp *= 1.0 - smoothstep(0.22, 0.70, texture2D(dlRugCtrl, dlRugUV(p)).r) * 0.8;
+            ` : ''}
+            s += vec2(hx - h, hz - h) / e * amp;
+            ${rugged ? /* glsl */`
+            // Residual erosion normals: everything finer than the 2.5 m heightfield grid, baked
+            // from the same 16-bit source the geometry detail came from. NO distance fade — this
+            // is macro-anchored (one world-mapped sheet, mips handle minification), and it is
+            // exactly what makes far slopes read as eroded rock instead of smooth putty. Scaled
+            // by the JourneyWorld detail mask so shading never claims relief the terrain lost.
+            float dlRugM = texture2D(dlRugMask, dlRugUV(p)).x;
+            vec3 rn = texture2D(dlRugNrm, dlRugUV(p)).xyz * 2.0 - 1.0;
+            s += -rn.xz / max(rn.y, 0.2) * (dlRugNrmStr * dlRugM);
+            ` : ''}
+            vec3 wn = normalize(vec3(-s.x, 1.0, -s.y));
             normal = normalize((viewMatrix * vec4(wn, 0.0)).xyz);
         }
         `)
@@ -446,16 +864,193 @@ export function gradeGround(material){
             float gravel = smoothstep(0.62, 0.86, dl_ridge(vec3(p * 0.24, 11.0)));
 
             vec3 col = mix(dlSandDark, dlSandLit, clamp(0.25 + broad * 1.3 + rip * 0.28, 0.0, 1.0));
+            ${tex ? /* glsl */`
+            {
+                vec3 t = dlGroundAlbedo(dlWorldPos, normalize(dlWorldNrm));
+                // Split the photo into BRIGHTNESS and HUE and recombine them against the palette
+                // separately. Doing it per-channel instead (t / dlTexMean) is the obvious version
+                // and it is wrong: the mean's blue is 0.039, so a near-white pebble scales blue by
+                // 25x and the pebbles come out glowing cyan.
+                //
+                // Brightness: the photo's luminance, mean-normalised to ~1.0, so multiplying it
+                // onto the palette leaves the dune-scale value drift above EXACTLY as tuned and
+                // adds only grain, crust and pebble shading. Clamped because the tail of the
+                // histogram is a handful of specular texels, not real albedo.
+                float texLum  = max(dot(t, dlLuma), 1e-4);
+                float meanLum = max(dot(dlTexMean, dlLuma), 1e-4);
+                float detail  = clamp(texLum / meanLum, 0.3, 2.0);
+
+                // Hue: unit-luminance chromaticity of each, so the blend is purely a hue rotation
+                // and the ground's brightness is identical at dlTexHue 0.0 and 1.0 — which is what
+                // keeps this knob from ever touching the readability budget. Using the photo's
+                // PER-TEXEL chromaticity rather than its mean is what lets the dark pebbles stay
+                // grey against the orange rather than being re-tinted orange along with everything.
+                float baseLum = max(dot(col, dlLuma), 1e-4);
+                vec3 hue = mix(col / baseLum, t / texLum, dlTexHue);
+
+                col = hue * (baseLum * detail);
+            }
+            ` : ''}
+            ${rugged ? /* glsl */`
+            float wash = 0.0; float expo = 0.0;
+            {
+                // MACRO albedo from the pack's diffuse — the layer that puts sediment fans, rock
+                // striations and drainage staining exactly where the normals say they should be
+                // (both were baked from the same height field). Same brightness/hue split as the
+                // photo detail above: luminance is mean-normalised so the tuned sand value
+                // survives on average, chromaticity is adopted only partially.
+                vec3 mac = dlSrgbToLinear(texture2D(dlRugAlb, dlRugUV(p)).rgb);
+                float macLum = max(dot(mac, dlLuma), 1e-4);
+                float macDetail = clamp(macLum / max(dot(dlRugMean, dlLuma), 1e-4), 0.3, 2.2);
+                col *= mix(1.0, macDetail, dlRugAlbStr);
+                // Extreme-chroma taming: the further a texel's chromaticity sits from neutral,
+                // the harder it is pulled back, so what survives is tonal variation, not a biome
+                // transplant. Relaxed 2.5 -> 1.6 for Dark Alien — its teal crevice staining is
+                // wanted character, only the outright saturated spills still get reined in.
+                vec3 macCh = mac / macLum;
+                float chDist = length(macCh - vec3(1.0));
+                float tameCh = 1.0 / (1.0 + chDist * chDist * 1.6);
+                float mLum = max(dot(col, dlLuma), 1e-4);
+                col = mix(col / mLum, macCh, dlRugHue * tameCh) * mLum;
+
+                // Erosion control channels: R = D8 flow accumulation, G = ridge/scarp exposure,
+                // B = horizon-swept AO of the shipped detail bands. Gated softly by the detail
+                // mask — a wash may still cross the worn trail, but faded, and arena floors
+                // stay clean for combat readability.
+                vec3 ec = texture2D(dlRugCtrl, dlRugUV(p)).rgb;
+                float g8 = mix(0.35, 1.0, texture2D(dlRugMask, dlRugUV(p)).x);
+                ${rugged.ero ? /* glsl */`
+                // Erosion REGIME sheet (surface age, baked from the same height field):
+                // R = active stream-power cutting, G = silt deposition, B = varnished old flats.
+                vec3 ev = texture2D(dlRugEro, dlRugUV(p)).rgb;
+                ` : ''}
+                // Drainage lanes: packed, darker sediment where water actually ran.
+                wash = smoothstep(0.22, 0.70, ec.r) * dlRugFlow * g8;
+                ${rugged.ero ? /* glsl */`
+                // Where the deposition sheet says SILT settled, the lane floor is pale fines, not
+                // dark packed gravel — soften the darkening there so flat outwash reads light and
+                // only the steeper, still-working drainage keeps its dark floor.
+                wash *= 1.0 - ev.g * 0.55;
+                ` : ''}
+                col = mix(col, col * vec3(0.60, 0.56, 0.53), wash * 0.65);
+                // Pale deposit fans skirting the channels.
+                float fan = clamp(smoothstep(0.06, 0.25, ec.r) - smoothstep(0.28, 0.75, ec.r), 0.0, 1.0) * dlRugFlow * g8;
+                col = mix(col, col * vec3(1.07, 1.03, 0.97), fan * 0.30);
+                // Scoured crests: hardpan exposure along the real erosion scarps. Kept visibly
+                // LIGHTER than the slope-rock below — the dark full-rock read stays an honest
+                // "you will slide off this" signal (thresholds match PlayerControls).
+                expo = smoothstep(0.30, 0.85, ec.g) * dlRugRidge * g8;
+                col = mix(col, (dlGravel * 1.7 + dlSandDark * 0.22) * 1.35, expo * 0.45);
+                // Terrain AO onto indirect light only (applied after three's aomap chunk) — under
+                // a 15-degree key most of the frame is lit by ambient, so this is what seats the
+                // gully floors and crevices without double-darkening the sunlit faces.
+                dlAO = mix(1.0, ec.b, dlRugAo * g8);
+                ${rugged.ero ? /* glsl */`
+                // SURFACE AGE — the erosion-regime luma/hue pass. Real desert floors carry their
+                // history as tone: old undisturbed flats darken under desert varnish and gravel
+                // lag, active cuts stay slightly pale, and outwash silt is the palest, warmest
+                // material on the map. This is broad, low-frequency variation the per-texel macro
+                // albedo cannot supply, and it is what breaks the "one sand value everywhere"
+                // flatness of the open ground.
+                {
+                    // Patchify the varnish with the coarse noise field (~50 m breathing) so the
+                    // patina reads as weather-broken fields, not a smooth airbrushed gradient.
+                    float varn = ev.b * (0.55 + 0.45 * dl_fbm(vec3(p * 0.021, 53.0)));
+                    // Signed luminance drive, applied multiplicatively and CLAMPED: the floor
+                    // (0.68) keeps varnished flats comfortably brighter than the slope-rock's
+                    // 0.42-luma "you will slide" signal, and the ceiling keeps silt lanes from
+                    // blowing out under the low key.
+                    // +0.146 recentres the composite to ZERO MEAN over the baked sheet (measured:
+                    // act/dep/varn means 0.203/0.080/0.373) — without it the varnish term wins on
+                    // average and the WHOLE floor quietly drops ~8% out of its luma budget.
+                    float eLum = ev.g * 0.85 + ev.r * 0.30 - varn * 0.95 + 0.146;
+                    col *= clamp(1.0 + eLum * dlRugEroLuma * g8, 0.68, 1.32);
+                    // Hue split at near-constant value: patina pulls brown-grey (cool), silt
+                    // pulls pale-warm. Multiplicative, so per-texel chroma ratios survive.
+                    vec3 eHue = mix(vec3(1.0), vec3(0.90, 0.87, 0.84), clamp(varn * 1.15, 0.0, 1.0) * dlRugEroHue * g8);
+                    eHue *= mix(vec3(1.0), vec3(1.05, 1.02, 0.96), clamp(ev.g * 1.25, 0.0, 1.0) * dlRugEroHue * g8);
+                    col *= eHue;
+                }
+                ` : ''}
+            }
+            ` : ''}
             col = mix(col, col * 0.9, fine * 0.3);
             col = mix(col, dlGravel * 1.9, gravel * 0.34);
             // Scorched, blast-darkened ground in patches — this is a fought-over depot. Kept light:
             // the sand is the only large bright surface in the frame and the thing that separates
             // dark enemy silhouettes from the background, so darkening it costs combat readability.
             col = mix(col, col * vec3(0.62, 0.58, 0.58), smoothstep(0.74, 0.96, dl_fbm(vec3(p * 0.13, 30.0))) * 0.45);
+
+            // SLOPE LAYER — exposed hardpan on the faces too steep to hold sand.
+            //
+            // This is the splatmap idea from three-landscape with the splat map deleted: on a
+            // heightfield the surface normal already carries the information a hand-painted splat
+            // would, and deriving the mask from it costs nothing, needs no second UV set (this mesh
+            // has none at all) and cannot fall out of sync with the terrain when the layout changes.
+            //
+            // The thresholds are the gameplay ones, not arbitrary. PlayerControls auto-slides
+            // anything past ~34 degrees and rejects uphill past ~36, so the band where rock takes
+            // over is exactly the band the player cannot stand on. That makes the material read an
+            // honest promise about footing: if it looks like bare rock, you will slide off it.
+            //   slope = 1 - cos(angle):  34deg -> 0.17,  53deg -> 0.40
+            float slope = 1.0 - clamp(normalize(dlWorldNrm).y, 0.0, 1.0);
+            float rock = smoothstep(0.17, 0.40, slope);
+            // Warm stone, not the cold PALETTE.stoneDark used for distant ridges: a neutral-dark
+            // cliff this close reads as a hole in the frame and gives enemy silhouettes somewhere
+            // to disappear into. It keeps a sand undertone so it belongs to this desert.
+            //
+            // Luminance ~0.38 against the sand's 0.66. That gap has to be this wide to survive the
+            // tonemapper — an earlier 0.52 was only 21% down and vanished completely on any
+            // sun-facing slope, where ACES pushes everything to near-white and a small albedo
+            // difference simply stops existing. Affordable because the slope layer covers ~9% of
+            // the terrain and only the faces too steep to stand on, so it never becomes the
+            // background a silhouette has to read against.
+            vec3 rockCol = dlGravel * 1.7 + dlSandDark * 0.22;
+            // Broken up so the transition is a ragged scree edge rather than a clean contour band.
+            float rockNoise = dl_fbm(vec3(p * 0.7, 21.0)) * 0.5 + 0.5;
+            col = mix(col, rockCol * (0.75 + rockNoise * 0.5), rock * 0.80);
+
             diffuseColor.rgb = col;
-            roughnessFactor = clamp(0.99 - gravel * 0.18, 0.5, 1.0);
+            // Wind-packed rock scatters less than loose sand, so it comes down off the near-1.0
+            // roughness the dunes sit at. Small, but it is what catches the low key along a scarp
+            // edge and separates a rock face from the sand above it when both are in shadow.
+            // Drainage washes pack smoother still; scoured hardpan sits between rock and sand.
+            roughnessFactor = clamp(0.99 - gravel * 0.18 - rock * 0.22${rugged ? ' - wash * 0.12 - expo * 0.06' : ''}, 0.5, 1.0);
         }
         `)
+
+        if(rugged){
+            // Apply the baked terrain AO where three applies its own aoMap — to the indirect
+            // terms only. The key light is left alone: sun through a crevice is the shadow map's
+            // job, and multiplying direct light by AO is the classic double-darkening artefact.
+            shader.fragmentShader = injectAfter(shader.fragmentShader,
+                ['#include <aomap_fragment>'], /* glsl */`
+            reflectedLight.indirectDiffuse *= dlAO;
+            reflectedLight.indirectSpecular *= dlAO;
+            `)
+        }
+
+        if(tex){
+            shader.fragmentShader = injectBefore(shader.fragmentShader, OUTPUT_ANCHOR, /* glsl */`
+            {
+                // Warm the shaded result toward the far dune sea's ochre.
+                //
+                // A MULTIPLICATIVE tint, not a mix toward a fixed hue. Mixing chromaticity toward a
+                // constant target is the obvious form, but at the strength this needs (~0.9) it
+                // drags almost every pixel onto one hue and flattens the per-texel chroma the
+                // albedo block works to keep — the grey pebbles go orange along with the sand.
+                // Scaling instead preserves the RATIOS between pixels, so the pebbles stay
+                // relatively cooler than the sand they sit in while everything warms together.
+                //
+                // Renormalised back to the original luminance, so this is hue-only by construction
+                // and cannot quietly darken the sand out of its readability budget.
+                float l = max(dot(outgoingLight, dlLuma), 1e-4);
+                vec3 warm = dlTexMean / max(dot(dlTexMean, dlLuma), 1e-4);
+                vec3 c = outgoingLight * mix(vec3(1.0), warm, dlGroundWarm);
+                outgoingLight = c * (l / max(dot(c, dlLuma), 1e-4));
+            }
+            `)
+        }
 
         material.userData.dlShader = shader
     }

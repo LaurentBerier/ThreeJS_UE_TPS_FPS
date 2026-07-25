@@ -263,12 +263,69 @@ export function SpineQuery(x, z){
 }
 
 // ---------------------------------------------------------------------------------------------
+// Rugged erosion detail — the geometry band baked from the "Dark Alien Landscape" 16-bit
+// height map (tools/terrain_prep). A 257² grid of ±1 values holding everything the heightfield
+// grid can represent MINUS the pack's own macro shape, so it adds real hydraulic-erosion texture
+// (gully networks, scarps, spurs) without fighting the authored layout above.
+//
+// The field is injected into the ENVIRONMENT term of HeightOf, before the trail lerp and the
+// arena stamps — so the corridor the player walks, the combat pockets and the vista-cone ceiling
+// all suppress it exactly as they suppress the dunes. A whisper of it (TRAIL_AMP) is added after
+// the blend so the worn trail still reads as ground, not as extruded plastic.
+//
+// Loaded by entry.js before the terrain builds (SetRuggedDetail). Missing asset => zero detail
+// => byte-identical to the pre-rugged terrain. Deterministic: the asset is a fixed file.
+// ---------------------------------------------------------------------------------------------
+const RUGGED = {
+    data: null, n: 0,
+    ENV_AMP: 3.2,     // metres of relief the ±1 field gets in the open environment
+    TRAIL_AMP: 0.15,  // metres kept ON the trail/arenas (underfoot texture, physics-safe)
+}
+export function SetRuggedDetail(f32, n){ RUGGED.data = f32; RUGGED.n = n }
+
+// The same detail field extended past the world edge by MIRROR tiling — for FarWorld, whose dune
+// sea must speak the same erosion language or the fence line reads as a seam between two maps.
+// Inside the world square this returns exactly rugAt; the fold is continuous at every boundary
+// (and matches the MirroredRepeatWrapping the rugged textures use, so far geometry and far
+// texture stay registered with each other).
+export function RugDetailTiled(x, z){
+    if(!RUGGED.data){ return 0 }
+    const fold = (v) => {
+        const t = (v + WORLD.half) / (WORLD.size * 2)
+        const m = (t - Math.floor(t)) * 2
+        return (m < 1 ? m : 2 - m) * WORLD.size - WORLD.half
+    }
+    return rugAt(fold(x), fold(z))
+}
+function rugAt(x, z){
+    if(!RUGGED.data){ return 0 }
+    const N = RUGGED.n
+    let u = (x + WORLD.half) / WORLD.size * (N - 1)
+    let v = (z + WORLD.half) / WORLD.size * (N - 1)
+    u = Math.max(0, Math.min(N - 1, u)); v = Math.max(0, Math.min(N - 1, v))
+    const i0 = Math.floor(u), j0 = Math.floor(v)
+    const i1 = Math.min(i0 + 1, N - 1), j1 = Math.min(j0 + 1, N - 1)
+    const fu = u - i0, fv = v - j0
+    const d = RUGGED.data
+    const a = d[j0 * N + i0], b = d[j0 * N + i1], c = d[j1 * N + i0], e = d[j1 * N + i1]
+    return lerp(lerp(a, b, fu), lerp(c, e, fu), fv)
+}
+
+// ---------------------------------------------------------------------------------------------
 // The height function. Composed as: authored TRAIL blended into an ENVIRONMENT field (dunes +
-// castle hill + start scarp + edge walls), then the arena FLATS stamped on top, then the rim fade.
+// rugged erosion detail + castle hill + start scarp + edge walls), then the arena FLATS stamped
+// on top, then the rim fade.
 // ---------------------------------------------------------------------------------------------
 const VISTA_BRG = Math.atan2(CASTLE.x - 150, CASTLE.z - 258)   // overlook -> castle bearing
 
-export function HeightOf(x, z){
+export function HeightOf(x, z){ return _heightAndWeight(x, z, null) }
+
+// The shared implementation. When `w` is passed it receives the DETAIL WEIGHT: what fraction of
+// the full environment-strength rugged detail survived the trail lerp / arena stamps / rim fade
+// at this point. The ground shader scales its sub-grid residual normal map by the same weight, so
+// the LOOK of fine erosion always matches the geometry that is actually there (a smoothed arena
+// floor gets neither bumps nor bump-shading).
+function _heightAndWeight(x, z, w){
     const q = SpineQuery(x, z)
 
     // --- Environment field ------------------------------------------------------------------
@@ -302,6 +359,11 @@ export function HeightOf(x, z){
 
     let env = dunes * (1 - hillT * 0.75) + hill + scarp + edge
 
+    // Rugged erosion detail rides the environment, so every later stage (vista ceiling, trail
+    // lerp, arena stamps, rim fade) disciplines it exactly as it does the dunes.
+    const rug = rugAt(x, z)
+    env += rug * RUGGED.ENV_AMP
+
     // The OPENING VISTA is load-bearing level design: a cone of terrain from the overlook toward
     // the castle is held under a descending ceiling, so the first frame of the game always shows
     // the full silhouette — golden light, dune sea, fortress — with nothing standing in the shot.
@@ -310,8 +372,10 @@ export function HeightOf(x, z){
     const brg = Math.atan2(x - 150, z - 258)
     const dBrg = Math.abs(((brg - VISTA_BRG + Math.PI * 3) % (Math.PI * 2)) - Math.PI)
     const cone = smoothstep(0.42, 0.22, dBrg) * smoothstep(15, 28, rS) * (1 - smoothstep(120, 170, rS))
+    let coneCut = false
     if(cone > 0){
         const ceiling = 32.5 - (rS - 15) * 0.09
+        coneCut = env > ceiling
         env = lerp(env, Math.min(env, ceiling), cone)
     }
 
@@ -326,11 +390,21 @@ export function HeightOf(x, z){
     const k = smoothstep(q.w * 0.6, q.w + 16, q.d)
     let h = lerp(pathH, env + bund, k)
 
+    // On the corridor itself the env detail is lerped away with the dunes; put back a whisper so
+    // the trodden path still carries erosion texture underfoot. TRAIL_AMP is small enough that the
+    // added grade is well inside the slide-physics envelope (verified by the route-slope probe).
+    h += rug * RUGGED.TRAIL_AMP * (1 - k)
+
+    // Fraction of full-strength detail present at this point — tracked through every stage below
+    // that suppresses relief, and consumed by the ground shader to scale the residual normal map.
+    let dw = k + (RUGGED.TRAIL_AMP / RUGGED.ENV_AMP) * (1 - k)
+    if(coneCut){ dw *= 1 - cone * 0.7 }
+
     // --- Arena flats ----------------------------------------------------------------------------
     for(const f of FLATS){
         const d = Math.hypot(x - f.x, z - f.z)
         const kf = 1 - smoothstep(f.r - f.feather, f.r, d)
-        if(kf > 0){ h = lerp(h, f.h + (fbm(x * 0.13, z * 0.13) - 0.5) * 0.25, kf) }
+        if(kf > 0){ h = lerp(h, f.h + (fbm(x * 0.13, z * 0.13) - 0.5) * 0.25, kf); dw *= 1 - kf }
     }
 
     // --- Fine grain + rim fade ------------------------------------------------------------------
@@ -338,24 +412,150 @@ export function HeightOf(x, z){
     // cell frequency aliases into per-vertex jitter, which the grazing key light turns into a
     // checkerboard of facet normals. Sub-metre sand detail belongs to the shader ripples instead.
     h += (fbm(x * 0.16 + 40, z * 0.16) - 0.5) * 0.18
-    if(eDist < 14){ h = lerp(WORLD.rim, h, smoothstep(0, 14, eDist)) }
+    if(eDist < 14){ const t = smoothstep(0, 14, eDist); h = lerp(WORLD.rim, h, t); dw *= t }
+    if(w){ w.value = Math.max(0, Math.min(1, dw)) }
     return h
 }
 
+// ---------------------------------------------------------------------------------------------
+// Erosion post-pass over the COMPOSITED heightfield. The baked detail brings real erosion
+// *texture*, but the seams between authored shapes (bunds, scarp, hill) and that detail still
+// read hand-placed. A short simulation over the final grid ties them together: droplets carve
+// consistent gullies and leave deposits along the paths water would actually take on THIS
+// terrain, and a talus pass relaxes over-steep spikes to a natural angle of repose.
+//
+// Gameplay safety, by construction:
+//   * every height change is scaled by the detail-weight mask, which is ~0 on the trail
+//     corridor, the arena floors and the drop-in lip — the walkable surface cannot drift;
+//   * the arena FLATS and the rim fade are re-stamped EXACTLY after the sim (belt+braces);
+//   * fully deterministic (fixed-seed LCG, fixed iteration order) — same world every load.
+// ---------------------------------------------------------------------------------------------
+const ERODE = {
+    DROPLETS: 26000, STEPS: 38,
+    ERODE_K: 0.35, DEPOSIT_K: 0.30, CAPACITY_K: 2.2, EVAP: 0.02, INERTIA: 0.6,
+    THERMAL_ITERS: 10, TALUS_DEG: 48, THERMAL_K: 0.22,
+}
+function _erodeHeights(h, mask, N){
+    const cell = WORLD.size / (N - 1)
+    let seed = 0xC0FFEE
+    const rand = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296 }
+    const hAt = (x, y) => {
+        const xi = Math.floor(x), yi = Math.floor(y)
+        const fx = x - xi, fy = y - yi
+        const a = h[yi * N + xi], b = h[yi * N + xi + 1]
+        const c = h[(yi + 1) * N + xi], d = h[(yi + 1) * N + xi + 1]
+        return lerp(lerp(a, b, fx), lerp(c, d, fx), fy)
+    }
+
+    // Hydraulic droplets: momentum-carrying particles that erode below capacity and deposit
+    // above it. Per-step depth is capped so a single droplet can never dig a spike.
+    for(let d = 0; d < ERODE.DROPLETS; d++){
+        let x = 1 + rand() * (N - 3), y = 1 + rand() * (N - 3)
+        let vx = 0, vy = 0, water = 1, sed = 0
+        for(let s = 0; s < ERODE.STEPS; s++){
+            const xi = Math.floor(x), yi = Math.floor(y)
+            const gx = (hAt(x + 1, y) - hAt(x - 1, y)) / (2 * cell)
+            const gz = (hAt(x, y + 1) - hAt(x, y - 1)) / (2 * cell)
+            vx = vx * ERODE.INERTIA - gx * (1 - ERODE.INERTIA)
+            vy = vy * ERODE.INERTIA - gz * (1 - ERODE.INERTIA)
+            const len = Math.hypot(vx, vy)
+            if(len < 1e-5){ break }
+            const nx = x + vx / len, ny = y + vy / len
+            if(nx < 1 || ny < 1 || nx >= N - 2 || ny >= N - 2){ break }
+            const dh = hAt(nx, ny) - hAt(x, y)
+            const w = mask[yi * N + xi] / 255
+            const idx = yi * N + xi
+            if(dh > 0){
+                // Ran into rising ground: drop the load into the pit and stop.
+                h[idx] += Math.min(sed, dh) * w
+                break
+            }
+            const slope = -dh / cell
+            const cap = Math.max(0.01, ERODE.CAPACITY_K * slope) * water
+            if(sed > cap){
+                const dep = (sed - cap) * ERODE.DEPOSIT_K * w
+                h[idx] += dep; sed -= dep
+            }else{
+                const ero = Math.min((cap - sed) * ERODE.ERODE_K, cell * 0.08) * w
+                h[idx] -= ero; sed += ero
+            }
+            x = nx; y = ny
+            water *= 1 - ERODE.EVAP
+        }
+    }
+
+    // Thermal talus: any face steeper than the repose angle sheds material downhill. Weighted by
+    // BOTH cells' masks, so corridor walls facing the trail keep their authored profile.
+    const maxDh = Math.tan(ERODE.TALUS_DEG * Math.PI / 180) * cell
+    for(let it = 0; it < ERODE.THERMAL_ITERS; it++){
+        for(let j = 0; j < N - 1; j++){
+            for(let i = 0; i < N - 1; i++){
+                const c = j * N + i
+                for(const n of [c + 1, c + N]){
+                    const dh = h[c] - h[n]
+                    const w = Math.min(mask[c], mask[n]) / 255
+                    if(dh > maxDh){
+                        const q = (dh - maxDh) * ERODE.THERMAL_K * w
+                        h[c] -= q; h[n] += q
+                    }else if(dh < -maxDh){
+                        const q = (-dh - maxDh) * ERODE.THERMAL_K * w
+                        h[c] += q; h[n] -= q
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Build the raw heightfield Terrain consumes (opts.heights): absolute world heights, row-major,
-// gridN x gridN over the WORLD footprint.
+// gridN x gridN over the WORLD footprint. The same pass records the detail-weight mask (one byte
+// per cell) for the ground shader — see _heightAndWeight.
+let MASK = null
 export function BuildHeights(){
     const N = WORLD.gridN
     const heights = new Float32Array(N * N)
+    MASK = new Uint8Array(N * N)
     const min = -WORLD.half, size = WORLD.size
+    const w = { value: 0 }
     for(let j = 0; j < N; j++){
         const z = min + (j / (N - 1)) * size
         for(let i = 0; i < N; i++){
             const x = min + (i / (N - 1)) * size
-            heights[j * N + i] = HeightOf(x, z)
+            heights[j * N + i] = _heightAndWeight(x, z, w)
+            MASK[j * N + i] = Math.round(w.value * 255)
+        }
+    }
+
+    // Tie authored shapes and baked detail together (no-op when the detail asset is absent —
+    // eroding the ORIGINAL smooth terrain would change the shipped look for nothing).
+    if(RUGGED.data){
+        _erodeHeights(heights, MASK, N)
+        // Re-stamp the arena flats and the rim fade EXACTLY as _heightAndWeight authored them,
+        // so combat floors and the world edge are bit-identical whether or not erosion ran.
+        for(let j = 0; j < N; j++){
+            const z = min + (j / (N - 1)) * size
+            for(let i = 0; i < N; i++){
+                const x = min + (i / (N - 1)) * size
+                let hh = heights[j * N + i]
+                for(const f of FLATS){
+                    const d = Math.hypot(x - f.x, z - f.z)
+                    const kf = 1 - smoothstep(f.r - f.feather, f.r, d)
+                    if(kf > 0){ hh = lerp(hh, f.h + (fbm(x * 0.13, z * 0.13) - 0.5) * 0.25, kf) }
+                }
+                const eDist = WORLD.half - Math.max(Math.abs(x), Math.abs(z))
+                if(eDist < 14){ hh = lerp(WORLD.rim, hh, smoothstep(0, 14, eDist)) }
+                heights[j * N + i] = hh
+            }
         }
     }
     return heights
+}
+
+// The detail-weight mask, same row-major/world mapping as the heights. Consumed by DesertSurfaces
+// as a DataTexture so the shader's residual normals track the geometry's surviving detail 1:1.
+export function GetDetailMask(){
+    if(!MASK){ BuildHeights() }
+    return { data: MASK, n: WORLD.gridN }
 }
 
 // Terrain constructor options for the journey world (see Terrain.js — heights bypasses the image).

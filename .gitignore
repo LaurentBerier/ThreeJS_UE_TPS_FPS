@@ -16,3 +16,6 @@ mechanics.json
 
 # Claude Code local runtime
 .claude/
+
+# Large local project archive (203 MB; over GitHub's 100 MB file limit) — kept local, out of git
+/The BLACK HIVE PROJECT.zip

@@ -134,6 +134,21 @@ export default class PlayerBody extends Component{
         this.slideLandFade = 0.12;     // legs -> jog when the slide ends still moving (anti-skate, like the roll)
         this.slideUpperBlendOut = 0.45;// torso + gun arms -> idle gun-hold (ease the rifle back up)
         this.slideUpperLead = 0.6;     // gun recovery begins ~0.6s before the clip end
+        // --- SLIDE as three phases (stand->slide / slide LOOP / slide->stand) cut out of the one slide
+        // clip by time. A sustained downhill slide can run far longer than one clip, so while PlayerControls
+        // reports the slide is still sustaining, UpdateRoll LOOPS the middle "glide" section so the avatar
+        // stays in the slide the whole way down instead of standing up early. The drop-in plays once first;
+        // the stand-up tail plays once the slope eases. Loop bounds are FRACTIONS of the clip, resolved to
+        // clip-seconds in SetupAnimations; keep them inside the flat held-glide region so the wrap is seamless.
+        this.slideLoopStartFrac = 0.34;   // drop-in ends / loopable glide begins
+        this.slideLoopEndFrac   = 0.60;   // glide ends / stand-up begins
+        this._slideLoopStart = 0;         // resolved clip-time bounds (SetupAnimations)
+        this._slideLoopEnd   = 0;
+        // The glide section is NOT static (the clip's 1st/last frames differ ~237°), so wrapping it
+        // pops. Instead PING-PONG it (play forward to loopEnd, then REVERSE to loopStart, repeat) — a
+        // palindrome, which is seamless because the reverse returns to the exact start pose. _slideLoopDir
+        // is the current playback sign; negative = the reverse leg (driven via the action's timeScale).
+        this._slideLoopDir = 1;
         // --- GROUND-TOPOLOGY CONFORM (slide + land-roll). While a ground move owns the body the legs
         // follow the clip (FootIK is off), so the avatar would slide/roll along a FLAT plane through a
         // slope. This pass raycasts the terrain under the body each frame and (a) height-locks the
@@ -615,8 +630,17 @@ export default class PlayerBody extends Component{
         // The head tracks the aim point CONTINUOUSLY in TPS (not only while aiming) so the character
         // visibly looks where the camera looks, and FASTER than the gun (the weapon IK eases at ~12)
         // so the gaze leads — the head snaps onto the target and the gun follows, like a real shooter.
-        this.headAimLerp = 16;                           // ease rate (1/s) for the look in/out
-        this.maxHeadAimAngle = THREE.MathUtils.degToRad(70); // clamp so the head can't wring the neck
+        this.headAimLerp = 16;                           // ease rate (1/s) for the look BLEND in/out (TPS<->FPS)
+        this.maxHeadAimAngle = opts.maxHeadAimAngle ?? THREE.MathUtils.degToRad(48); // neck clamp on the look
+        // Small tracking LAG: the head chases a LOW-PASSED crosshair direction, so the gaze trails a fast
+        // camera whip by ~1/headAimTrackLerp seconds instead of snapping rigidly onto it — the "small lag".
+        this.headAimTrackLerp = opts.headAimTrackLerp ?? 9;   // 1/s (~0.11 s lag)
+        // Overall UP-tilt bias on the gaze (the rig reads as looking down a touch too much by default,
+        // so lift the whole look): added to the smoothed gaze's world +Y before the look-at, so a level
+        // crosshair still tips the head up by ~atan(bias). ~0.20 ≈ 11°.
+        this.headAimUpBias = opts.headAimUpBias ?? 0.20;
+        this._headGazeSmooth = new THREE.Vector3(0, 0, -1);   // low-passed desired gaze (world dir)
+        this._headGazeSeeded = false;
         this.headAimVisualForward = (opts.headAimVisualForward || new THREE.Vector3(0, 0, 1)).clone().normalize();
         this.headPoseOffset = opts.headPoseOffset ? opts.headPoseOffset.clone().normalize() : new THREE.Quaternion();
         this._hasHeadPoseOffset = Math.abs(1 - this.headPoseOffset.w) > 1e-6
@@ -656,6 +680,42 @@ export default class PlayerBody extends Component{
         this._headYawQ = new THREE.Quaternion();
         this._headPitchAxis = new THREE.Vector3(1, 0, 0);
         this._headPitchQ = new THREE.Quaternion();
+
+        // Keep-the-head-VERTICAL mode (alien rig). When set to a follow fraction (0..1), UpdateHeadAim keeps
+        // the tracked gaze horizontal (yaw-only follow) and _levelHeadPitch sets the head's pitch to this
+        // fraction of the aim pitch — so the head holds essentially upright instead of nodding forward with
+        // the crouch/animation. 0 = dead level; ~0.2 = mostly level with a slight follow. null => off (legacy
+        // pitch-follow + up-bias for other rigs).
+        this.headAimPitchFollow = opts.headAimPitchFollow ?? null;
+        this._headLvlGaze = new THREE.Vector3();
+        this._headLvlAxis = new THREE.Vector3();
+        this._headLvlQ = new THREE.Quaternion();
+        this._headLvlUp = new THREE.Vector3(0, 1, 0);
+        // Untilt (roll-level) support: the head-local axis that points along world-up at bind
+        // (captured in Initialize beside _headFwdLocal) + scratch for the projected up vectors.
+        this._headUpLocal = null;
+        this._headLvlUpCur = new THREE.Vector3();
+        this._headLvlUpDes = new THREE.Vector3();
+
+        // Foot LEVEL correction (rig-specific): target metatarsal pitch (rad below horizontal) for FootIK's
+        // whole-foot level pass, which lifts the alien rig's plantar-flexed ("dangling", toe-down) idle foot
+        // flat onto the ground. null => off, so the mannequin/soldier (whose clip lands flat) are untouched.
+        // NOTE: inert while keepClipFootOrient is on (the whole conform stage is skipped) — kept for rigs
+        // that DO want the level pass without dropping the rest of the terrain-orientation conform.
+        this.footLevelPitch = opts.footLevelPitch ?? null;
+        // KEEP-CLIP FOOT ORIENTATION (rig-specific). When true, FootIK still IK's the legs to plant the
+        // ankles at the terrain height, but does NOT rotate the feet to the ground at all — the foot bone
+        // keeps the animation clip's orientation. Set for the alien player rig, whose retargeted foot made
+        // the terrain-conform passes read as crooked/twisted feet. null/false => the full conform runs.
+        this.keepClipFootOrient = opts.keepClipFootOrient ?? false;
+        // DEFAULT foot pitch offset (rad, + = toe DOWN) for FootIK's fixed toe-down pitch — points the resting
+        // foot further down on a rig whose clip foot reads too flat/toe-up. null => off. See FootIK.footPitchOffset.
+        this.footPitchOffset = opts.footPitchOffset ?? null;
+        // SUPPORT (left) HAND grip nudge, in METRES along the CHARACTER's own axes: x = the character's LEFT,
+        // y = up, z = forward. Slides the support hand along the weapon from the socket the rifle clips
+        // captured, for a gun whose foregrip doesn't sit where the clips' did. null => off (the captured
+        // socket stands). See WeaponAimIK.LeftHandBodyOffset for the why and the exact semantics.
+        this.leftHandOffset = opts.leftHandOffset ?? null;
     }
 
     SetupAnimations(){
@@ -673,6 +733,14 @@ export default class PlayerBody extends Component{
             const clip = this.clips[name];
             if(!clip){ return; }
             const { upper, lower } = splitClipByBones(clip, upperBones);
+            // The authored crouch-idle clip does NOT loop perfectly — its last keyframe differs slightly
+            // from its first, so every LoopRepeat wrap snaps the pose. Standing idle rides the same
+            // head-aim additive on top, but the crouch clip's seam is the one that read as a periodic
+            // HEAD JERK every clip length while crouched (the head-aim delta sits on top of the animated
+            // head, so the base-pose snap shows straight through). Zero the seam on BOTH layers (operates
+            // on the freshly-split clones, so the shared source clip — and any other rig using it — is
+            // untouched) so the crouch pose loops cleanly and the head holds steady. See makeClipSeamlessLoop.
+            if(name === 'crouchIdle'){ makeClipSeamlessLoop(upper); makeClipSeamlessLoop(lower); }
             this.lowerActions[name] = this.mixer.clipAction(lower);
             this.upperActions[name] = this.mixer.clipAction(upper);
         });
@@ -729,6 +797,9 @@ export default class PlayerBody extends Component{
             this.lowerActions['slide'] = lo;
             this.upperActions['slide'] = up;
             this._slideDuration = slideClip.duration;
+            // Resolve the loop bounds (see the slide-phase config) now that the clip length is known.
+            this._slideLoopStart = this._slideDuration * this.slideLoopStartFrac;
+            this._slideLoopEnd   = this._slideDuration * this.slideLoopEndFrac;
         }
 
         // reload/shoot are UPPER-body overlays that layer over the torso while the legs keep their
@@ -826,7 +897,11 @@ export default class PlayerBody extends Component{
             this.headBone.getWorldQuaternion(this._headWorldQ);
             // headRel = root⁻¹ · head (head orientation in modelRoot-local space); local fwd = headRel⁻¹ · (+Z).
             const headRel = new THREE.Quaternion().copy(rootWQ).invert().multiply(this._headWorldQ);
-            this._headFwdLocal = this.headAimVisualForward.clone().applyQuaternion(headRel.invert()).normalize();
+            headRel.invert();   // now maps modelRoot-local axes into head-bone-local space
+            this._headFwdLocal = this.headAimVisualForward.clone().applyQuaternion(headRel).normalize();
+            // Head-local UP (modelRoot +Y at bind): carried by the live head world quat it yields the
+            // head's true world up-axis, so the untilt pass can measure + remove the residual ROLL.
+            this._headUpLocal = new THREE.Vector3(0, 1, 0).applyQuaternion(headRel).normalize();
         }
 
         // Pelvis (hips) for proximity stabilization; seed the settled-pose reference from its bind.
@@ -865,6 +940,9 @@ export default class PlayerBody extends Component{
             // Commit the FPS support (left) elbow firmly onto its raised left pole so it bends the right
             // way while ADS (the shared TPS stabilize is gentler). FPS-only via the dual-hand path.
             this.weaponAimIK.supportElbowStabilizeDual = this.fpsSupportElbowStabilize;
+            // Rig/weapon fit: slide the support hand along the gun (body-relative metres) so it wraps the
+            // foregrip of the weapon actually equipped, not the one the rifle clips were authored against.
+            if(this.leftHandOffset){ this.weaponAimIK.LeftHandBodyOffset.copy(this.leftHandOffset); }
         }
 
         // Procedural foot/terrain IK (legs). Raycasts the level under each foot and plants the ankles +
@@ -873,7 +951,33 @@ export default class PlayerBody extends Component{
         // PlayerPhysics component holds it (set in its constructor, so it's available here).
         const physics = this.GetComponent('PlayerPhysics');
         this._physicsWorld = physics ? physics.world : null;   // for the weapon-aim muzzle wall-clearance sweep
-        this.footIK = new FootIK(this.model, this.modelRoot, this._physicsWorld);
+        // Measure the rig's TRUE ankle rest height (foot bone above the sole plane) from the BIND pose —
+        // the bones are still untouched here (no mixer update has run) and the bind pose stands flat-
+        // footed with its soles on the model origin plane, so footY - rootY IS the rig constant. Passed
+        // to FootIK as the authoritative ankle rest: its runtime calibration observes the live idle CLIP
+        // instead, and the alien rig's idle dangles the feet toe-down (ankles HIGH), so the observed
+        // minimum baked an inflated rest and every plant targeted the ankles ABOVE the ground — the
+        // whole body (and the leveled soles) visibly FLOATED off the terrain.
+        this.modelRoot.updateMatrixWorld(true);
+        let bindAnkleRest = null;
+        {
+            const rootPos = new THREE.Vector3().setFromMatrixPosition(this.modelRoot.matrixWorld);
+            const fp = new THREE.Vector3();
+            this.model.traverse(o => {
+                if(o.isBone && (o.name === 'foot_l' || o.name === 'foot_r')){
+                    o.getWorldPosition(fp);
+                    const h = fp.y - rootPos.y;
+                    bindAnkleRest = bindAnkleRest == null ? h : Math.min(bindAnkleRest, h);
+                }
+            });
+        }
+        const footOpts = this.footLevelPitch != null
+            ? { footLevelStrength: 1, footLevelPitch: this.footLevelPitch } : {};
+        if(bindAnkleRest != null){ footOpts.ankleRest = bindAnkleRest; }
+        // Alien rig: keep the clip's foot orientation, IK only the leg height (see keepClipFootOrient).
+        if(this.keepClipFootOrient){ footOpts.conformFootOrient = false; }
+        if(this.footPitchOffset != null){ footOpts.footPitchOffset = this.footPitchOffset; }
+        this.footIK = new FootIK(this.model, this.modelRoot, this._physicsWorld, footOpts);
 
         // --- Per-camera-mode in-hand grip. The AK is the SAME mesh in both modes (FPS rides the head
         // bone, so first-person shows THIS body's gun), but the framing differs, so each mode gets its
@@ -996,6 +1100,7 @@ export default class PlayerBody extends Component{
         this.rolling = true;
         this._moveType = type;
         this._moveActionKey = key;
+        this._slideLoopDir = 1;   // slide starts playing forward (into the glide); ping-pong begins at loopEnd
         // Per-move tuning: a slide GLIDES (longer clip, gun recovers earlier); the land-roll tumbles like
         // the old dodge. Cached here so UpdateRoll / EndRoll stay generic.
         const slide = type === 'slide';
@@ -1052,6 +1157,36 @@ export default class PlayerBody extends Component{
         if(!lo){ this.rolling = false; this.ResetAimPoseAccumulators(); return; }
         const dur = lo.getClip().duration;
 
+        // SLIDE LOOP (the middle of the three slide phases). While PlayerControls reports the slide is
+        // still SUSTAINING (riding a slope longer than one clip), PING-PONG the glide section on BOTH
+        // layers so the avatar stays in the slide the whole way down instead of standing up after one
+        // clip length. Ping-pong (forward to loopEnd, REVERSE to loopStart, repeat) is a palindrome, so
+        // it loops SEAMLESSLY — the reverse returns to the exact start pose, no wrap pop (the glide is
+        // NOT static). The drop-in (0.._slideLoopStart) plays once first (forward), then we start
+        // bouncing. When the slope eases (sustain false) we fall through — but first make sure playback
+        // is FORWARD again so the stand-up tail plays out, then EndRoll. Land-roll / flat slide never
+        // sustain, so they play straight through as before.
+        const up = this.upperActions[this._moveActionKey];
+        if(this._moveType === 'slide' && this._slideLoopEnd > this._slideLoopStart
+           && this.playerControls && this.playerControls._slideSustaining){
+            if(this._slideLoopDir > 0 && lo.time >= this._slideLoopEnd){
+                this._slideLoopDir = -1;                                   // hit the top: reverse
+                lo.setEffectiveTimeScale(-this._moveTimeScale);
+                if(up){ up.setEffectiveTimeScale(-this._moveTimeScale); }
+            }else if(this._slideLoopDir < 0 && lo.time <= this._slideLoopStart){
+                this._slideLoopDir = 1;                                    // back at the start: forward
+                lo.setEffectiveTimeScale(this._moveTimeScale);
+                if(up){ up.setEffectiveTimeScale(this._moveTimeScale); }
+            }
+            return;   // never hand off the torso or end the move while the slide is still sustaining
+        }
+        // Left the loop (slope eased): restore FORWARD playback so the stand-up tail plays to the end.
+        if(this._slideLoopDir < 0){
+            this._slideLoopDir = 1;
+            lo.setEffectiveTimeScale(this._moveTimeScale);
+            if(up){ up.setEffectiveTimeScale(this._moveTimeScale); }
+        }
+
         // Early UPPER-body hand-off: torso + gun arms blend to the following anim well before the end.
         if(!this._upperBlendStarted && lo.time >= dur - this._moveUpperLead){
             this.StartUpperRollBlend();
@@ -1087,6 +1222,7 @@ export default class PlayerBody extends Component{
         this._runAimYawValue = 0;
         this._hipAimYawValue = 0;
         this.headAimWeight = 0;
+        this._headGazeSeeded = false;   // re-seed the head-aim gaze low-pass from the live crosshair post-roll
         this._hipStab = 0;
         this._hipRefSeeded = false;
         this._aimIdleStab = 0;          // re-ease the steady-aim settle in from scratch after a roll
@@ -2453,87 +2589,132 @@ export default class PlayerBody extends Component{
     UpdateHeadAim(t){
         if(!this.headBone || !this.playerControls){ return; }
         const pc = this.playerControls;
-        // Keep the animation's head pose as the baseline, then add a restrained local aim offset.
-        // Yaw follows the camera/body delta a little, but fades out before the near-180-degree
-        // front/back case that makes the neck fold. Pitch stays tiny and deadzoned around level.
-        const pitch = (this.cameraMode === 'TPS' && pc.angles) ? pc.angles.x : 0;
-        const deadzone = this.headPitchDeadzone ?? THREE.MathUtils.degToRad(30);
-        const maxCamera = this.headPitchMaxCamera ?? THREE.MathUtils.degToRad(85);
-        const maxAngle = this.headPitchMaxAngle ?? THREE.MathUtils.degToRad(7);
-        const axisSign = this.headPitchAxisSign ?? -1;
-        const span = Math.max(1e-5, maxCamera - deadzone);
-        const tPitch = THREE.MathUtils.clamp((Math.abs(pitch) - deadzone) / span, 0, 1);
-        const eased = tPitch * tPitch * (3 - 2 * tPitch);
 
-        let yawDelta = 0;
-        if(this.cameraMode === 'TPS' && pc.angles && this._bodyYaw !== null){
-            const lookYaw = pc.angles.y + this.yawOffset;
-            yawDelta = Math.atan2(Math.sin(lookYaw - this._bodyYaw), Math.cos(lookYaw - this._bodyYaw));
-        }
-        const absYaw = Math.abs(yawDelta);
-        const yawInputMax = Math.max(1e-5, this.headAimYawInputMax ?? THREE.MathUtils.degToRad(95));
-        const yawFalloffStart = this.headAimYawFalloffStart ?? THREE.MathUtils.degToRad(115);
-        const yawFalloffEnd = this.headAimYawFalloffEnd ?? THREE.MathUtils.degToRad(165);
-        const yawFade = 1 - THREE.MathUtils.smoothstep(absYaw, yawFalloffStart, yawFalloffEnd);
-        const targetYaw = THREE.MathUtils.clamp(yawDelta / yawInputMax, -1, 1)
-            * (this.headAimYawMax ?? THREE.MathUtils.degToRad(16)) * yawFade;
-        const targetPitch = Math.sign(pitch) * maxAngle * eased * axisSign;
-        const aimEase = 1 - Math.exp(-this.headPitchLerp * t);
-
-        this.headAimYawCurrent += (targetYaw - this.headAimYawCurrent) * aimEase;
-        this.headAimPitchCurrent += (targetPitch - this.headAimPitchCurrent) * aimEase;
-
-        if(Math.abs(this.headAimYawCurrent) >= 1e-4){
-            this._headYawQ.setFromAxisAngle(this._headYawAxis, this.headAimYawCurrent);
-            this.headBone.quaternion.multiply(this._headYawQ);
-        }
-        const totalPitch = (this.headBasePitchOffset ?? 0) + this.headAimPitchCurrent;
-        if(Math.abs(totalPitch) >= 1e-4){
-            this._headPitchQ.setFromAxisAngle(this._headPitchAxis, totalPitch);
-            this.headBone.quaternion.multiply(this._headPitchQ);
-        }
-        this.headBone.updateWorldMatrix(false, false);
-        return;
+        // Ease the aim BLEND (1 in TPS where the head is visible, 0 in FPS where it's culled).
         const active = (this.cameraMode === 'TPS') ? 1 : 0;
         this.headAimWeight += (active - this.headAimWeight) * (1 - Math.exp(-this.headAimLerp * t));
-        if(this.headAimWeight < 1e-3){ return; }
+        if(this.headAimWeight < 1e-3){ this._headGazeSeeded = false; return; }
 
-        // Desired gaze = the pure crosshair DIRECTION (the FX-free look forward, pc.aimDirRaw). NOT the
-        // world aim POINT (the TPS camera is behind/beside the head, so head->point is depth/parallax-
-        // sensitive and the depth low-pass would swing the head on a near/far edge crossing), and NOT
-        // pc.aimDir (which carries the camera shake + ADS-walk wobble and would leak that into the head).
-        // A direction is depth-free; lateral tracking stays instant. (The GUN still uses the exact point.)
+        // Desired gaze = the FX-free crosshair DIRECTION (pc.aimDirRaw = pure yaw*pitch, no camera shake/
+        // ADS wobble), LOW-PASSED so the head trails a fast camera whip by ~1/headAimTrackLerp s — the
+        // small, natural lag. A direction (not the world aim POINT) is depth-free, so the head can't swing
+        // on a near/far edge crossing.
         this._headFwdDes.copy(pc.aimDirRaw || pc.aimDir);
         if(this._headFwdDes.lengthSq() < 1e-6){ return; }
         this._headFwdDes.normalize();
-
-        // Reference gaze = the head's PRE-FLINCH world-forward this frame (snapshot in Update, before
-        // hurtFlinch). It already carries the spine lean + hip twist (so the delta supplies only the
-        // residual — no double-count), but NOT the flinch (so the head-aim doesn't cancel the hit jolt).
-        // _headFwdLocal is the rest-pose gaze axis pre-seeded in Initialize, so it's always set.
-        if(this._headFwdLocal){
-            this._headFwdRef.copy(this._headFwdLocal).applyQuaternion(this._headPreFlinchWQ).normalize();
-        }else{
-            // Defensive fallback (no head bone at init): the bare body facing is correct while un-leaned.
-            this._headFwdRef.set(Math.sin(this._bodyYaw), 0, Math.cos(this._bodyYaw));
+        if(!this._headGazeSeeded){ this._headGazeSmooth.copy(this._headFwdDes); this._headGazeSeeded = true; }
+        else{ this._headGazeSmooth.lerp(this._headFwdDes, 1 - Math.exp(-this.headAimTrackLerp * t)); }
+        if(this._headGazeSmooth.lengthSq() < 1e-6){ return; }
+        this._headGazeSmooth.normalize();
+        // Pitch handling. In "keep the head VERTICAL" mode (headAimPitchFollow set — the alien rig), flatten
+        // the tracked gaze to HORIZONTAL so the look-at below supplies ONLY yaw (the head turns toward the
+        // aim but never nods with it); the head's pitch is then set explicitly by _levelHeadPitch so it holds
+        // upright regardless of the crouch/animation nod. Otherwise apply the legacy up-tilt bias.
+        if(this.headAimPitchFollow != null){
+            this._headGazeSmooth.y = 0;
+            if(this._headGazeSmooth.lengthSq() < 1e-6){ return; }
+            this._headGazeSmooth.normalize();
+        }else if(this.headAimUpBias){
+            this._headGazeSmooth.y += this.headAimUpBias; this._headGazeSmooth.normalize();
         }
 
-        // Look delta (ref -> desired), eased by the weight. Past the neck clamp the head HOLDS at its
-        // limit (s = maxAngle/ang keeps the rendered turn at exactly maxAngle while still tracking the
-        // target's AZIMUTH — no direction reversal). A SEPARATE near-180° ease drops the whole delta to 0
-        // only where the target is nearly directly behind, the one region where setFromUnitVectors' axis
-        // is unstable — so the head gives up gracefully there instead of snapping/rolling.
+        // TARGET gaze azimuth = the (smoothed) crosshair yaw, clamped in YAW SPACE to the neck limit
+        // about the BODY forward — past the clamp the head HOLDS at its limit while still tracking the
+        // target's azimuth (no reversal), and it eases back to the animated pose only when the target
+        // is nearly directly behind (following it there would wring the neck).
+        const desYaw = Math.atan2(this._headGazeSmooth.x, this._headGazeSmooth.z);
+        let dyaw = desYaw - this._bodyYaw;
+        dyaw = Math.atan2(Math.sin(dyaw), Math.cos(dyaw));   // shortest signed arc
+        const behind = THREE.MathUtils.smoothstep(Math.abs(dyaw), this.headAimAntiparallelStart, this.headAimAntiparallelEnd);
+        const targetYaw = this._bodyYaw + THREE.MathUtils.clamp(dyaw, -this.maxHeadAimAngle, this.maxHeadAimAngle);
+        // Keep-vertical mode is pure yaw (pitch is leveled right after in _levelHeadPitch); the legacy
+        // path keeps the smoothed gaze's pitch in the target so other rigs still nod with the aim.
+        const gy = this.headAimPitchFollow != null ? 0 : this._headGazeSmooth.y;
+        const gh = Math.sqrt(Math.max(0, 1 - gy * gy));
+        this._headFwdDes.set(Math.sin(targetYaw) * gh, gy, Math.cos(targetYaw) * gh);
+
+        // ABSOLUTE re-aim: rotate the head's ACTUAL animated world gaze onto that clamped target.
+        // Measuring from the actual gaze (the pre-seeded oblique-axis _headFwdLocal carried by the live
+        // head world quat — orientation-independent, so it never touches the bone's local axes) rather
+        // than the bare body-forward means any head yaw BAKED into the clip is corrected out too — the
+        // alien idle holds the head ~20° off the body, which an additive body-relative delta carried
+        // along forever (the head "never quite looked where the camera pointed"). In keep-vertical mode
+        // both vectors are flattened horizontal, so this stays a pure yaw turn (no roll injection).
+        this.headBone.getWorldQuaternion(this._headWorldQ);
+        this._headFwdRef.copy(this._headFwdLocal).applyQuaternion(this._headWorldQ);
+        if(this.headAimPitchFollow != null){ this._headFwdRef.y = 0; }
+        if(this._headFwdRef.lengthSq() < 1e-6){ return; }        // gaze near-vertical: no stable azimuth
+        this._headFwdRef.normalize();
         this._headAimQ.setFromUnitVectors(this._headFwdRef, this._headFwdDes);
-        const ang = Math.acos(THREE.MathUtils.clamp(this._headFwdRef.dot(this._headFwdDes), -1, 1));
-        let s = this.headAimWeight;
-        if(ang > this.maxHeadAimAngle){ s *= this.maxHeadAimAngle / ang; }
-        s *= 1 - THREE.MathUtils.smoothstep(ang, this.headAimAntiparallelStart, this.headAimAntiparallelEnd);
+        const s = this.headAimWeight * (1 - behind);
         this._headAimWorld.copy(this._headAimId).slerp(this._headAimQ, s);
 
         // Apply the world delta about the head's origin: newLocal = parentW^-1 * delta * parentW * old.
         this.headBone.parent.getWorldQuaternion(this._headAimPW);
         this._headAimPWInv.copy(this._headAimPW).invert();
         this._headAimLocal.copy(this._headAimPWInv).multiply(this._headAimWorld).multiply(this._headAimPW);
+        this.headBone.quaternion.premultiply(this._headAimLocal);
+        this.headBone.updateWorldMatrix(false, false);
+
+        // Keep the head VERTICAL: set its pitch explicitly so it doesn't nod forward with the crouch/clip.
+        this._levelHeadPitch();
+    }
+
+    // Hold the head UPRIGHT (alien "keep the head vertical" mode; no-op unless headAimPitchFollow is set).
+    // After the yaw-follow above, two corrections, both measured from the head's ACTUAL world axes (the
+    // pre-seeded oblique-axis _headFwdLocal/_headUpLocal applied to the head's live world quat —
+    // orientation-independent, like the yaw-follow):
+    //   (a) PITCH-level — rotate about the gaze's horizontal side axis so the gaze sits at a small
+    //       FRACTION of the aim pitch (headAimPitchFollow): essentially level, nudging a touch on a
+    //       steep up/down aim instead of nodding with the crouch/animation.
+    //   (b) UNTILT (roll-level) — rotate about the gaze itself so the head's up-axis points as
+    //       world-vertical as the gaze allows, removing the side-tilt the spine lean/clip leaves.
+    // Both weighted by headAimWeight so they ease in on TPS and fully release in FPS.
+    _levelHeadPitch(){
+        if(this.headAimPitchFollow == null || !this._headFwdLocal || !this.playerControls){ return; }
+        if(this.headAimWeight < 1e-3){ return; }
+        const aimY = (this.playerControls.aimDirRaw || this.playerControls.aimDir).y;
+        const targetPitch = Math.asin(THREE.MathUtils.clamp(aimY, -1, 1)) * this.headAimPitchFollow;
+        this.headBone.getWorldQuaternion(this._headWorldQ);
+        this._headLvlGaze.copy(this._headFwdLocal).applyQuaternion(this._headWorldQ);
+        if(this._headLvlGaze.lengthSq() < 1e-6){ return; }
+        this._headLvlGaze.normalize();
+        const curPitch = Math.asin(THREE.MathUtils.clamp(this._headLvlGaze.y, -1, 1));
+        this._headFwdRef.set(this._headLvlGaze.x, 0, this._headLvlGaze.z);
+        if(this._headFwdRef.lengthSq() < 1e-6){ return; }         // gaze near-vertical: no stable horizontal axis
+        this._headFwdRef.normalize();
+        // (a) Pitch-level about the gaze's side axis (fwdHoriz × up). A POSITIVE angle about this axis
+        // pitches the gaze UP (Rodrigues on fwd gives +sin toward +Y), so carrying curPitch onto the
+        // target takes (targetPitch - curPitch). The old NEGATED angle pushed a down-nodded head DOWN by
+        // the same amount again — DOUBLING the idle clip's forward nod (the "always looking at the
+        // ground" head) instead of leveling it.
+        this._headLvlAxis.crossVectors(this._headFwdRef, this._headLvlUp).normalize();
+        this._headLvlQ.setFromAxisAngle(this._headLvlAxis, (targetPitch - curPitch) * this.headAimWeight);
+        this.headBone.parent.getWorldQuaternion(this._headAimPW);
+        this._headAimPWInv.copy(this._headAimPW).invert();
+        this._headAimLocal.copy(this._headAimPWInv).multiply(this._headLvlQ).multiply(this._headAimPW);
+        this.headBone.quaternion.premultiply(this._headAimLocal);
+        this.headBone.updateWorldMatrix(false, false);
+
+        // (b) UNTILT: project the head's up-axis and world-up onto the plane ⊥ gaze; the signed angle
+        // between them about the gaze is the residual ROLL. Rotating by it stands the head vertical
+        // without moving the gaze direction at all (a rotation about the gaze can't change the gaze).
+        if(!this._headUpLocal){ return; }
+        this.headBone.getWorldQuaternion(this._headWorldQ);
+        this._headLvlGaze.copy(this._headFwdLocal).applyQuaternion(this._headWorldQ).normalize();
+        this._headLvlUpCur.copy(this._headUpLocal).applyQuaternion(this._headWorldQ);
+        this._headLvlUpCur.addScaledVector(this._headLvlGaze, -this._headLvlUpCur.dot(this._headLvlGaze));
+        this._headLvlUpDes.copy(this._headLvlUp).addScaledVector(this._headLvlGaze, -this._headLvlUp.dot(this._headLvlGaze));
+        if(this._headLvlUpCur.lengthSq() < 1e-6 || this._headLvlUpDes.lengthSq() < 1e-6){ return; }
+        this._headLvlUpCur.normalize(); this._headLvlUpDes.normalize();
+        this._headLvlAxis.crossVectors(this._headLvlUpCur, this._headLvlUpDes);
+        const roll = Math.atan2(this._headLvlAxis.dot(this._headLvlGaze),
+            THREE.MathUtils.clamp(this._headLvlUpCur.dot(this._headLvlUpDes), -1, 1));
+        if(Math.abs(roll) < 1e-4){ return; }
+        this._headLvlQ.setFromAxisAngle(this._headLvlGaze, roll * this.headAimWeight);
+        this.headBone.parent.getWorldQuaternion(this._headAimPW);
+        this._headAimPWInv.copy(this._headAimPW).invert();
+        this._headAimLocal.copy(this._headAimPWInv).multiply(this._headLvlQ).multiply(this._headAimPW);
         this.headBone.quaternion.premultiply(this._headAimLocal);
         this.headBone.updateWorldMatrix(false, false);
     }
@@ -2557,6 +2738,13 @@ export default class PlayerBody extends Component{
         // Ground move (slide / land-roll): hold the body on the travel direction (snapped in
         // StartGroundMove) so the move travels the way the player dodged/landed, ignoring the camera look.
         if(this.rolling){
+            // A SLIDE continuously re-aims the body at its CURRENT travel direction — rollDir steers to
+            // the fall line as the slide sustains down a hill, so the character always faces FORWARD down
+            // the slope (user request). The land-roll keeps its initial launch direction (short tumble).
+            if(this._moveType === 'slide' && this.playerControls){
+                const rd = this.playerControls.rollDir;
+                if(rd && (rd.x * rd.x + rd.z * rd.z) > 1e-6){ this._rollYaw = Math.atan2(rd.x, rd.z); }
+            }
             const dR = Math.atan2(Math.sin(this._rollYaw - this._bodyYaw), Math.cos(this._rollYaw - this._bodyYaw));
             this._bodyYaw += dR * (1 - Math.exp(-this.rollYawLerp * t));
             this._bodyYaw = Math.atan2(Math.sin(this._bodyYaw), Math.cos(this._bodyYaw));

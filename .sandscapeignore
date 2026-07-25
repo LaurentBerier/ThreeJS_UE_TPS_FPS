@@ -30,6 +30,13 @@ mechanics.json
 # exceeds Sandscape's 50 MB/file limit anyway. ---
 assets/characters/Sandscape_Liz.glb
 
+# --- Vortex Blaster (player weapon): the game ships ONLY the compressed SK_VortexBlaster.glb
+# (~1.6 MB, WebP). The 10.8 MB source FBX and the ~20 MB uncompressed intermediate GLB are
+# offline-only inputs to tools/vortex_fbx_to_glb.html + tools/compress_vortex.mjs — kept on
+# disk for regeneration but never fetched at runtime. ---
+assets/guns/New/SK_VortexBlaster.fbx
+assets/guns/New/SK_VortexBlaster_raw.glb
+
 # --- Editor / OS cruft ---
 .DS_Store
 Thumbs.db

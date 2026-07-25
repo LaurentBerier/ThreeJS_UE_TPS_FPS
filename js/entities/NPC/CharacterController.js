@@ -157,10 +157,11 @@ export default class CharacterController extends Component{
         this.attackDistance = 2.2;
 
         this.canMove = true;
-        // Beast balancing: health dropped HARD (was 100) so it dies fast for quick death-feel
+        // Beast balancing: health dropped HARD (was 100, then 30) so it dies fast for quick death-feel
         // iteration, while its melee damage is cranked up (see HitPlayer / meleeDamage) so it stays a
         // genuine high-threat target that forces an immediate reaction despite the low health pool.
-        this.health = 30;
+        // Reduced to 20 on request (player AK 2 dmg/shot => ~10 hits) so it's easier to bring down.
+        this.health = 20;
         this.meleeDamage = 35;   // per landed punch (was the PlayerHealth default of 10) — very dangerous
         this.lastAttacker = null;   // entity that last damaged us — the corpse is flung away from it
     }

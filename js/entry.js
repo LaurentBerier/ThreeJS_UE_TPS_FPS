@@ -20,13 +20,14 @@ import FarWorld from './entities/World/FarWorld.js'
 import Atmosphere from './entities/World/Atmosphere.js'
 import ImpactFx from './entities/World/ImpactFx.js'
 import DesertActors from './entities/World/DesertActors.js'
+import WindFlags from './entities/World/FlagCloth.js'
 import PostFx from './PostFx.js'
 // The JOURNEY level: authored layout + procedural terrain (JourneyWorld), the castle/ruins/cover
 // with real colliders (Structures), and the generated navmesh (NavmeshGen). These replace the old
 // container-depot level.glb + its baked navmesh.obj + the heightmap — the environment is built
 // entirely at runtime now; every gameplay system rides it through the same Terrain/Navmesh/hit
 // contracts the depot used.
-import { BuildTerrainOpts, SPAWNS } from './entities/World/JourneyWorld.js'
+import { BuildTerrainOpts, SPAWNS, SetRuggedDetail } from './entities/World/JourneyWorld.js'
 import Structures from './entities/World/Structures.js'
 import { BuildJourneyNavmesh } from './entities/World/NavmeshGen.js'
 // HDR image-based lighting: cube env (specular) + SH light probe (diffuse) built from the .hdr —
@@ -102,16 +103,34 @@ const lizChar = 'assets/characters/Sandscape_Liz_decimated.glb'
 // one-line fallback (swap alienModel -> ueModel).
 const alienChar = 'assets/characters/Hero_alien_rig_optimized.glb'
 const alienPlayerRig = {
-  // Restrained head aim layered over the authored idle pose. The idle clip is the neutral
-  // forward-looking head rotation; this only adds a small camera-follow offset.
-  headAimYawMax: THREE.MathUtils.degToRad(16),
-  headAimYawInputMax: THREE.MathUtils.degToRad(95),
-  headAimYawFalloffStart: THREE.MathUtils.degToRad(115),
-  headAimYawFalloffEnd: THREE.MathUtils.degToRad(165),
-  headPitchDeadzone: THREE.MathUtils.degToRad(18),
-  headPitchMaxCamera: THREE.MathUtils.degToRad(85),
-  headPitchMaxAngle: THREE.MathUtils.degToRad(5),
-  headPitchAxisSign: 1,
+  // Head aim: the head turns to LOOK ALONG the crosshair direction (yaw + pitch), layered over the
+  // authored idle pose. PlayerBody.UpdateHeadAim does this geometrically (a world ref->crosshair delta),
+  // which is orientation-independent — required for this rig, whose head bone has oblique local axes
+  // that made the old fixed-axis offset roll the head instead of turning it (the regression). Three
+  // knobs: the neck clamp (how far the head follows the aim), the tracking lag, and the neutral up-tilt.
+  maxHeadAimAngle: THREE.MathUtils.degToRad(60),    // (was 48) let the head turn FURTHER toward the aim so it looks more where the camera points
+  headAimTrackLerp: 6,                              // (was 9) softer low-pass => a ~0.17 s gaze lag — a more natural trailing delay
+  // Keep the head VERTICAL. The head turns toward the aim (yaw) but holds upright in pitch instead of
+  // nodding forward with the crouch/animation — it only follows this FRACTION of the aim pitch (0 = dead
+  // level, 1 = fully follows). Supersedes the old up-tilt bias (headAimUpBias), which is why it's 0 now.
+  headAimPitchFollow: 0.2,
+  headAimUpBias: 0,                                 // superseded by headAimPitchFollow (was 0.06)
+  // Feet: keep the animation clip's OWN foot orientation and only IK the leg HEIGHT to the terrain. The
+  // earlier approach rotated the retargeted alien foot to conform to the ground (slope tilt + whole-foot
+  // level + toe plant), which read as crooked / toe-up twisted feet. The clip's authored foot pose looks
+  // correct, so FootIK now leaves the foot bone alone and only plants the ankles at the ground height
+  // (the legs still adapt to slopes; the feet don't fight the clip). See FootIK.conformFootOrient.
+  keepClipFootOrient: true,
+  // ...then add a fixed toe-DOWN pitch on top of the clip so the resting foot points more downward (the
+  // clip foot read a touch too flat/toe-up). Tune live: HIGHER = more toe-down, LOWER/0 = flatter.
+  footPitchOffset: THREE.MathUtils.degToRad(20),
+  // Support (left) hand grip fit, in METRES along the CHARACTER's axes (x = the character's LEFT, y = up,
+  // z = forward). The rifle clips pose hand_l onto the AK's foregrip, but the player carries the Vortex
+  // Blaster (vortexTps) whose handguard sits further to the weapon's left and a touch lower — so the
+  // captured socket left the hand hanging BESIDE the gun with the fingers closing on nothing. This slides
+  // it back onto the handguard. Tune live: raise x to push the hand further LEFT, lower/negate to bring it
+  // back right; y/z trim the height and the reach along the barrel. See WeaponAimIK.LeftHandBodyOffset.
+  leftHandOffset: new THREE.Vector3(0.055, -0.012, 0),
 }
 
 // The new mesh GLB carries no animation, so the 4 named UE rifle clips
@@ -147,7 +166,18 @@ const ueCrouchIdleSrc = 'assets/characters/ue/CrouchIdle.glb'
 // Third-person weapon: a UE SkeletalMesh AK exported as FBX (v7300, which r127's
 // FBXLoader parses fine). Socketed into the mannequin's right hand in TPS; the
 // first-person view keeps its own arms+gun viewmodel (Hands/WeaponManager).
+// NOW USED BY THE SOLDIERS ONLY — the player carries the Vortex Blaster below.
 const ak47Tps = 'assets/guns/New/SK_AK47.FBX'
+
+// PLAYER third-person weapon: the Vortex Blaster. Converted from the supplied
+// SK_VortexBlaster.fbx (FBX 7700, which r127's runtime FBXLoader CANNOT parse — the AK
+// above is 7300) into a COMPRESSED GLB: textures resized to 1024² and re-encoded as WebP
+// (EXT_texture_webp, which the vendored r127 GLTFLoader decodes natively), so it ships at
+// ~1.6 MB instead of the 10.8 MB FBX. Loaded with the plain GLTFLoader and socketed into
+// the alien's right hand (buildUeMannequin auto-centres + auto-scales it), replacing the
+// AK for the PLAYER only. Regenerate: open tools/vortex_fbx_to_glb.html (r160 FBX->GLB),
+// then run tools/compress_vortex.mjs (the gltf-transform WebP pipeline).
+const vortexTps = 'assets/guns/New/SK_VortexBlaster.glb'
 
 // Magazine-reload clip for the in-hand third-person AK, baked offline from
 // A_SK_AK47_Rifle_Reload_.fbx into a tiny skeleton+clip GLB (FBX->GLB via
@@ -184,6 +214,24 @@ const bloodDecal2 = 'assets/decals/Blood_Decal_2.png'
 // droplet burst as the hero impact VFX — see BloodFx.
 const bloodSheet = 'assets/VFX/Blood_SpriteSheet.png'
 
+// Ground albedo. A seamless 1K photo of red desert hardpan — grain, cracked crust and dark
+// pebbles. It is sampled in WORLD SPACE by DesertLook.gradeGround (the heightfield carries no UV
+// attribute at all), and supplies only the detail the procedural sand shader could never fake;
+// the palette still sets the ground's colour and brightness. Preloaded here rather than fetched
+// on demand so it is behind the loading screen — a late-arriving ground texture would pop.
+const groundTex = 'assets/World/ground_sand_D.jpg'
+
+// Rugged erosion bake (tools/terrain_prep, from the "Dark Alien Landscape" 16-bit height map —
+// grey-blue eroded alien rock): world-mapped macro albedo + sub-grid residual normals +
+// flow/ridge/AO control sheets for the ground shader, and a 257² detail heightfield JourneyWorld
+// composites into the terrain geometry. All optional — any missing, the world builds as before.
+const rugAlbedo = 'assets/World/rugged/albedo_2048.webp'
+const rugNormal = 'assets/World/rugged/normal_2048.webp'
+const rugCtrl   = 'assets/World/rugged/ctrl_1024.webp'
+const rugEro    = 'assets/World/rugged/ero_1024.webp'
+const rugDetailBin = 'assets/World/rugged/detail_257.f32'
+const rugMetaJson  = 'assets/World/rugged/meta.json'
+
 // Sky: the dusk sky is generated in a shader (see entities/World/DesertSky.js), so the old
 // bright-day photo dome (assets/sky.jpg) is no longer fetched. The file stays in the repo for
 // anyone restoring Sky2.js.
@@ -201,6 +249,7 @@ import CharacterCollision from './entities/NPC/CharacterCollision.js'
 import Hands from './entities/Player/Hands.js'
 import WeaponManager from './entities/Player/WeaponManager.js'
 import PlayerBody from './entities/Player/PlayerBody.js'
+import PlayerCape from './entities/Player/PlayerCape.js'
 import { adaptClipToPreOriented } from './entities/Common/UeMannequin.js'
 import WeaponPlacementDebug from './entities/Player/WeaponPlacementDebug.js'
 import WeaponAimDebug from './entities/Player/WeaponAimDebug.js'
@@ -241,7 +290,7 @@ class FPSGameApp{
     // only slightly below now: 0.68 was tuned before the HDR environment existed and read too
     // dark on anything in shadow (Pollinate's daylight rig runs 0.95–1.1 for reference).
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-		this.renderer.toneMappingExposure = 0.78;
+		this.renderer.toneMappingExposure = 0.81;   // 0.78 pre-dated the golden reference grade; 0.84 blew out sunward sand
 		this.renderer.outputEncoding = THREE.sRGBEncoding;
 
     this.camera = new THREE.PerspectiveCamera();
@@ -381,8 +430,10 @@ class FPSGameApp{
     promises.push(this.AddAsset(ueRollSrc, gltfLoader, "ueRoll"));
     promises.push(this.AddAsset(ueSlideSrc, gltfLoader, "ueSlide"));
     promises.push(this.AddAsset(ueCrouchIdleSrc, gltfLoader, "ueCrouchIdle"));
-    //Third-person AK
+    //Third-person AK (soldiers)
     promises.push(this.AddAsset(ak47Tps, akFbxLoader, "ak47Tps"));
+    //Player's Vortex Blaster (compressed WebP GLB — plain GLTFLoader, no decoder needed)
+    promises.push(this.AddAsset(vortexTps, gltfLoader, "vortexTps"));
     //In-hand AK magazine-reload clip (drives the SK_AK47 'Magazine' bone, synced to body reload)
     promises.push(this.AddAsset(ak47Reload, gltfLoader, "ak47Reload"));
     //AK47
@@ -404,10 +455,32 @@ class FPSGameApp{
     promises.push(this.AddAsset(bloodDecal1, texLoader, "bloodDecal1"));
     promises.push(this.AddAsset(bloodDecal2, texLoader, "bloodDecal2"));
     promises.push(this.AddAsset(bloodSheet, texLoader, "bloodSheet"));
+    promises.push(this.AddAsset(groundTex, texLoader, "groundTex"));
+    //Rugged erosion bake (ground-shader sheets — webp decodes via the browser image path).
+    //Individually tolerant: a missing bake must degrade to the pre-rugged ground, not take the
+    //whole asset load down with it (Promise.all rejects on the first failure otherwise).
+    promises.push(this.AddAsset(rugAlbedo, texLoader, "rugAlbedo").catch(() => {}));
+    promises.push(this.AddAsset(rugNormal, texLoader, "rugNormal").catch(() => {}));
+    promises.push(this.AddAsset(rugCtrl, texLoader, "rugCtrl").catch(() => {}));
+    promises.push(this.AddAsset(rugEro, texLoader, "rugEro").catch(() => {}));
     //HDR environment (half-float keeps the CPU repack + SH projection cheap and exact)
     promises.push(this.AddAsset(hdriEnv, new RGBELoader().setDataType(THREE.HalfFloatType), "hdriEnv"));
 
     await this.PromiseProgress(promises, this.OnProgress);
+
+    // Rugged geometry detail + bake metadata (plain fetches — a Float32 grid and a JSON, not
+    // loader assets). Tolerant: if either is missing the terrain simply builds without the
+    // erosion detail, exactly as it did before the bake existed.
+    try{
+      const [detailBuf, meta] = await Promise.all([
+        fetch(rugDetailBin).then(r => r.ok ? r.arrayBuffer() : null),
+        fetch(rugMetaJson).then(r => r.ok ? r.json() : null),
+      ]);
+      if(detailBuf && meta){
+        this.assets['rugDetail'] = new Float32Array(detailBuf);
+        this.assets['rugMeta'] = meta;
+      }
+    }catch(e){ console.warn('[rugged] detail bake unavailable:', e); }
 
     this.assets['muzzleFlash'] = this.assets['muzzleFlash'].scene;
 
@@ -586,6 +659,12 @@ class FPSGameApp{
     // (JourneyWorld), then fed through the SAME Terrain component the depot used — mesh, static
     // trimesh collider and HeightAt all behave identically, so the capsule, foot IK, camera boom,
     // ragdolls and AI terrain-riding are untouched.
+    // Hand the rugged erosion detail to the layout math BEFORE the heights build — HeightOf
+    // composites it into the environment term, so collider, render mesh, HeightAt, the navmesh
+    // and every spawn snap see one identical surface.
+    if(this.assets['rugDetail'] && this.assets['rugMeta']){
+      SetRuggedDetail(this.assets['rugDetail'], this.assets['rugMeta'].gridN || 257);
+    }
     console.time('[Journey] terrain');
     const terrain = new Terrain(this.scene, this.physicsWorld, null, BuildTerrainOpts());
     console.timeEnd('[Journey] terrain');
@@ -604,8 +683,18 @@ class FPSGameApp{
     console.timeEnd('[Journey] navmesh');
     levelEntity.AddComponent(new Navmesh(this.scene, navGeometry));
     // Ochre desert sand grading on the heightfield (materials only — the old container re-dress
-    // half of this component no-ops now that the depot is gone).
-    levelEntity.AddComponent(new DesertSurfaces());
+    // half of this component no-ops now that the depot is gone). The rugged bundle adds the
+    // erosion look layers; missing any piece, the ground grades exactly as before.
+    const rugged = (this.assets['rugAlbedo'] && this.assets['rugNormal'] && this.assets['rugCtrl'] && this.assets['rugMeta'])
+      ? { albedo: this.assets['rugAlbedo'], normal: this.assets['rugNormal'], ctrl: this.assets['rugCtrl'], meta: this.assets['rugMeta'],
+          // Optional erosion-REGIME sheet (surface age -> luma/hue variation). Ships alongside
+          // the bundle but degrades independently: without it the ground renders as before.
+          ero: this.assets['rugEro'] || null }
+      : null;
+    levelEntity.AddComponent(new DesertSurfaces(this.assets['groundTex'], this.renderer, rugged));
+    // Banner flags in the world wind (DesertLook.WIND_*) — verlet cloth, no physics bodies. The
+    // solver (FlagCloth.ClothSim) is the same one a future player cape will pin to shoulder bones.
+    levelEntity.AddComponent(new WindFlags(this.scene));
     levelEntity.AddComponent(new LevelBulletDecals(this.scene, this.assets['decalColor'], this.assets['decalNormal'], this.assets['decalAlpha']));
     // Shared blood-splatter burst — spritesheet-animated splash cards + a fine droplet mist (pooled).
     // One instance; combatants fetch it on hit (FindEntity('Level').GetComponent('BloodFx')).
@@ -631,8 +720,9 @@ class FPSGameApp{
     // Everything past the depot fence: the dune sea, dark rock ridges, buried ruins, broken
     // arches, abandoned military hulks, and the ruined fortress that orients the player. Purely
     // visual — it never touches the physics world, is built no closer than ~60 m from the middle
-    // of the playable area, casts no shadows, and is excluded from the UE export.
-    skyEntity.AddComponent(new FarWorld(this.scene, this.camera));
+    // of the playable area, casts no shadows, and is excluded from the UE export. Shares the
+    // rugged erosion bundle with the near ground so both read as one continuous map.
+    skyEntity.AddComponent(new FarWorld(this.scene, this.camera, rugged));
     // Drifting ground-level sand, distant dust plumes and sun shafts. Tuned so nothing draws within
     // 2.5 m of the lens or at combat depth — see the readability rules at the top of Atmosphere.js.
     skyEntity.AddComponent(new Atmosphere(this.scene, this.camera));
@@ -642,7 +732,23 @@ class FPSGameApp{
     playerEntity.SetName("Player");
     playerEntity.AddComponent(new PlayerPhysics(this.physicsWorld, Ammo));
     playerEntity.AddComponent(new PlayerControls(this.camera, this.scene));
-    playerEntity.AddComponent(new PlayerBody(SkeletonUtils.clone(this.alienModel), this.ueAnims, this.scene, this.camera, this.ueTextures, SkeletonUtils.clone(this.assets['ak47Tps']), true, this.akMagReloadClip, alienPlayerRig));
+    // Player carries the Vortex Blaster (compressed GLB, real PBR + emissive materials).
+    // Its native axes differ from the AK's (barrel = local +Z), so the shared AK-tuned
+    // grip would leave it pointing straight up — pre-rotate +90° about X (found in-game)
+    // to bring the Vortex's native orientation into line with the AK's, so the barrel
+    // runs forward with the mag hanging down. Baked into the mesh via a wrapper group, so
+    // buildUeMannequin auto-centres + seats it exactly like the AK in BOTH camera modes.
+    // magReloadClip is null: that clip drives the AK's 'Magazine' bone, which the Vortex
+    // rig doesn't have — the body still plays its reload anim, so PlayGunReload no-ops.
+    const vortexWeapon = new THREE.Group();
+    const vortexMesh = SkeletonUtils.clone(this.assets['vortexTps'].scene);
+    vortexMesh.rotation.x = Math.PI / 2;
+    vortexWeapon.add(vortexMesh);
+    playerEntity.AddComponent(new PlayerBody(SkeletonUtils.clone(this.alienModel), this.ueAnims, this.scene, this.camera, this.ueTextures, vortexWeapon, true, null, alienPlayerRig));
+    // Cape: the FlagCloth verlet grid pinned to the rig's shoulder line, driven by APPARENT wind
+    // (world wind minus body velocity) with a crude torso pushout. Added right after PlayerBody
+    // so its Update reads this frame's posed bones. Visual only — no physics, no export.
+    playerEntity.AddComponent(new PlayerCape(this.scene));
     playerEntity.AddComponent(new Hands(this.camera, this.assets['ak47'].scene));
     playerEntity.AddComponent(new WeaponManager(this.camera, this.physicsWorld, this.assets['muzzleFlash'], this.assets['ak47Shot'], this.listener ));
     playerEntity.AddComponent(new PlayerHealth());

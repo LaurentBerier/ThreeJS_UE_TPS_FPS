@@ -188,9 +188,9 @@ export default class UeSoldierController extends Component{
         this.combatMoveSpeed = THREE.MathUtils.lerp(3.4, 4.8, this.aggression);   // strafe/relocate speed
         this.flankSign = Math.random() < 0.5 ? -1 : 1;         // preferred lateral direction around the target
         this.holdGroundChance = 0.12;                          // chance a reposition just re-aims instead of moving (low: keep moving)
-        // Lower than before so the player drops him in fewer bullets (player AK does
-        // 2 dmg/shot => ~15 hits; previously 100 hp => ~50 hits).
-        this.health = 30;
+        // Kept LOW so the player drops him quickly (player AK does 2 dmg/shot => ~8 hits at 15 hp;
+        // was 30 hp => ~15 hits, 100 hp => ~50). Reduced on request so soldiers are easier to kill.
+        this.health = 15;
 
         // Facing: a smoothed yaw the body turns toward (movement dir or the target).
         this.facingYaw = 0.0;

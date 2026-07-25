@@ -1,0 +1,23 @@
+{
+  "worldSize": 640,
+  "gridN": 257,
+  "detail": {
+    "file": "detail_257.f32",
+    "n": 257,
+    "format": "float32-le",
+    "normalized": true
+  },
+  "residual": {
+    "refAmpM": 0.5
+  },
+  "ero": {
+    "file": "ero_1024.webp",
+    "channels": "R=stream-power activity, G=deposition, B=varnish/age"
+  },
+  "albedoMeanLinear": [
+    0.14662,
+    0.1602,
+    0.16127
+  ],
+  "convention": "row j -> z=-half+(j/(N-1))*size, col i -> x likewise; sample textures with flipY=false, uv=(xz+half)/size"
+}

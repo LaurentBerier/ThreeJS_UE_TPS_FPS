@@ -31,6 +31,7 @@ export default class WeaponAimDebug extends Component{
         this._fwdW = new THREE.Vector3();
         this._gripR = new THREE.Vector3();
         this._gripL = new THREE.Vector3();
+        this._gripLOff = new THREE.Vector3();   // scratch: resolved support-grip nudge (see WeaponAimIK.SupportGripOffset)
         this._end = new THREE.Vector3();
         this._wq = new THREE.Quaternion();
     }
@@ -121,7 +122,7 @@ export default class WeaponAimDebug extends Component{
             this._setLine(this.correctedLine, this._muzzleW, pc.aimTarget);
 
             this._gripR.copy(ik.rightGripLocal).add(ik.RightHandOffset).applyMatrix4(pivot.matrixWorld);
-            this._gripL.copy(ik.leftGripLocal).add(ik.LeftHandOffset).applyMatrix4(pivot.matrixWorld);
+            this._gripL.copy(ik.leftGripLocal).add(ik.SupportGripOffset(this._gripLOff)).applyMatrix4(pivot.matrixWorld);
             this.gripRDot.position.copy(this._gripR);
             this.gripLDot.position.copy(this._gripL);
             this.gripLDot.visible = ik.twoHanded;

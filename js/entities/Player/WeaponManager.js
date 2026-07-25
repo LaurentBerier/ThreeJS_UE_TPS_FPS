@@ -366,10 +366,8 @@ export default class WeaponManager extends Component{
             }
         });
 
-        // Mouse wheel cycles weapons.
-        Input.AddMouseWheelListner(e => {
-            this.CycleWeapon(e.deltaY > 0 ? 1 : -1);
-        });
+        // The mouse wheel now drives the third-person camera zoom (see PlayerControls); weapon
+        // switching stays on the 1/2 keys above.
     }
 
     // Size the on-screen crosshair from the aim state: wider for hipfire, tighter for ADS, plus a

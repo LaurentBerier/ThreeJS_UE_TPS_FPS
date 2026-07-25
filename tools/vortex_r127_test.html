@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Vortex GLB r127 load test</title>
+    <!-- Loads a candidate GLB with the VENDORED r127 GLTFLoader (the runtime's exact
+         loader) to prove WebP textures (EXT_texture_webp) + KHR_mesh_quantization decode
+         and render before wiring the gun into the game. Pass ?url=<rel-to-project-root>. -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "../assets/vendor/three/build/three.module.js",
+          "three/examples/jsm/": "../assets/vendor/three/examples/jsm/"
+        }
+      }
+    </script>
+    <style>body{margin:0;background:#202329}canvas{display:block}</style>
+  </head>
+  <body>
+    <script type="module">
+      import * as THREE from 'three';
+      import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+
+      const status = { steps: [] };
+      const log = (m) => { status.steps.push(m); document.title = m; console.log(m); };
+      const q = new URLSearchParams(location.search);
+      const URL_REL = q.get('url') || '/assets/guns/New/SK_VortexBlaster.glb';
+
+      const W = 640, H = 480;
+      const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+      renderer.setSize(W, H);
+      renderer.outputEncoding = THREE.sRGBEncoding;
+      document.body.appendChild(renderer.domElement);
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x202329);
+      // A neutral generated environment so the metallic material (metal 0.5) isn't black.
+      try {
+        const pmrem = new THREE.PMREMGenerator(renderer);
+        const envScene = new THREE.Scene();
+        envScene.background = new THREE.Color(0x777788);
+        scene.environment = pmrem.fromScene(envScene, 0.0).texture;
+      } catch (e) { console.warn('env failed', e); }
+      scene.add(new THREE.HemisphereLight(0xffffff, 0x444455, 1.2));
+      const key = new THREE.DirectionalLight(0xffffff, 2.0); key.position.set(3, 5, 4); scene.add(key);
+      const rim = new THREE.DirectionalLight(0x88aaff, 1.0); rim.position.set(-4, 2, -3); scene.add(rim);
+
+      const camera = new THREE.PerspectiveCamera(45, W / H, 0.01, 1000);
+
+      try {
+        log('loading ' + URL_REL);
+        const loader = new GLTFLoader();
+        const gltf = await loader.loadAsync(URL_REL);
+        const root = gltf.scene;
+        scene.add(root);
+
+        let meshes = 0, skinned = 0, verts = 0, texOK = 0, texBad = 0;
+        const texDims = [];
+        root.traverse(o => {
+          if(o.isSkinnedMesh) skinned++;
+          if(o.isMesh || o.isSkinnedMesh){
+            meshes++;
+            if(o.geometry?.attributes?.position) verts += o.geometry.attributes.position.count;
+            const mats = Array.isArray(o.material) ? o.material : [o.material];
+            for(const m of mats){
+              for(const slot of ['map','normalMap','emissiveMap']){
+                const t = m && m[slot];
+                if(!t) continue;
+                const img = t.image;
+                const w = img && (img.naturalWidth || img.width) || 0;
+                if(w > 0){ texOK++; texDims.push(`${slot}:${w}x${img.naturalHeight || img.height}`); }
+                else { texBad++; texDims.push(`${slot}:MISSING`); }
+              }
+            }
+          }
+        });
+
+        const box = new THREE.Box3().setFromObject(root);
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        // Frame the model.
+        const radius = size.length() * 0.5 || 1;
+        camera.position.copy(center).add(new THREE.Vector3(radius * 1.3, radius * 0.7, radius * 1.8));
+        camera.lookAt(center);
+
+        renderer.render(scene, camera);
+
+        status.diag = {
+          meshes, skinned, verts, texOK, texBad, texDims,
+          bbox: [ +size.x.toFixed(3), +size.y.toFixed(3), +size.z.toFixed(3) ],
+          center: [ +center.x.toFixed(3), +center.y.toFixed(3), +center.z.toFixed(3) ],
+        };
+        status.ok = (meshes > 0 && texBad === 0);
+        log(`ok meshes=${meshes} skinned=${skinned} verts=${verts} texOK=${texOK} texBad=${texBad} bbox=${status.diag.bbox.join('×')}`);
+
+        // Spin for a live look.
+        let a = 0;
+        const animate = () => { a += 0.01; root.rotation.y = a; renderer.render(scene, camera); requestAnimationFrame(animate); };
+        animate();
+      } catch (e) {
+        status.ok = false;
+        status.error = (e.message || String(e)) + '\n' + (e.stack || '');
+        log('ERROR ' + status.error);
+      }
+      window.__STATUS = status;
+    </script>
+  </body>
+</html>

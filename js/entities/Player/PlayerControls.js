@@ -56,6 +56,7 @@ export default class PlayerControls extends Component{
         this.crouchCamLerp = 8;             // ease rate (1/s) for the camera drop
 
         this.mouseSpeed = 0.002;
+        this.mouseSpikeCap = 260;        // max |movementX/Y| (px) accepted per mouse event — rejects pointer-lock spikes that read as a camera "reset" mid-orbit
         this.physicsComponent = null;
         this.isLocked = false;
         // When a dev tool (WeaponPlacementDebug) takes over the camera, we freeze the
@@ -118,6 +119,17 @@ export default class PlayerControls extends Component{
         this.tpsPivotHeight = 0.25; // pivot above eye height
         this.tpsShoulder = 0.85;  // lateral rig shift: bigger => character further frame-left, reticle further right (in front of the gun)
         this._vLatch = false;
+        // Mouse-wheel ZOOM (TPS): a user dolly multiplier on the whole resting boom (hip, ADS and the
+        // sprint/walk/look-down extras all scale with it, so every framing keeps its feel at any zoom).
+        // Wheel-up = closer, wheel-down = further; multiplicative steps, clamped; eased (_curZoom) in
+        // UpdateCamera so the dolly glides. Collision still owns the final camera via the spline sweep,
+        // and the zoomMin keeps the closest hip boom outside tpsMinDistance.
+        this.tpsZoom = 1.0;       // wheel-driven target multiplier
+        this.tpsZoomMin = 0.45;   // closest (~1.2 m hip boom)
+        this.tpsZoomMax = 2.4;    // furthest (~6.2 m hip boom overview)
+        this.tpsZoomStep = 1.12;  // multiplicative step per wheel notch
+        this._curZoom = 1.0;      // eased zoom applied to the boom
+        this.zoomLerp = 8;        // zoom ease rate (1/s)
 
         // Precise-aim mode (hold right click in TPS): the boom pulls in over the
         // shoulder, the FOV zooms, and the mouse slows for finer aim. Targets are
@@ -470,16 +482,17 @@ export default class PlayerControls extends Component{
         this._slopeEps  = 0.6;           // half-span (m) of the terrain-gradient sample
         this._slopeInfo = { grade: 0, angle: 0, downhill: new THREE.Vector3() };
         this._autoSlide = false;         // true while the CURRENT committed slide was auto-started
+        this._slideSustaining = false;   // true while a slide is actively sustaining down a slope (read by PlayerBody to loop the slide anim)
         this._autoSlideRearm = 0.0;      // re-arm timer so auto-slide can't instantly re-fire on ending
         this.autoSlideRearmTime = 0.35;  // s
         this._moveElapsed = 0.0;         // absolute time since the committed move began (owns i-frames)
-        // Backward-hop (steep-climb rejection) tuning + cooldown. hopUp stays above QueryJump's 2.5 m/s
-        // grounded cutoff so the pop reads as airborne (a little bounce), not a stuck stutter.
-        this.climbHopBack = 3.2;         // backward / down-slope speed of the reject hop (m/s)
-        this.climbHopUp   = 2.8;         // vertical pop of the reject hop (m/s)
-        this._climbHopCooldown = 0.0;
-        this.climbHopRearm = 0.5;        // s between reject hops
+        // Too-steep uphill (> climbBlockAngle) is REJECTED in the slope block (see Update): the uphill
+        // part of the intended move is stripped (no forward progress), any UPWARD velocity is clamped (so
+        // pushing into the face can't skim the capsule up and coast upward — the "switches to fall but
+        // still climbs" bug), and a small downhill push slides the player a few feet back DOWN the slope.
+        // Runs grounded OR airborne, so the block can't be muscled/skimmed through.
         this.climbInputDot = 0.35;       // min (inputDir · uphill) to read the input as "climbing" the slope
+        this.steepRejectSpeed = 3.0;     // m/s downhill push applied while driving into a too-steep slope (the "fall a few feet back")
         this._slopeInputWorld = new THREE.Vector3();   // scratch: world-space input dir for the slope gates
     }
 
@@ -521,6 +534,14 @@ export default class PlayerControls extends Component{
         Input.AddMouseDownListner(e => { if(e.button === 2){ this.aiming = true; this._aimHeld = true; } });
         Input.AddMouseUpListner(e => { if(e.button === 2){ this.aiming = false; this._aimHeld = false; } });
 
+        // Mouse wheel dollies the third-person camera in/out (weapon switching stays on the 1/2 keys —
+        // see WeaponManager). Ignored in FPS and while a dev camera override owns the view.
+        Input.AddMouseWheelListner(e => {
+            if(this.cameraMode !== 'TPS' || this.cameraOverride){ return; }
+            const step = e.deltaY > 0 ? this.tpsZoomStep : 1 / this.tpsZoomStep;
+            this.tpsZoom = THREE.MathUtils.clamp(this.tpsZoom * step, this.tpsZoomMin, this.tpsZoomMax);
+        });
+
         document.addEventListener('pointerlockchange', this.OnPointerlockChange)
 
         Input.AddClickListner( () => {
@@ -544,7 +565,13 @@ export default class PlayerControls extends Component{
           return;
         }
 
-        const { movementX, movementY } = event
+        // CLAMP pointer-lock spikes. While orbiting, the browser/OS occasionally emits a single, wildly
+        // oversized movementX/Y (pointer-lock re-centre glitch, alt-tab, a dropped frame batching deltas).
+        // Unclamped, one such spike teleports the look by a large angle — the camera appears to "reset"
+        // mid-orbit. A real fast flick is well under this cap, so clamping only ever eats the glitch.
+        const cap = this.mouseSpikeCap;
+        const movementX = THREE.MathUtils.clamp(event.movementX, -cap, cap);
+        const movementY = THREE.MathUtils.clamp(event.movementY, -cap, cap);
 
         // Finer aim while holding precise-aim in third-person.
         const sens = (this.cameraMode === 'TPS' && this.aiming)
@@ -890,8 +917,11 @@ export default class PlayerControls extends Component{
         this._curDistance += (targetDistance - this._curDistance) * k;
         this._curShoulder += (targetShoulder - this._curShoulder) * k;
         this._curFov      += (targetFov      - this._curFov)      * k;
-        // Total rest boom = the (aim/sprint) length plus the smoothly-eased look-down pull-back.
-        const boom = this._curDistance + this._curLookDown;
+        // User wheel-zoom eases on its own gentle rate and scales the ENTIRE resting boom below.
+        this._curZoom += (this.tpsZoom - this._curZoom) * (1 - Math.exp(-this.zoomLerp * t));
+        // Total rest boom = the (aim/sprint) length plus the smoothly-eased look-down pull-back,
+        // all scaled by the user wheel-zoom.
+        const boom = (this._curDistance + this._curLookDown) * this._curZoom;
         // FOV is applied AFTER the boom length is resolved (below), so a collision
         // push-in can widen it.
 
@@ -1231,6 +1261,10 @@ export default class PlayerControls extends Component{
                 this.rollDuration = Math.max(this.rollDuration, this.rollTimer + 0.2);
             }
         }
+        // Publish the sustain state so PlayerBody can LOOP the slide animation for as long as the slide
+        // actually keeps sliding (a long downhill runs well past one slide-clip length). False the instant
+        // the slope eases, so the body plays its stand-up tail.
+        this._slideSustaining = sustaining;
 
         // Momentum from _committedSpeed easing down to *endFactor across the move, with an optional
         // front-loaded surge (decays over the first ~0.1 s of u) so the slide launches with a pop. The
@@ -1272,6 +1306,7 @@ export default class PlayerControls extends Component{
             // on the (now sub-threshold) slope it just slid down; clear the auto flag either way.
             if(this._autoSlide){ this._autoSlideRearm = this.autoSlideRearmTime; }
             this._autoSlide = false;
+            this._slideSustaining = false;
             // Move over: if right-click is still held, resume precise-aim (the move dropped it on start).
             // Without this the camera stays un-aimed even though the button is down.
             this.aiming = this._aimHeld;
@@ -1307,7 +1342,6 @@ export default class PlayerControls extends Component{
         this._tapClock += t;
         if(this._rollCooldownTimer > 0){ this._rollCooldownTimer = Math.max(0, this._rollCooldownTimer - t); }
         if(this._autoSlideRearm > 0){ this._autoSlideRearm = Math.max(0, this._autoSlideRearm - t); }
-        if(this._climbHopCooldown > 0){ this._climbHopCooldown = Math.max(0, this._climbHopCooldown - t); }
         // Hard-landing watch (may start a land-roll THIS frame) before the double-tap slide; while any
         // committed move runs let it OWN movement (burst + i-frames + camera) and skip the normal path.
         this.UpdateLandingDetect();
@@ -1394,6 +1428,10 @@ export default class PlayerControls extends Component{
         const wantGroundJump = (spaceDown || this._jumpBuffer > 0)
             && (this.physicsComponent.canJump || this._coyoteTimer > 0);
 
+        // True if we launch a jump THIS frame (ground OR wall). The steep-slope block below clamps
+        // upward velocity to stop face-skimming, and must NOT eat an intentional jump — so it skips
+        // the clamp when this is set.
+        let jumpedThisFrame = false;
         if(wantGroundJump){
             // Jumping out of a crouch behaves EXACTLY like a standing jump: press = jump, same frame.
             // We still STAND UP first (clear the C toggle + grow the capsule back so we launch/land on the
@@ -1408,6 +1446,7 @@ export default class PlayerControls extends Component{
                 this.crouching = this.physicsComponent.crouched;
             }
             velocity.setY(this.jumpVelocity);
+            jumpedThisFrame = true;
             this.physicsComponent.canJump = false;
             this._coyoteTimer = 0;
             this._jumpBuffer = 0;
@@ -1423,6 +1462,7 @@ export default class PlayerControls extends Component{
             // vertical boost plus a small outward kick off the wall (added into the LOCAL speed so the
             // movement path below doesn't overwrite it). Consumed until the next landing.
             velocity.setY(this.wallJumpVelocity);
+            jumpedThisFrame = true;
             this._airJumpUsed = true;
             this._jumpBuffer = 0;
             // Outward push (world) folded into local pre-yaw speed so setX/Z below keeps it.
@@ -1439,14 +1479,10 @@ export default class PlayerControls extends Component{
         const moveVector = this.tempVec.copy(this.speed);
         moveVector.applyQuaternion(this.yaw);
 
-        // --- Slope-driven fake physics (grounded, OFF the authored route only). Two mutually exclusive
-        // reactions to a slope too steep to deal with normally: a backward HOP when the player drives UP
-        // it, and an AUTO-SLIDE when they're on it and NOT climbing. Gated to off-route so the authored
-        // trail/arenas (incl. the steep boss-gate ramp) stay walkable; skipped on flat ground / while
-        // airborne. The player-initiated slide SUSTAIN (UpdateRoll) is NOT gated — it works everywhere.
-        let climbBlocked = false;
+        // --- Slope-driven fake physics, OFF the authored route only (the trail/arenas incl. the steep
+        // ~50° boss ramp stay walkable; the player-initiated slide SUSTAIN in UpdateRoll is NOT gated).
         const c = this.parent.Position;
-        if(this.IsGrounded && !IsOnRoute(c.x, c.z)){
+        if(!IsOnRoute(c.x, c.z)){
             const s = this._ProbeSlope(this._slopeInfo);
             // Input direction in world space (unit if any move key is held, else zero); intoHill is its
             // component UP the fall line (+1 straight uphill, -1 straight downhill, 0 across / no input).
@@ -1455,34 +1491,43 @@ export default class PlayerControls extends Component{
             const intoHill = (inLen > 1e-4 && s.grade > 1e-4)
                 ? -(this._slopeInputWorld.x * s.downhill.x + this._slopeInputWorld.z * s.downhill.z) / inLen : 0;
 
-            if(this._climbHopCooldown <= 0 && s.angle > this.climbBlockAngle && intoHill > this.climbInputDot){
-                // (a) Trying to climb a too-steep uphill: refuse it with a small backward (down-slope) hop
-                // so the player physically bounces off — a clear "you can't climb this" read. Replaces the
-                // normal move this frame; the up-pop (> QueryJump's 2.5 m/s cutoff) reads as brief air.
-                velocity.setX(s.downhill.x * this.climbHopBack);
-                velocity.setZ(s.downhill.z * this.climbHopBack);
-                velocity.setY(this.climbHopUp);
-                this.physicsBody.setLinearVelocity(velocity);
-                this.physicsBody.setAngularVelocity(this.zeroVec);
-                this.speed.set(0, 0, 0);                        // drop the accumulated uphill drive
-                this._climbHopCooldown = this.climbHopRearm;
-                this.physicsComponent.canJump = false;
-                climbBlocked = true;
-            }else if(this._autoSlideRearm <= 0 && this._rollCooldownTimer <= 0
-                     && s.angle > this.autoSlideAngle && intoHill < this.climbInputDot){
-                // (b) On a too-steep downhill and not actively climbing it: drop into a slide down the fall
-                // line. Drive it THIS frame so there's no 1-frame gap, then bail — UpdateRoll owns the
-                // capsule + camera while the slide runs (and SUSTAINS it down the hill; see UpdateRoll).
-                this.TryStartAutoSlide(s.downhill);
-                this.UpdateRoll(t);
-                return;
+            // (A) CLIMB REJECT — a too-steep slope can't be climbed. When the intended move has an UPHILL
+            // component we (1) cancel that uphill drive (no forward progress up the face), (2) add a small
+            // downhill push so the player slides a few feet back DOWN the slope, and (3) clamp any UPWARD
+            // velocity so pushing into the face can't skim the capsule up off it and let it coast upward
+            // (the reported "switches to fall but still climbs"). Runs grounded OR airborne — a steep face
+            // flickers grounded false, so a grounded-only reaction would miss it. Across/downhill motion is
+            // untouched, and an intentional jump THIS frame is spared the up-clamp so it still launches.
+            if(s.angle > this.climbBlockAngle){
+                const into = -(moveVector.x * s.downhill.x + moveVector.z * s.downhill.z);   // move up the fall line
+                if(into > 0){
+                    // Cancel the uphill component (+into) AND add the downhill reject in one push, so the
+                    // net travel is steepRejectSpeed straight down the fall line (any across motion kept).
+                    const push = into + this.steepRejectSpeed;
+                    moveVector.x += s.downhill.x * push;
+                    moveVector.z += s.downhill.z * push;
+                    if(!jumpedThisFrame && velocity.y() > 0){ velocity.setY(0); }   // no coasting UP the face
+                }
+            }
+
+            // (B) AUTO-SLIDE DOWN (grounded): a plain steep DOWNHILL (> autoSlideAngle) the player walks
+            // ONTO while not actively climbing drops them into a committed slide down the fall line. (The
+            // too-steep UPHILL case is now held by the reject in (A) — it no longer needs a committed slide,
+            // so brushing a steep face just pushes you back a few feet instead of locking a full slide-down.)
+            if(this.IsGrounded && this._autoSlideRearm <= 0 && this._rollCooldownTimer <= 0){
+                const passiveDownhill = s.angle > this.autoSlideAngle && intoHill < this.climbInputDot;
+                if(passiveDownhill){
+                    // Drive it THIS frame (no 1-frame gap), then bail — UpdateRoll owns the capsule +
+                    // camera while the slide runs (and SUSTAINS it down the hill; see UpdateRoll).
+                    this.TryStartAutoSlide(s.downhill);
+                    this.UpdateRoll(t);
+                    return;
+                }
             }
         }
 
-        if(!climbBlocked){
-            velocity.setX(moveVector.x);
-            velocity.setZ(moveVector.z);
-        }
+        velocity.setX(moveVector.x);
+        velocity.setZ(moveVector.z);
 
         this.physicsBody.setLinearVelocity(velocity);
         this.physicsBody.setAngularVelocity(this.zeroVec);

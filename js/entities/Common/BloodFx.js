@@ -63,6 +63,11 @@ export default class BloodFx extends Component{
                 depthWrite: false,
                 toneMapped: false,
                 opacity: 0,
+                // fog OFF, and it must stay off: the custom fog chunk (DesertLook) reads the
+                // `transformed` vertex local, which the sprite vertex shader never declares —
+                // a fogged sprite would fail to compile. Visually free: droplets live at combat
+                // range, where the fog term is pinned near zero anyway.
+                fog: false,
             });
             const sprite = new THREE.Sprite(mat);
             sprite.visible = false;
