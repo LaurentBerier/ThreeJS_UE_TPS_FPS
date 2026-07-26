@@ -47,10 +47,19 @@
     <div id="blood_overlay"></div>
 
     <div id="game_hud">
-      <!-- CSS-drawn reticle: four ticks whose SPREAD is driven by WeaponManager (wide hipfire, tight
-           ADS) while the line thickness stays constant — a raster image can't grow without thickening
-           its outline, which is exactly what we want to avoid. -->
+      <!-- Sci-fi aim reticle (see the #crosshair block in style.css). A fixed targeting frame
+           (rotating scanner ring + corner brackets + centre pip) around four DYNAMIC spread ticks
+           whose gap is driven by WeaponManager (wide hipfire, tight ADS, a small fire bloom) while
+           the line weight stays constant. The whole reticle shifts to an amber "lock" on ADS. -->
       <div id="crosshair">
+        <span class="ch-frame">
+          <span class="ch-ring"></span>
+          <span class="ch-bracket ch-tl"></span>
+          <span class="ch-bracket ch-tr"></span>
+          <span class="ch-bracket ch-bl"></span>
+          <span class="ch-bracket ch-br"></span>
+        </span>
+        <span class="ch-dot"></span>
         <span class="ch-tick ch-top"></span>
         <span class="ch-tick ch-bottom"></span>
         <span class="ch-tick ch-left"></span>

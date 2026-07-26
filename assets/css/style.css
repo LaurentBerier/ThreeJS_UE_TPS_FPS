@@ -13,10 +13,17 @@ canvas {
   display: block;
 }
 
-/* Vector reticle: a zero-size point at screen centre with four ticks placed around it. The GAP from
-   centre to each tick is driven by WeaponManager via --reticle-gap (wider hipfire = less precision,
-   tighter ADS, a small fire bloom); the tick thickness/length are FIXED, so the outline weight is the
-   same whatever the spread — a bigger reticle never means thicker lines. */
+/* --- Sci-fi aim reticle -------------------------------------------------------------------------
+   A layered HUD reticle drawn in pure CSS, centred on a zero-size point at screen centre:
+     * four DYNAMIC spread ticks — the centre-to-tick GAP is driven by WeaponManager via
+       --reticle-gap (wider hipfire = less precision, tighter ADS, a small fire bloom); the tick
+       thickness/length are FIXED, so a bigger spread never means fatter lines;
+     * a slowly-rotating SEGMENTED scanner ring (four cardinal arcs, gaps at the diagonals);
+     * four CORNER BRACKETS framing the target box; and
+     * a centre pip for the precise aim point.
+   Everything inherits --reticle-color / --reticle-glow, so adding `.aiming` to #crosshair (set by
+   WeaponManager on ADS) recolours the whole reticle to a hot amber "lock", tightens the frame and
+   speeds the scan. */
 #crosshair {
   position: absolute;
   top: 50%;
@@ -26,17 +33,73 @@ canvas {
   pointer-events: none;
   --reticle-gap: 1vw;            /* centre -> inner end of each tick (set per-frame by WeaponManager) */
   --reticle-thickness: 2px;     /* CONSTANT outline weight — identical hipfire & ADS */
-  --reticle-length: 7px;        /* CONSTANT tick length */
-  --reticle-color: rgba(255, 255, 255, 0.9);
+  --reticle-length: 9px;        /* CONSTANT tick length */
+  --reticle-color: rgba(130, 240, 255, 0.95);   /* cyan HUD */
+  --reticle-glow: rgba(90, 220, 255, 0.6);
+  --reticle-ring: 56px;         /* scanner-ring diameter */
+  --reticle-frame: 34px;        /* corner-bracket half-extent (centre -> outer corner) */
 }
 
+/* Centre pip — the precise aim point. */
+.ch-dot {
+  position: absolute;
+  width: 3px; height: 3px;
+  left: -1.5px; top: -1.5px;
+  border-radius: 50%;
+  background: var(--reticle-color);
+  box-shadow: 0 0 4px 1px var(--reticle-glow), 0 0 0 1px rgba(0, 0, 0, 0.5);
+}
+
+/* Frame wrapper (ring + brackets): a zero-size point so `.aiming` can scale the whole frame in
+   around centre without disturbing the dynamic ticks. */
+.ch-frame {
+  position: absolute;
+  left: 0; top: 0;
+  width: 0; height: 0;
+  transition: transform 0.18s ease;
+}
+
+/* Rotating segmented scanner ring: a conic gradient of four 45deg cardinal arcs (45deg gaps at the
+   diagonals), masked down to a thin annulus. */
+.ch-ring {
+  position: absolute;
+  width: var(--reticle-ring);
+  height: var(--reticle-ring);
+  left: calc(var(--reticle-ring) / -2);
+  top: calc(var(--reticle-ring) / -2);
+  border-radius: 50%;
+  background: conic-gradient(from -22.5deg,
+    var(--reticle-color) 0 45deg, transparent 45deg 90deg,
+    var(--reticle-color) 90deg 135deg, transparent 135deg 180deg,
+    var(--reticle-color) 180deg 225deg, transparent 225deg 270deg,
+    var(--reticle-color) 270deg 315deg, transparent 315deg 360deg);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+          mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.6)) drop-shadow(0 0 3px var(--reticle-glow));
+  opacity: 0.85;
+  animation: ch-spin 7s linear infinite;
+}
+@keyframes ch-spin { to { transform: rotate(360deg); } }
+
+/* Four L-shaped corner brackets forming the target frame (each keeps only two adjacent borders). */
+.ch-bracket {
+  position: absolute;
+  box-sizing: border-box;
+  width: 10px; height: 10px;
+  border: 2px solid var(--reticle-color);
+  filter: drop-shadow(0 0 2px var(--reticle-glow));
+  opacity: 0.8;
+}
+.ch-tl { left: calc(var(--reticle-frame) * -1);      top: calc(var(--reticle-frame) * -1);      border-right: none; border-bottom: none; }
+.ch-tr { left: calc(var(--reticle-frame) - 10px);    top: calc(var(--reticle-frame) * -1);      border-left:  none; border-bottom: none; }
+.ch-bl { left: calc(var(--reticle-frame) * -1);      top: calc(var(--reticle-frame) - 10px);    border-right: none; border-top:    none; }
+.ch-br { left: calc(var(--reticle-frame) - 10px);    top: calc(var(--reticle-frame) - 10px);    border-left:  none; border-top:    none; }
+
+/* Dynamic spread ticks — glowing blades that taper toward centre. Gap driven by WeaponManager;
+   easing the gap makes hipfire<->ADS (and the fire bloom) bloom rather than snap. */
 .ch-tick {
   position: absolute;
-  background: var(--reticle-color);
-  /* Thin dark halo so the white ticks read on bright backgrounds, like the old sprite did. */
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55);
-  /* Ease the gap open/closed so swapping hipfire<->ADS (and the fire bloom) blooms rather than snaps.
-     The gap feeds top/bottom/left/right below, so transitioning those animates the spread. */
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.7)) drop-shadow(0 0 3px var(--reticle-glow));
   transition: top 0.1s ease-out, bottom 0.1s ease-out, left 0.1s ease-out, right 0.1s ease-out;
 }
 
@@ -46,8 +109,8 @@ canvas {
   height: var(--reticle-length);
   left: calc(var(--reticle-thickness) / -2);
 }
-.ch-top    { bottom: var(--reticle-gap); }
-.ch-bottom { top: var(--reticle-gap); }
+.ch-top    { bottom: var(--reticle-gap); background: linear-gradient(to bottom, transparent, var(--reticle-color)); }
+.ch-bottom { top:    var(--reticle-gap); background: linear-gradient(to top,    transparent, var(--reticle-color)); }
 
 /* Horizontal ticks (left/right of centre): wide = length, short = thickness, centred on Y. */
 .ch-left, .ch-right {
@@ -55,8 +118,16 @@ canvas {
   width: var(--reticle-length);
   top: calc(var(--reticle-thickness) / -2);
 }
-.ch-left  { right: var(--reticle-gap); }
-.ch-right { left: var(--reticle-gap); }
+.ch-left  { right: var(--reticle-gap); background: linear-gradient(to right, transparent, var(--reticle-color)); }
+.ch-right { left:  var(--reticle-gap); background: linear-gradient(to left,  transparent, var(--reticle-color)); }
+
+/* ADS "lock": hot amber, tighter frame, faster scan. */
+#crosshair.aiming {
+  --reticle-color: rgba(255, 186, 92, 0.98);
+  --reticle-glow: rgba(255, 150, 60, 0.7);
+}
+#crosshair.aiming .ch-frame { transform: scale(0.72); }
+#crosshair.aiming .ch-ring  { animation-duration: 2.6s; opacity: 1; }
 
 /* Damage vignette: a red glow that pools at the screen edges. Flashed (opacity 0 -> ~0.8 -> 0)
    by UIManager.FlashDamage on a hit. Above the world, below the HUD readouts; never eats input. */
@@ -253,9 +324,14 @@ button:hover {
   top: 5%;
 }
 
-/* --- TEMPORARY: all in-game UI/HUD hidden ("remove all UI for now"). The crosshair, ammo, health,
-   weapon name, camera-mode tag, damage vignette and debug overlay. Delete this block to restore
-   (the Stats.js FPS panel is hidden alongside it in entry.js SetupGraphics). --- */
-#game_hud,
+/* --- In-game UI: only the aim reticle is restored for now. The ammo, health, weapon-name and
+   camera-mode readouts, the damage vignette and the debug overlay stay hidden (they were stripped
+   with the rest of the HUD). #game_hud is shown (its visibility is flipped on by UIManager.Initialize
+   so the reticle appears only in-game); remove any id below to bring that readout back too.
+   (The Stats.js FPS panel is still hidden in entry.js SetupGraphics.) --- */
+#ammo_container,
+#weapon_name,
+#health_container,
+#camera_mode,
 #blood_overlay,
 #debug { display: none !important; }

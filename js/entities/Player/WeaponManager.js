@@ -378,6 +378,7 @@ export default class WeaponManager extends Component{
         let size = aiming ? this.aimReticle : this.hipReticle;
         if(firing){ size += this.fireBloom; }
         this.uimanager.SetReticleSize(size);
+        if(this.uimanager.SetReticleAiming){ this.uimanager.SetReticleAiming(aiming); }
     }
 
     Update(t){

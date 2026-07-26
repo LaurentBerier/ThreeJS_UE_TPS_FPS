@@ -41,6 +41,13 @@ export default class UIManager extends Component{
         if(el){ el.style.setProperty('--reticle-gap', `${vw}vw`); }
     }
 
+    // Toggle the reticle's ADS "lock" look (hot amber, tightened frame, faster scanner ring). Driven
+    // by WeaponManager alongside SetReticleSize so the crosshair visibly engages when aiming.
+    SetReticleAiming(on){
+        const el = document.getElementById("crosshair");
+        if(el){ el.classList.toggle('aiming', !!on); }
+    }
+
     Initialize(){
         document.getElementById("game_hud").style.visibility = 'visible';
     }
