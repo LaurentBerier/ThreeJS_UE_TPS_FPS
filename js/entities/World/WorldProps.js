@@ -169,6 +169,8 @@ export default class WorldProps extends Component{
         this._put('02_Archway_Lintel', px0, pz0, { size: 13, axis: 'x', yaw, ground: this._g(px0, pz0) + pierH - 1.9 })
         // The fallen block at the right pier's foot is now a tech crate (replaces the greybox).
         this._put('20_Tech_Crate', 147.6, 250.4, { size: 1.8, axis: 'x', yaw: yaw + 0.4, tilt: [0.1, 0.08] })
+        // A dead tree on the plateau rim where the banner flag + greybox barricade used to stand.
+        this._put('14_Dead_Tree', 142, 265, { size: 6.2, axis: 'y', yaw: 1.1 })
         // A marker post at the trailhead, off to the side of the shot.
         this._put('19_Marker_Post', 156, 250, { size: 4.2, axis: 'y', yaw: 0.4 })
         // A downed marker mast where the old antenna lay.

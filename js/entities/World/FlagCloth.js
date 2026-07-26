@@ -153,10 +153,7 @@ export class ClothSim{
 // at Initialize, the same contract every spawn uses.
 // ---------------------------------------------------------------------------------------------
 const FLAGS = [
-    // Start overlook, beside the gate the opening vista frames — the first thing that moves.
-    // Offset LEFT of the gate: at the first position the pole hid behind the arch beam from the
-    // spawn framing and the cloth read as glued to the structure.
-    { x: 140.5, z: 266.5, pole: 5.2 },
+    // (The start-overlook flag was removed — a WorldProps dead tree stands there now.)
     // Gate courtyard — the last-stand arena reads as HELD ground; a banner says whose.
     { x: -131.5, z: -220.5, pole: 5.6 },
     // Switchback vista spur parapet — visible from the wreck field far below.

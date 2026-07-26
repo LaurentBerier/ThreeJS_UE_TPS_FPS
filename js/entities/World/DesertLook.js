@@ -657,7 +657,9 @@ const GROUND_WARM = 0.30
 // ground was the bright surface enemies read against). The bright erosion streaks + the new AO pass
 // now carry that separation; watch enemy legibility against the dark ground when tuning.
 const GROUND_DARK = 0.22          // base outgoing-luma multiplier (lower = darker / nearer black)
-const GROUND_STREAK_VAL = 0.85    // erosion-streak outgoing-luma multiplier (higher = brighter cuts)
+const GROUND_STREAK_VAL = 0.11    // erosion-streak outgoing-luma multiplier — now BELOW the base so
+                                  // the drainage cuts read DARKER than the surrounding ground
+                                  // (was 0.85, which lifted them brighter)
 // Streak MASK: the active-cut channel (ero.R) is remapped through smoothstep(LO, HI) so only the
 // strong drainage lines lift bright — a low LO/HI would brighten the whole surface (ero.R mean ~0.20)
 // and wash the dark base back out, which is exactly what an early try did.

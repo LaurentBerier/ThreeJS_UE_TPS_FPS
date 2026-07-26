@@ -240,7 +240,9 @@ export default class Structures extends Component{
         // boom swings ~4.5 m behind the spawn, and anything standing there collapses the camera
         // onto the player's shoulder on frame one.
         this.box(3.4, 1.0, 1.0, 156, g(156, 250) + 0.42, 250, new THREE.Euler(0, 0.5, 0), { family: 'steel', standalone: true })
-        this.box(3.0, 0.95, 1.0, 142, g(142, 265) + 0.4, 265, new THREE.Euler(0, -0.9, 0), { family: 'steel', standalone: true })
+        // (This barricade's greybox is hidden — a WorldProps dead tree replaces it, beside the old
+        // flag. Collider kept so the plateau rim is unchanged.)
+        this.box(3.0, 0.95, 1.0, 142, g(142, 265) + 0.4, 265, new THREE.Euler(0, -0.9, 0), { family: 'steel', standalone: true, visual: false })
         // A downed antenna mast — old war junk, first hint of the buried military layer.
         this.cyl(0.16, 0.24, 9, 160, g(160, 267) + 0.8, 267,
             new THREE.Euler(0, 0.3, 1.35), { family: 'steel', visual: false })   // -> WorldProps 19_Marker_Post (downed)
