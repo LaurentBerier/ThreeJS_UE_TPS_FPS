@@ -296,14 +296,20 @@ export default class PlayerControls extends Component{
         // length (it just scales up as the camera nears), so a wall pulling the camera in can
         // never swing the character across the screen — there is nothing lateral to "centre".
         // A swept sphere (radius camRadius) finds how far out the camera can sit; the camera
-        // pulls IN to it IMMEDIATELY (so it can never slide through a wall while moving) and
-        // eases back OUT, so it tracks cover crisply yet still glides out when the wall clears.
+        // eases IN to it (snapping only on a large sudden encroachment, so it can never slide
+        // through a wall) and eases back OUT, so it tracks cover smoothly in BOTH directions.
         this.camRadius = 0.24;          // sphere radius for the spline collision sweep (metres)
-        // Dolly response is ASYMMETRIC: pulling IN (a wall encroaching) is INSTANT so the camera
-        // keeps up with walking/running toward cover and never lags into geometry — with the
-        // spline this is a pure dolly, so it reads as a quick close-up, not a swing. Pulling OUT
-        // (a wall clearing) eases at boomReturnRate so it glides back rather than popping.
-        this.boomReturnRate = 10.0;     // pull-OUT ease toward the rest length (1/s); pull-IN is instant
+        // Dolly response is ASYMMETRIC but BOTH directions are smoothed. Pulling IN (a wall
+        // encroaching) eases at the faster boomApproachRate so the close-up GLIDES rather than
+        // snapping, while still hugging cover quickly; pulling OUT (a wall clearing) eases at the
+        // gentler boomReturnRate so it drifts back rather than popping. Anti-clip safety: if a single
+        // resolve needs a pull-IN larger than boomSnapDist (a wall swinging suddenly into view, the
+        // camera rounding a corner), it SNAPS instead of easing so the lens never visibly glides
+        // THROUGH geometry — small grazes ease, big sudden encroachments cut. That snap threshold also
+        // caps the ease lag, so even a fast backward sprint into a wall can't drift the lens inside it.
+        this.boomApproachRate = 20.0;   // pull-IN ease toward cover (1/s) — smooth but snappy
+        this.boomReturnRate = 10.0;     // pull-OUT ease toward the rest length (1/s) — gentle glide
+        this.boomSnapDist = 0.5;        // pull-IN correction (m) beyond which the dolly snaps (anti-clip)
         this._curT = 1;                 // smoothed 0..1 position ALONG the pivot->rest spline (1 = fully out)
         this._camDist = this.tpsDistance; // live camera->pivot distance (m); drives CameraProximity
         this._camTarget = new THREE.Vector3();  // (first-person eye target)
@@ -990,14 +996,19 @@ export default class PlayerControls extends Component{
         const splineLen = Math.max(0.001, this._pivot.distanceTo(this._free));
         const minT = Math.min(1, this.tpsMinDistance / splineLen);
         const targetT = Math.max(safeT, minT);
-        // Dolly toward the target. Pull IN (targetT below where we are — a wall encroaching) is
-        // INSTANT so the camera keeps up with walking/running into cover and can never slide
-        // through geometry; pull OUT (the wall clearing) eases so it glides back rather than
-        // popping. With the spline the in-snap is a pure dolly — the framing never moves — so it
-        // does not read as the old lateral "jump".
-        if(!this._camInit || targetT < this._curT){
+        // Dolly toward the target, smoothed in BOTH directions (a pure dolly along the spline, so
+        // the framing never swings — it just glides closer/further). Pull IN (targetT below where we
+        // are — a wall encroaching) eases at the faster boomApproachRate, EXCEPT a large sudden
+        // encroachment (correction > boomSnapDist) snaps so the lens never glides through geometry;
+        // that snap also ceilings the ease lag, so a fast backward run into a wall can't drift the
+        // lens inside it. Pull OUT (the wall clearing) eases at the gentler boomReturnRate.
+        if(!this._camInit){
             this._curT = targetT;
             this._camInit = true;
+        }else if(targetT < this._curT){
+            const corrDist = (this._curT - targetT) * splineLen;   // metres the lens must travel IN
+            if(corrDist > this.boomSnapDist){ this._curT = targetT; }                                    // big sudden wall: snap (anti-clip)
+            else { this._curT += (targetT - this._curT) * (1 - Math.exp(-this.boomApproachRate * t)); }  // graze: glide in
         }else{
             this._curT += (targetT - this._curT) * (1 - Math.exp(-this.boomReturnRate * t));
         }
