@@ -131,6 +131,19 @@ export default class PlayerControls extends Component{
         this._curZoom = 1.0;      // eased zoom applied to the boom
         this.zoomLerp = 8;        // zoom ease rate (1/s)
 
+        // --- Close-in recentre. The over-the-shoulder framing reads well at the resting boom, but
+        // when the lens is dollied in CLOSE to the character (a wall collapsing the spring-arm, a hard
+        // wheel-zoom-in) that same lateral offset shoves the character to the screen edge. So the
+        // shoulder offset eases toward CENTRE as the camera nears the character and back OUT to the
+        // full off-shoulder framing as the boom pulls back — the character re-centres when close, then
+        // slides back off-centre (its current look) once the camera has room. Driven by the live
+        // camera->pivot distance (_camDist): fully off-shoulder at/beyond centerFarDist, fully centred
+        // at/inside centerNearDist, smoothstepped between. Suspended while aiming (an eased hip gate) so
+        // the precisely-tuned ADS over-the-shoulder framing is left exactly as authored.
+        this.centerNearDist = 0.8;  // camera->pivot distance (m) at/below which the character is fully centred
+        this.centerFarDist  = 2.0;  // camera->pivot distance (m) at/above which the full shoulder offset is restored (kept < tpsDistance so the resting hip framing stays off-centre)
+        this._centerHipEase = 1.0;  // eased hip gate: 1 at hip, 0 while aiming
+
         // Precise-aim mode (hold right click in TPS): the boom pulls in over the
         // shoulder, the FOV zooms, and the mouse slows for finer aim. Targets are
         // eased toward each frame so entering/leaving aim glides rather than snaps.
@@ -947,10 +960,21 @@ export default class PlayerControls extends Component{
         else { this._pivotSmooth.lerp(this._pivot, 1 - Math.exp(-this._pivotFollowRate * t)); }
         this._pivot.copy(this._pivotSmooth);
 
+        // Close-in recentre: ease the shoulder offset toward centre as the lens nears the character
+        // (see centerNearDist/centerFarDist). centerT is 1 at/beyond the far distance (full shoulder)
+        // and 0 at/inside the near distance (centred), smoothstepped between; _camDist is last frame's
+        // resolved camera->pivot distance (stable, and the dominant boom term dwarfs the small lateral
+        // feedback). The hip gate eases the whole effect out while aiming so ADS keeps its exact framing.
+        let centerT = THREE.MathUtils.clamp(
+            (this._camDist - this.centerNearDist) / (this.centerFarDist - this.centerNearDist), 0, 1);
+        centerT = centerT * centerT * (3 - 2 * centerT);   // smoothstep
+        this._centerHipEase += ((this.aiming ? 0 : 1) - this._centerHipEase) * k;
+        const effShoulder = this._curShoulder * (1 - (1 - centerT) * this._centerHipEase);
+
         // Far end of the spline: behind by the (aim/sprint + look-down) distance + over the shoulder.
         this._free.copy(this._pivot)
             .addScaledVector(this._fwd, -boom)
-            .addScaledVector(this._right, this._curShoulder);
+            .addScaledVector(this._right, effShoulder);
 
         // Sweep a sphere from the pivot to the rest point; the hit fraction is how far out the
         // camera may sit along the line (0..1). No static hit => fully out (1).
