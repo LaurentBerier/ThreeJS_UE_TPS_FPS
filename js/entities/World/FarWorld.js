@@ -283,6 +283,24 @@ export default class FarWorld extends Component{
                     rim *= 1.0 - smoothstep(0.55, 0.80, N.y) * 0.85;
                     col += uSunCol * rim * clamp(dot(L, -V) * 0.5 + 0.5, 0.0, 1.0) * 0.55;
 
+                    ${this.rugged ? /* glsl */`
+                    // DARK-RED re-grade, matched to the near ground (gradeGround: GROUND_DARK 0.22 /
+                    // GROUND_BASE_TINT (1,0.16,0.10)) so the far dune sea doesn't stay ochre against
+                    // the dark near ground — KEEP THE HUE IN SYNC with that block. Gated to the dune
+                    // SAND by 'sandy' so the cool alien spires, fortress and rock ridges keep their
+                    // own look. col is display-space here (raw shader, no ACES), so this is a direct
+                    // value-crush + deep-red tint; slightly less crush than near (0.26 vs 0.22) since
+                    // the far sea is read through haze. Far erosion is haze-owned, so no streak lift —
+                    // matching the base hue is what kills the near/far seam.
+                    {
+                        vec3 fLuma = vec3(0.2126, 0.7152, 0.0722);
+                        float sLum = max(dot(col, fLuma), 1e-4);
+                        vec3 sTint = vec3(1.0, 0.16, 0.10);
+                        sTint /= max(dot(sTint, fLuma), 1e-4);
+                        col = mix(col, sTint * (sLum * 0.26), sandy);
+                    }
+                    ` : ''}
+
                     // Atmospheric perspective, blending into the sky in THIS view direction
                     // rather than into a single flat fog colour. ALTITUDE-DEPENDENT, per the
                     // alien-vista reference: cold mist pools low — the far dune sea and the

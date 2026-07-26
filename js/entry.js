@@ -29,6 +29,7 @@ import PostFx from './PostFx.js'
 // contracts the depot used.
 import { BuildTerrainOpts, SPAWNS, SetRuggedDetail } from './entities/World/JourneyWorld.js'
 import Structures from './entities/World/Structures.js'
+import WorldProps from './entities/World/WorldProps.js'
 import { BuildJourneyNavmesh } from './entities/World/NavmeshGen.js'
 // HDR image-based lighting: cube env (specular) + SH light probe (diffuse) built from the .hdr —
 // the r127-safe substitute for PMREMGenerator (see HdrEnvironment.js). This is what keeps the
@@ -232,6 +233,18 @@ const rugEro    = 'assets/World/rugged/ero_1024.webp'
 const rugDetailBin = 'assets/World/rugged/detail_257.f32'
 const rugMetaJson  = 'assets/World/rugged/meta.json'
 
+// Sculpted world props — the ART PASS that replaces the greybox landmarks (see WorldProps.js). The
+// 20 Meshy models, compressed to shipping GLBs (assets/World/props/, ~0.6–2 MB each: meshopt-
+// simplified geometry + WebP textures; the raw ~600 MB sources in assets/World/meshy_batch/ stay
+// offline via .sandscapeignore). Loaded with the plain GLTFLoader — EXT_texture_webp decodes
+// natively in the vendored r127 loader with no decoder wiring, exactly like the Vortex Blaster.
+const PROP_FILES = [
+  '01_Obelisk', '02_Archway_Lintel', '03_Ceiling_Anchor', '04_Wall_Broken_Pipes', '05_Barrier_Wall',
+  '06_Portal_Pad', '07_Platform_Octagon', '08_Tech_Stairs', '09_Red_Rock_Arch', '10_Red_Rock_Platform',
+  '11_Red_Mesa', '12_Bone_Tusk', '13_Bone_Ribs', '14_Dead_Tree', '15_Crystal_Cluster',
+  '16_Broken_Mechanism', '17_Tech_Pod', '18_Wreckage', '19_Marker_Post', '20_Tech_Crate',
+]
+
 // Sky: the dusk sky is generated in a shader (see entities/World/DesertSky.js), so the old
 // bright-day photo dome (assets/sky.jpg) is no longer fetched. The file stays in the repo for
 // anyone restoring Sky2.js.
@@ -434,6 +447,8 @@ class FPSGameApp{
     promises.push(this.AddAsset(ak47Tps, akFbxLoader, "ak47Tps"));
     //Player's Vortex Blaster (compressed WebP GLB — plain GLTFLoader, no decoder needed)
     promises.push(this.AddAsset(vortexTps, gltfLoader, "vortexTps"));
+    //Sculpted world props (art pass) — same compressed-WebP GLTF path as the Vortex Blaster.
+    for(const p of PROP_FILES){ promises.push(this.AddAsset(`assets/World/props/${p}.glb`, gltfLoader, `prop_${p}`)); }
     //In-hand AK magazine-reload clip (drives the SK_AK47 'Magazine' bone, synced to body reload)
     promises.push(this.AddAsset(ak47Reload, gltfLoader, "ak47Reload"));
     //AK47
@@ -676,6 +691,15 @@ class FPSGameApp{
     const structures = new Structures(this.scene, this.physicsWorld, terrain, levelEntity);
     levelEntity.AddComponent(structures);
     console.timeEnd('[Journey] structures');
+    // The ART PASS: the 20 sculpted models placed over the greybox landmarks + scattered along the
+    // journey. PURELY VISUAL — colliders, navmesh footprints, line-of-sight and the camera boom all
+    // stay with Structures/Terrain above (the greybox pieces a prop covers are flagged visual:false
+    // there, keeping their colliders). Skipped gracefully if the prop GLBs failed to load.
+    console.time('[Journey] props');
+    const propScenes = {};
+    for(const p of PROP_FILES){ const a = this.assets[`prop_${p}`]; if(a && a.scene){ propScenes[p] = a.scene; } }
+    levelEntity.AddComponent(new WorldProps(this.scene, terrain, propScenes));
+    console.timeEnd('[Journey] props');
     // Navmesh: generated over the trail/arenas/side paths, minus structure footprints and
     // over-steep ground. The summit boss arena is deliberately a separate island (see NavmeshGen).
     console.time('[Journey] navmesh');

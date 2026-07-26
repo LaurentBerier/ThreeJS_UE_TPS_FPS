@@ -250,11 +250,13 @@ export default class DesertSky extends Component{
         // COMBAT: at 40 m the (density·m)² curve removes well under 1% of contrast (and the haze
         // banks are hard-gated to zero inside 55 m), so enemies and telegraphs are untouched.
         // THE LANDMARK: the castle at ~600 m now sits HIGH in a thin-air band — the height
-        // falloff pays for a denser base, so the keep stays ~80% readable while the basin floors
-        // below it drown at the same range. THE DEPTH: 0.0014 (up from the flat fog's 0.0011)
-        // is what buys the pooled-mist vista — low, far ground vanishing into cold haze is the
-        // depth cue the flat fog could never afford without erasing the castle too.
-        this.scene.fog = new THREE.FogExp2(PALETTE.haze.getHex(), 0.0014)
+        // falloff pays for a denser base, so the keep stays readable while the basin floors
+        // below it drown at the same range. THE DEPTH: 0.0017 (up from the flat fog's 0.0011,
+        // raised 0.0014 -> 0.0017 for the cinematic re-grade) is what buys the pooled-mist vista —
+        // low, far ground vanishing into cold haze is the depth cue the flat fog could never
+        // afford without erasing the castle too. The height falloff keeps the elevated keep clear
+        // while the extra density stacks up in the basins where the aerial perspective reads.
+        this.scene.fog = new THREE.FogExp2(PALETTE.haze.getHex(), 0.0017)
     }
 
     Update(t){

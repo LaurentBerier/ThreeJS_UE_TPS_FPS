@@ -90,7 +90,9 @@ export default class Structures extends Component{
     }
 
     // A box piece. opts: family, collider (default true), standalone (default false), ground
-    // (datum override), noFootprint (collider without navmesh exclusion — overhead spans).
+    // (datum override), noFootprint (collider without navmesh exclusion — overhead spans),
+    // visual (default true; false = build the collider + footprint but NO rendered geometry — the
+    // piece is now a sculpted WorldProps model, so only its greybox collider survives here).
     box(sx, sy, sz, x, y, z, rot = null, opts = {}){
         const family = opts.family || 'concrete'
         const g = new THREE.BoxGeometry(sx, sy, sz)
@@ -98,8 +100,10 @@ export default class Structures extends Component{
         const q = this._place(g, x, y, z, rot)
 
         let mesh = null
-        if(opts.standalone){ mesh = this._standalone(g, this.mats[family]) }
-        else{ this._buckets[family].push(g) }
+        if(opts.visual !== false){
+            if(opts.standalone){ mesh = this._standalone(g, this.mats[family]) }
+            else{ this._buckets[family].push(g) }
+        }
 
         if(opts.collider !== false){
             const body = this._boxCollider(sx / 2, sy / 2, sz / 2, x, y, z, q, opts.noFootprint)
@@ -109,7 +113,7 @@ export default class Structures extends Component{
         return g
     }
 
-    // A cylinder piece (towers, pillars, masts, pipes).
+    // A cylinder piece (towers, pillars, masts, pipes). See box() for opts (incl. visual:false).
     cyl(rTop, rBot, h, x, y, z, rot = null, opts = {}){
         const family = opts.family || 'concrete'
         const g = new THREE.CylinderGeometry(rTop, rBot, h, opts.segs || 10)
@@ -117,8 +121,10 @@ export default class Structures extends Component{
         const q = this._place(g, x, y, z, rot)
 
         let mesh = null
-        if(opts.standalone){ mesh = this._standalone(g, this.mats[family]) }
-        else{ this._buckets[family].push(g) }
+        if(opts.visual !== false){
+            if(opts.standalone){ mesh = this._standalone(g, this.mats[family]) }
+            else{ this._buckets[family].push(g) }
+        }
 
         if(opts.collider !== false){
             const r = Math.max(rTop, rBot)
@@ -221,7 +227,7 @@ export default class Structures extends Component{
         for(const s of [-1, 1]){
             const px = 145 + right.x * 5.2 * s, pz = 252 + right.z * 5.2 * s
             this.box(1.7, 7.5 + s * 0.9, 1.7, px, g(px, pz) + (7.5 + s * 0.9) / 2, pz,
-                new THREE.Euler(0, yaw, 0), { family: 'concrete', standalone: true })
+                new THREE.Euler(0, yaw, 0), { family: 'concrete', standalone: true, visual: false })   // -> WorldProps obelisks
         }
         // A fallen block half-buried at the right pier's foot (grounded — an earlier tilted
         // version floated in the frame and read as a glitch, not a ruin).
@@ -229,7 +235,7 @@ export default class Structures extends Component{
             new THREE.Euler(0.12, yaw + 0.4, 0.1), { family: 'concrete', standalone: true })
         // A lintel still spanning the piers — the frame the whole journey is first seen through.
         this.box(11.6, 1.4, 1.5, 145, g(145, 252) + 8.2, 252, new THREE.Euler(0, yaw, 0.03),
-            { family: 'concrete', noFootprint: true })
+            { family: 'concrete', noFootprint: true, visual: false })   // -> WorldProps 02_Archway_Lintel
         // Sand-drowned barricades along the plateau rim. Kept OFF the north-east quadrant: the TPS
         // boom swings ~4.5 m behind the spawn, and anything standing there collapses the camera
         // onto the player's shoulder on frame one.
@@ -237,7 +243,7 @@ export default class Structures extends Component{
         this.box(3.0, 0.95, 1.0, 142, g(142, 265) + 0.4, 265, new THREE.Euler(0, -0.9, 0), { family: 'steel', standalone: true })
         // A downed antenna mast — old war junk, first hint of the buried military layer.
         this.cyl(0.16, 0.24, 9, 160, g(160, 267) + 0.8, 267,
-            new THREE.Euler(0, 0.3, 1.35), { family: 'steel' })
+            new THREE.Euler(0, 0.3, 1.35), { family: 'steel', visual: false })   // -> WorldProps 19_Marker_Post (downed)
         // The torn banner hangs from the lintel, backlit in the frame of the opening shot.
         this.banner(145.8, g(145, 252) + 6.9, 252.8, yaw, 1.2, 2.6)
     }
@@ -245,36 +251,36 @@ export default class Structures extends Component{
     // ---- 2. Basin arena: first contact. Long sightlines, sparse cover, one dead hulk. ----------
     _basinArena(){
         const g = (x, z) => this._g(x, z)
-        this._wreckHulk(84, 168, 0.9, 1.0)
-        // Cover blocks — spaced ≥ 6 m so every route stays open.
-        this.box(2.6, 1.25, 1.4, 100, g(100, 186) + 0.55, 186, new THREE.Euler(0, 0.4, 0), { family: 'concrete', standalone: true })
-        this.box(2.2, 1.1, 1.3, 92, g(92, 176) + 0.5, 176, new THREE.Euler(0, -0.7, 0), { family: 'concrete', standalone: true })
-        this.box(2.8, 1.35, 1.5, 104, g(104, 174) + 0.6, 174, new THREE.Euler(0, 1.2, 0), { family: 'bronze', standalone: true })
-        // Collapsed wall run along the west rim — the arena's long cover line.
-        this._wallRun(82, 194, -0.6, 5, 'concrete')
+        this._wreckHulk(84, 168, 0.9, 1.0, false)               // -> WorldProps 18_Wreckage
+        // Cover blocks — spaced ≥ 6 m so every route stays open. (-> WorldProps barriers/crate)
+        this.box(2.6, 1.25, 1.4, 100, g(100, 186) + 0.55, 186, new THREE.Euler(0, 0.4, 0), { family: 'concrete', standalone: true, visual: false })
+        this.box(2.2, 1.1, 1.3, 92, g(92, 176) + 0.5, 176, new THREE.Euler(0, -0.7, 0), { family: 'concrete', standalone: true, visual: false })
+        this.box(2.8, 1.35, 1.5, 104, g(104, 174) + 0.6, 174, new THREE.Euler(0, 1.2, 0), { family: 'bronze', standalone: true, visual: false })
+        // Collapsed wall run along the west rim — the arena's long cover line. (-> WorldProps pipe-wall)
+        this._wallRun(82, 194, -0.6, 5, 'concrete', false)
     }
 
     // ---- 3. Saddle: the vista beat. A monolith pair gates the crest; the castle re-appears. ----
     _saddle(){
-        const g = (x, z) => this._g(x, z)
-        this.box(1.5, 6.4, 1.1, 38, g(38, 144) + 2.9, 144, new THREE.Euler(0, 0.2, 0.08), { family: 'concrete', standalone: true })
-        this.box(1.4, 5.6, 1.0, 29, g(29, 137) + 2.5, 137, new THREE.Euler(0, -0.3, -0.06), { family: 'concrete', standalone: true })
+        const g = (x, z) => this._g(x, z)   // -> WorldProps 01_Obelisk pair
+        this.box(1.5, 6.4, 1.1, 38, g(38, 144) + 2.9, 144, new THREE.Euler(0, 0.2, 0.08), { family: 'concrete', standalone: true, visual: false })
+        this.box(1.4, 5.6, 1.0, 29, g(29, 137) + 2.5, 137, new THREE.Euler(0, -0.3, -0.06), { family: 'concrete', standalone: true, visual: false })
     }
 
     // ---- 4. Ruins arena: buried civilisation. Arches + wall lines + pillars = flanking fight. --
     _ruinsArena(){
         const g = (x, z) => this._g(x, z)
         // The grand broken arch — the arena's centrepiece landmark, off the through-line.
-        this._brokenArch(-14, 86, 0.7, 11, 9)
-        // Wall runs forming two cover lines with a wide lane between them.
-        this._wallRun(-2, 100, 0.35, 6, 'concrete')
-        this._wallRun(4, 80, -1.2, 5, 'concrete')
-        // Pillars — vertical punctuation the soldiers strafe between.
-        this.cyl(0.55, 0.65, 3.2, -10, g(-10, 96) + 1.6, 96, null, { family: 'concrete', standalone: true })
-        this.cyl(0.5, 0.6, 2.4, 2, g(2, 92) + 1.2, 92, null, { family: 'concrete', standalone: true })
-        this.cyl(0.55, 0.62, 3.6, -4, g(-4, 78) + 1.8, 78, null, { family: 'concrete', standalone: true })
+        this._brokenArch(-14, 86, 0.7, 11, 9, false)            // -> WorldProps 09_Red_Rock_Arch
+        // Wall runs forming two cover lines with a wide lane between them. (-> WorldProps pipe-wall)
+        this._wallRun(-2, 100, 0.35, 6, 'concrete', false)
+        this._wallRun(4, 80, -1.2, 5, 'concrete', false)
+        // Pillars — vertical punctuation the soldiers strafe between. (-> WorldProps 19_Marker_Post)
+        this.cyl(0.55, 0.65, 3.2, -10, g(-10, 96) + 1.6, 96, null, { family: 'concrete', standalone: true, visual: false })
+        this.cyl(0.5, 0.6, 2.4, 2, g(2, 92) + 1.2, 92, null, { family: 'concrete', standalone: true, visual: false })
+        this.cyl(0.55, 0.62, 3.6, -4, g(-4, 78) + 1.8, 78, null, { family: 'concrete', standalone: true, visual: false })
         // Half-buried machinery with a faint tech seam — the "ancient technology" thread starts.
-        this.box(2.6, 1.5, 1.8, -18, g(-18, 82) + 0.5, 82, new THREE.Euler(0.12, 2.1, 0), { family: 'steel', standalone: true })
+        this.box(2.6, 1.5, 1.8, -18, g(-18, 82) + 0.5, 82, new THREE.Euler(0.12, 2.1, 0), { family: 'steel', standalone: true, visual: false })   // -> WorldProps 16_Broken_Mechanism
         this.strip(0.05, 0.5, 0.06, -16.8, g(-18, 82) + 1.0, 82.4, new THREE.Euler(0.12, 2.1, 0))
         // Overwatch ledge parapet (side path reward position).
         this.box(4.2, 1.05, 0.55, 32, g(32, 92.5) + 0.45, 92.5, new THREE.Euler(0, 0.75, 0), { family: 'concrete', standalone: true })
@@ -294,8 +300,8 @@ export default class Structures extends Component{
 
         // Pipes running along the canyon wall base + a vent box, hugging the west wall.
         this.cyl(0.28, 0.28, 16, -46.5, g(-46.5, 45) + 0.6, 45,
-            new THREE.Euler(Math.PI / 2 - 0.12, 0.72, 0), { family: 'steel', segs: 8 })
-        this.box(1.4, 1.6, 1.2, -51, g(-51, 49) + 0.7, 49, new THREE.Euler(0, 0.7, 0), { family: 'steel' })
+            new THREE.Euler(Math.PI / 2 - 0.12, 0.72, 0), { family: 'steel', segs: 8, visual: false })   // -> WorldProps pipe-wall
+        this.box(1.4, 1.6, 1.2, -51, g(-51, 49) + 0.7, 49, new THREE.Euler(0, 0.7, 0), { family: 'steel', visual: false })   // -> WorldProps 17_Tech_Pod
         // Ambush barricades at the canyon exit, angled to face the player's approach.
         this.box(3.2, 1.05, 1.0, -55, g(-55, 26) + 0.45, 26, new THREE.Euler(0, 0.85, 0), { family: 'steel', standalone: true })
         this.box(2.8, 1.0, 1.0, -62, g(-62, 20) + 0.42, 20, new THREE.Euler(0, 0.6, 0), { family: 'steel', standalone: true })
@@ -306,20 +312,20 @@ export default class Structures extends Component{
     // ---- 6. Wreck field: the military graveyard. Hulks as hard cover; the beast prowls here. ---
     _wreckField(){
         const g = (x, z) => this._g(x, z)
-        this._wreckHulk(-88, 12, 2.2, 1.25)
-        this._wreckHulk(-66, -9, 5.1, 1.0)
+        this._wreckHulk(-88, 12, 2.2, 1.25, false)             // -> WorldProps 18_Wreckage
+        this._wreckHulk(-66, -9, 5.1, 1.0, false)              // -> WorldProps 18_Wreckage
         // A crashed gantry: two legs + a fallen truss between them.
         this.cyl(0.3, 0.4, 7, -80, g(-80, -4) + 3.2, -4, new THREE.Euler(0, 0, 0.5), { family: 'steel' })
         this.cyl(0.3, 0.4, 6, -74, g(-74, 0) + 2.6, 0, new THREE.Euler(0.2, 0, -0.4), { family: 'steel' })
         this.box(7.5, 0.7, 0.9, -77, g(-77, -2) + 1.9, -2, new THREE.Euler(0, 0.5, 0.16), { family: 'steel' })
         // Generator block cluster (centre-north cover) with a dying tech seam.
-        this.box(2.4, 1.7, 1.9, -78, g(-78, 10) + 0.7, 10, new THREE.Euler(0, 0.3, 0), { family: 'steel', standalone: true })
-        this.box(1.6, 1.2, 1.4, -75.6, g(-75.6, 11.5) + 0.5, 11.5, new THREE.Euler(0, 0.9, 0), { family: 'steel', standalone: true })
+        this.box(2.4, 1.7, 1.9, -78, g(-78, 10) + 0.7, 10, new THREE.Euler(0, 0.3, 0), { family: 'steel', standalone: true, visual: false })   // -> WorldProps 17_Tech_Pod
+        this.box(1.6, 1.2, 1.4, -75.6, g(-75.6, 11.5) + 0.5, 11.5, new THREE.Euler(0, 0.9, 0), { family: 'steel', standalone: true, visual: false })   // -> WorldProps 20_Tech_Crate
         this.strip(0.06, 0.4, 0.05, -76.9, g(-78, 10) + 1.1, 10.9, new THREE.Euler(0, 0.3, 0))
-        // Cover blocks + the south barricade line (facing the beast's ground).
+        // Cover blocks + the south barricade line (facing the beast's ground). (-> WorldProps barriers)
         this.box(2.7, 1.3, 1.5, -70, g(-70, 6) + 0.55, 6, new THREE.Euler(0, -0.5, 0), { family: 'concrete', standalone: true })
-        this.box(3.3, 1.0, 1.0, -74, g(-74, -14) + 0.42, -14, new THREE.Euler(0, 0.35, 0), { family: 'steel', standalone: true })
-        this.box(3.0, 1.0, 1.0, -82, g(-82, -18) + 0.42, -18, new THREE.Euler(0, 0.1, 0), { family: 'steel', standalone: true })
+        this.box(3.3, 1.0, 1.0, -74, g(-74, -14) + 0.42, -14, new THREE.Euler(0, 0.35, 0), { family: 'steel', standalone: true, visual: false })
+        this.box(3.0, 1.0, 1.0, -82, g(-82, -18) + 0.42, -18, new THREE.Euler(0, 0.1, 0), { family: 'steel', standalone: true, visual: false })
     }
 
     // ---- 7. Switchbacks: parapets on the outer edges, a watchtower stub at the turn. -----------
@@ -334,7 +340,7 @@ export default class Structures extends Component{
         // Vista spur parapet — the breather overlook.
         parapet(-79, -109, 0.75, 6.5); parapet(-84.5, -115.5, 0.75, 5)
         this.banner(-80.5, g(-80.5, -110.5) + 2.1, -110.2, 0.75 + Math.PI)
-        this.cyl(0.12, 0.12, 4.4, -80.5, g(-80.5, -110.5) + 2.2, -110.5, null, { family: 'steel', segs: 6 })
+        this.cyl(0.12, 0.12, 4.4, -80.5, g(-80.5, -110.5) + 2.2, -110.5, null, { family: 'steel', segs: 6, visual: false })   // -> WorldProps 19_Marker_Post
         // Watchtower stub at switchback C's hairpin: the decision-point landmark.
         this.cyl(2.1, 2.5, 6.5, -152, g(-152, -172) + 3.2, -172, null, { family: 'bronze', standalone: true })
         this.box(2.2, 0.8, 2.2, -152, g(-152, -172) + 6.9, -172, new THREE.Euler(0, 0.4, 0), { family: 'bronze' })
@@ -374,11 +380,11 @@ export default class Structures extends Component{
                 this.box(1.1, 1.0, 1.0, cx, g(wx, wz) + 6.7, cz, new THREE.Euler(0, yaw, 0), { family: 'concrete', collider: false })
             }
         }
-        // Courtyard cover: blocks + an overturned machine.
-        this.box(2.6, 1.3, 1.5, -132, g(-132, -224) + 0.55, -224, new THREE.Euler(0, 0.9, 0), { family: 'concrete', standalone: true })
-        this.box(2.3, 1.15, 1.4, -143, g(-143, -222) + 0.5, -222, new THREE.Euler(0, -0.4, 0), { family: 'concrete', standalone: true })
-        this.box(2.9, 1.6, 1.8, -137, g(-137, -217) + 0.6, -217, new THREE.Euler(0.1, 1.7, 0.08), { family: 'steel', standalone: true })
-        this.box(3.2, 1.0, 1.0, -131, g(-131, -230) + 0.42, -230, new THREE.Euler(0, 0.5, 0), { family: 'steel', standalone: true })
+        // Courtyard cover: blocks + an overturned machine. (-> WorldProps crate/barrier/mechanism/stairs)
+        this.box(2.6, 1.3, 1.5, -132, g(-132, -224) + 0.55, -224, new THREE.Euler(0, 0.9, 0), { family: 'concrete', standalone: true, visual: false })
+        this.box(2.3, 1.15, 1.4, -143, g(-143, -222) + 0.5, -222, new THREE.Euler(0, -0.4, 0), { family: 'concrete', standalone: true, visual: false })
+        this.box(2.9, 1.6, 1.8, -137, g(-137, -217) + 0.6, -217, new THREE.Euler(0.1, 1.7, 0.08), { family: 'steel', standalone: true, visual: false })
+        this.box(3.2, 1.0, 1.0, -131, g(-131, -230) + 0.42, -230, new THREE.Euler(0, 0.5, 0), { family: 'steel', standalone: true, visual: false })
     }
 
     // ---- 9. The castle: summit boss arena ringed by the ruin itself, the keep behind. ----------
@@ -447,7 +453,7 @@ export default class Structures extends Component{
 
         // --- A cracked ancient core among the rubble — the arena's single cyan accent.
         this.box(0.9, 1.3, 0.9, A.x + Math.sin(bossA) * 9, A.floor + 0.55, A.z + Math.cos(bossA) * 9,
-            new THREE.Euler(0.15, 0.8, 0.1), { family: 'steel', standalone: true, ground: A.floor })
+            new THREE.Euler(0.15, 0.8, 0.1), { family: 'steel', standalone: true, ground: A.floor, visual: false })   // -> WorldProps 06_Portal_Pad + 15_Crystal_Cluster
         this.strip(0.06, 0.8, 0.07, A.x + Math.sin(bossA) * 9 + 0.42, A.floor + 0.7, A.z + Math.cos(bossA) * 9,
             new THREE.Euler(0.15, 0.8, 0))
 
@@ -517,56 +523,59 @@ export default class Structures extends Component{
     }
 
     // ---- Kits -----------------------------------------------------------------------------------
-    // A collapsed wall: a run of blocks progressively sinking into the sand.
-    _wallRun(x, z, yaw, n, family){
+    // A collapsed wall: a run of blocks progressively sinking into the sand. vis=false keeps the
+    // colliders but hides the greybox (a WorldProps pipe-wall run stands in for it).
+    _wallRun(x, z, yaw, n, family, vis = true){
         const dir = { x: Math.sin(yaw + Math.PI / 2), z: Math.cos(yaw + Math.PI / 2) }
         for(let i = 0; i < n; i++){
             const f = 1 - i / (n + 1)
             const h = Math.max(0.9, 2.6 * f)
             const px = x + dir.x * i * 3.1, pz = z + dir.z * i * 3.1
             this.box(3.0, h, 1.1, px, this._g(px, pz) + h / 2 - 0.15, pz,
-                new THREE.Euler(0, yaw + (i % 2) * 0.12, 0), { family, standalone: i < 2 })
+                new THREE.Euler(0, yaw + (i % 2) * 0.12, 0), { family, standalone: i < 2, visual: vis })
         }
     }
 
-    // A broken arch: two piers, a stepped partial span, one side collapsed.
-    _brokenArch(x, z, yaw, w, h){
+    // A broken arch: two piers, a stepped partial span, one side collapsed. vis=false keeps the
+    // pier colliders but hides the greybox (the Red_Rock_Arch prop stands in for it).
+    _brokenArch(x, z, yaw, w, h, vis = true){
         const right = { x: Math.cos(yaw), z: -Math.sin(yaw) }
         for(const s of [-1, 1]){
             const px = x + right.x * w * 0.5 * s, pz = z + right.z * w * 0.5 * s
             this.box(2.2, h, 2.6, px, this._g(px, pz) + h / 2 - 0.4, pz,
-                new THREE.Euler(0, yaw, 0), { family: 'concrete', standalone: true })
+                new THREE.Euler(0, yaw, 0), { family: 'concrete', standalone: true, visual: vis })
         }
         // Partial span springing from the left pier only.
         for(let i = 0; i < 3; i++){
             const t = -0.5 + i * 0.18
             const px = x + right.x * w * t, pz = z + right.z * w * t
             this.box(w * 0.2, 1.4, 2.4, px, this._g(x, z) + h - 0.6 + i * 0.5, pz,
-                new THREE.Euler(0, yaw, 0.12), { family: 'concrete', noFootprint: true })
+                new THREE.Euler(0, yaw, 0.12), { family: 'concrete', noFootprint: true, visual: vis })
         }
         // The fallen voussoirs, half-buried where they landed.
         this.box(2.0, 1.4, 1.7, x + right.x * w * 0.2, this._g(x, z) + 0.35, z + right.z * w * 0.2 + 2.4,
-            new THREE.Euler(0.3, yaw + 0.7, 0.2), { family: 'concrete', standalone: true })
+            new THREE.Euler(0.3, yaw + 0.7, 0.2), { family: 'concrete', standalone: true, visual: vis })
     }
 
     // An abandoned military hulk: hull, stepped superstructure, sponsons, canted mast. Gameplay
-    // scale, full colliders — this is hard cover the player fights around.
-    _wreckHulk(x, z, yaw, scale){
+    // scale, full colliders — this is hard cover the player fights around. vis=false keeps every
+    // collider but hides the greybox (a Wreckage prop stands in for it).
+    _wreckHulk(x, z, yaw, scale, vis = true){
         const g = this._g(x, z)
         const e = new THREE.Euler(0, yaw, 0.06)
-        this.box(9.5 * scale, 3.2 * scale, 3.6 * scale, x, g + 1.1 * scale, z, e, { family: 'steel', standalone: true })
+        this.box(9.5 * scale, 3.2 * scale, 3.6 * scale, x, g + 1.1 * scale, z, e, { family: 'steel', standalone: true, visual: vis })
         this.box(3.6 * scale, 2.4 * scale, 3.0 * scale, x - Math.cos(yaw) * 1.6 * scale, g + 3.6 * scale, z + Math.sin(yaw) * 1.6 * scale,
-            new THREE.Euler(0, yaw, 0), { family: 'steel', standalone: true })
+            new THREE.Euler(0, yaw, 0), { family: 'steel', standalone: true, visual: vis })
         this.box(2.0 * scale, 1.5 * scale, 2.2 * scale, x - Math.cos(yaw) * 2.0 * scale, g + 5.4 * scale, z + Math.sin(yaw) * 2.0 * scale,
-            new THREE.Euler(0, yaw, 0), { family: 'steel', collider: false })
+            new THREE.Euler(0, yaw, 0), { family: 'steel', collider: false, visual: vis })
         for(const s of [-1, 1]){
             this.box(7.0 * scale, 1.0 * scale, 0.9 * scale,
                 x + Math.sin(yaw) * 2.1 * scale * s, g + 0.6 * scale, z + Math.cos(yaw) * 2.1 * scale * s,
-                e, { family: 'steel' })
+                e, { family: 'steel', visual: vis })
         }
         this.cyl(0.14 * scale, 0.2 * scale, 8 * scale, x + Math.cos(yaw) * 1.2, g + 4.4 * scale, z - Math.sin(yaw) * 1.2,
-            new THREE.Euler(0, yaw, 0.45), { family: 'steel', segs: 6 })
-        // Faint cyan glow from a still-live cell in the hull crack.
+            new THREE.Euler(0, yaw, 0.45), { family: 'steel', segs: 6, visual: vis })
+        // Faint cyan glow from a still-live cell in the hull crack (kept — it's the tech accent).
         this.strip(0.06, 0.3, 0.05, x + Math.sin(yaw) * 1.9, g + 1.6 * scale, z + Math.cos(yaw) * 1.9,
             new THREE.Euler(0, yaw, 0))
     }

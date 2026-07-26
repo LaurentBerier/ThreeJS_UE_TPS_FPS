@@ -3,9 +3,12 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
+import AOPass from './AOPass.js'
 
 
-// Post stack: restrained bloom, then one combined finishing pass.
+// Post stack: screen-space ambient occlusion (contact shadows), restrained bloom, then one combined
+// finishing pass. The AO pass lives in AOPass.js and reads scene depth from a DepthTexture wired onto
+// the composer targets below; see _AttachDepth.
 //
 // ENCODING, which is the whole trick on three r127 and took measuring the pipeline to pin down.
 //
@@ -46,7 +49,17 @@ const FinishShader = {
         uTime: { value: 0 },
         uHorizon: { value: 0.5 },     // screen-space Y of the horizon, updated per frame
         uShimmer: { value: 1.0 },
-        uVignette: { value: 0.32 },
+        uVignette: { value: 0.39 },
+        // --- Cinematic grade knobs (all live-tunable via _APP.postFx.finish.uniforms). Values
+        // chosen by live A/B against the vista / grazing-ground / over-shoulder frames. ---
+        uContrast: { value: 1.13 },   // S-curve strength around the linear mid-grey pivot
+        uSplit: { value: 1.0 },       // master strength of the teal/orange split-tone
+        uGrain: { value: 0.025 },     // film-grain amplitude (0 = off)
+        uHiDesat: { value: 0.12 },    // roll the very brightest values toward white (clean sun core)
+        // Split-tone targets. Shadows cool toward the dusk sky, highlights warm toward the sun —
+        // the complementary teal/orange separation that reads as graded film. Vec3 (can exceed 1).
+        uShadowTint: { value: new THREE.Vector3(0.83, 0.93, 1.19) },
+        uHighTint:   { value: new THREE.Vector3(1.06, 1.00, 0.895) },
     },
     vertexShader: /* glsl */`
         varying vec2 vUv;
@@ -61,6 +74,12 @@ const FinishShader = {
         uniform float uHorizon;
         uniform float uShimmer;
         uniform float uVignette;
+        uniform float uContrast;
+        uniform float uSplit;
+        uniform float uGrain;
+        uniform float uHiDesat;
+        uniform vec3 uShadowTint;
+        uniform vec3 uHighTint;
         varying vec2 vUv;
 
         void main(){
@@ -78,20 +97,35 @@ const FinishShader = {
             vec4 c = texture2D(tDiffuse, uv);
 
             // --- Split-tone grade. Cool the shadows toward the dusk sky, warm the highlights
-            // toward the sun. This is what ties sand, steel and sky into one image.
+            // toward the sun — the complementary teal/orange separation that ties sand, steel and
+            // sky into one graded image and reads as film rather than raw render.
             //
             // Thresholds are in LINEAR light, not display values (see the header), so they look
-            // lower than they "should": linear 0.02 is roughly display 0.16, and linear 0.30 is
-            // roughly display 0.58. Grading with display-space numbers here crushed everything
+            // lower than they "should": linear 0.02 is roughly display 0.16, and linear 0.34 is
+            // roughly display 0.62. Grading with display-space numbers here crushed everything
             // below mid-grey to black.
             float lum = dot(c.rgb, vec3(0.299, 0.587, 0.114));
-            vec3 shadowTint = vec3(0.90, 0.95, 1.14);
-            vec3 highTint   = vec3(1.06, 1.00, 0.90);
-            c.rgb *= mix(shadowTint, highTint, smoothstep(0.02, 0.30, lum));
-            // A touch of contrast, pivoting on linear mid-grey (0.18), plus a small black lift so
-            // shadowed ground stays READABLE dark rather than going to pure black — the brief asks
-            // for readable dark areas, and this level fights in the shadow of its own containers.
-            c.rgb = max((c.rgb - 0.18) * 1.05 + 0.18, vec3(0.0)) + vec3(0.004, 0.0035, 0.005);
+            vec3 tint = mix(uShadowTint, uHighTint, smoothstep(0.02, 0.34, lum));
+            c.rgb *= mix(vec3(1.0), tint, uSplit);
+
+            // --- Filmic contrast. An S-curve around linear mid-grey (0.16), plus a small black
+            // lift so shadowed ground stays READABLE dark rather than going to pure black — the
+            // brief asks for readable dark areas, and this level fights in its own shadows.
+            c.rgb = max((c.rgb - 0.16) * uContrast + 0.16, vec3(0.0)) + vec3(0.004, 0.0035, 0.005);
+
+            // --- Highlight roll. Pull only the very brightest values a touch toward their own
+            // luma, so the sun-adjacent sky rolls off to a clean hot white instead of clipping to a
+            // hard orange edge. Gated high, so nothing mid-tone loses its colour.
+            float lh = dot(c.rgb, vec3(0.299, 0.587, 0.114));
+            c.rgb = mix(c.rgb, vec3(lh), smoothstep(0.60, 1.05, lh) * uHiDesat);
+
+            // --- Film grain. A per-frame hash, weighted toward the shadows and mid-tones (so it
+            // reads as emulsion in the dark air rather than sparkle on the bright sand) and toward
+            // frame edges. Added in linear space before the encode; also dithers the smooth sky
+            // gradient so it never bands on 8-bit output.
+            float gh = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233)) + uTime * 1.7) * 43758.5453);
+            float gw = (0.30 + 0.70 * (1.0 - smoothstep(0.0, 0.55, lh)));
+            c.rgb += (gh - 0.5) * uGrain * gw;
 
             // --- Vignette. Pulls the eye to the middle of frame, where the crosshair is.
             vec2 d = vUv - 0.5;
@@ -128,8 +162,23 @@ export default class PostFx{
         this.time = 0
 
         const size = renderer.getSize(new THREE.Vector2())
+        const dpr = renderer.getPixelRatio()
         this.composer = new EffectComposer(renderer)
         this.composer.addPass(new RenderPass(scene, camera))
+
+        // Give the composer's ping-pong targets a real depth texture so the AO pass can read scene
+        // depth straight out of the RenderPass we already do (no extra scene render). r127's
+        // WebGLRenderTarget.setSize does NOT resize an attached depth texture, so _AttachDepth
+        // (re)builds them here and on every resize to keep the framebuffer size-complete.
+        this._AttachDepth()
+
+        // Ambient occlusion: soft contact shadows where geometry meets geometry, composited BEFORE
+        // bloom (occluded creases must not glow) while the buffer is still linear + tone-mapped so a
+        // plain multiply darkens correctly. Built defensively — if the platform can't hand us a depth
+        // texture the pass blits colour straight through and the image is exactly the pre-AO build.
+        // Live-tunable via _APP.postFx.ao.aoMaterial.uniforms.* (uStrength=0 to A/B off).
+        this.ao = new AOPass(camera, Math.max(1, size.x * dpr), Math.max(1, size.y * dpr))
+        this.composer.addPass(this.ao)
 
         // Restrained: this is a dusty world, not a bloom demo. Values reaching this pass are
         // tone-mapped AND display-encoded (see header), so nothing exceeds 1.0 and a high threshold
@@ -145,10 +194,28 @@ export default class PostFx{
         this.SetSize(size.x, size.y)
     }
 
+    // (Re)build the depth textures on the composer's two ping-pong targets, matched to their current
+    // pixel size. Called once at build and after every resize because r127's WebGLRenderTarget.setSize
+    // leaves an attached depth texture at its old size — which would make the framebuffer incomplete.
+    // NearestFilter is mandatory: depth (DEPTH_COMPONENT) textures cannot be linearly filtered.
+    _AttachDepth(){
+        for(const rt of [this.composer.renderTarget1, this.composer.renderTarget2]){
+            if(rt.depthTexture){ rt.depthTexture.dispose() }
+            const dt = new THREE.DepthTexture(rt.width, rt.height)
+            dt.format = THREE.DepthFormat
+            dt.type = THREE.UnsignedIntType
+            dt.minFilter = THREE.NearestFilter
+            dt.magFilter = THREE.NearestFilter
+            rt.depthTexture = dt
+        }
+    }
+
     SetSize(w, h){
         const dpr = this.renderer.getPixelRatio()
+        // composer.setSize resizes the colour targets AND calls setSize on every pass (so the AO
+        // pass rescales its internal half-res targets); then we rebuild the depth textures to match.
         this.composer.setSize(w, h)
-        this.composer.setPixelRatio ? this.composer.setPixelRatio(dpr) : null
+        this._AttachDepth()
         this.bloom.setSize(w * dpr, h * dpr)
     }
 
@@ -168,8 +235,13 @@ export default class PostFx{
     }
 
     Dispose(){
-        this.composer && this.composer.renderTarget1 && this.composer.renderTarget1.dispose()
-        this.composer && this.composer.renderTarget2 && this.composer.renderTarget2.dispose()
+        if(this.composer){
+            for(const rt of [this.composer.renderTarget1, this.composer.renderTarget2]){
+                rt && rt.depthTexture && rt.depthTexture.dispose()
+                rt && rt.dispose()
+            }
+        }
         this.bloom && this.bloom.dispose && this.bloom.dispose()
+        this.ao && this.ao.dispose && this.ao.dispose()
     }
 }

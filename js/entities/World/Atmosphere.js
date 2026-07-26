@@ -277,7 +277,7 @@ export default class Atmosphere extends Component{
                     float n = dl_fbm(vec3(uv.x * 4.0, uv.y * 2.0 - uTime * 0.05, 0.0));
                     float body = smoothstep(0.55, 0.15, abs(uv.x - 0.5) * (2.4 - rise * 1.2));
                     float a = body * n * (1.0 - rise) * smoothstep(0.0, 0.25, rise);
-                    gl_FragColor = vec4(dl_toLinear(uCol), a * 0.22);
+                    gl_FragColor = vec4(dl_toLinear(uCol), a * 0.27);
                 }
             `,
         })
@@ -339,7 +339,10 @@ export default class Atmosphere extends Component{
                     float down = 1.0 - vUv.y;
                     float edge = smoothstep(0.0, 0.35, vUv.x) * smoothstep(1.0, 0.65, vUv.x);
                     float breathe = 0.75 + 0.25 * sin(uTime * 0.13 + vUv.x * 3.0);
-                    float a = edge * pow(vUv.y, 1.6) * 0.16 * breathe;
+                    // Raised 0.16 -> 0.22 for the cinematic re-grade: the god rays fanning off the
+                    // sun were barely legible; this makes the shafted light read as real air behind
+                    // the vista. Still additive + faint + 700 m out, so combat is untouched.
+                    float a = edge * pow(vUv.y, 1.6) * 0.22 * breathe;
                     gl_FragColor = vec4(dl_toLinear(uCol), a);
                 }
             `,
@@ -347,12 +350,15 @@ export default class Atmosphere extends Component{
 
         const group = new THREE.Group()
         const sunAng = Math.atan2(this.sunDir.z, this.sunDir.x)
-        for(let i = 0; i < 5; i++){
+        // 7 shafts (was 5), fanned a little wider so the shafted light owns more of the sky's
+        // sun-quadrant — the extra atmosphere the cinematic re-grade asks for.
+        const SHAFTS = 7
+        for(let i = 0; i < SHAFTS; i++){
             const g = new THREE.PlaneGeometry(1, 1)
             const m = new THREE.Mesh(g, mat)
-            const spread = (i - 2) * 0.16
+            const spread = (i - (SHAFTS - 1) / 2) * 0.135
             const dist = 700
-            const w = 90 + i * 22
+            const w = 80 + i * 18
             const h = 320
             m.scale.set(w, h, 1)
             const a = sunAng + spread
@@ -362,7 +368,7 @@ export default class Atmosphere extends Component{
                 PLAY_CENTER.y + Math.sin(a) * dist,
             )
             m.lookAt(PLAY_CENTER.x, h * 0.42, PLAY_CENTER.y)
-            m.rotateZ((i - 2) * 0.05)
+            m.rotateZ((i - (SHAFTS - 1) / 2) * 0.045)
             m.userData.noExport = true
             m.renderOrder = -900       // between the sky dome and the cloud deck
             group.add(m)

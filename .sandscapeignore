@@ -37,6 +37,12 @@ assets/characters/Sandscape_Liz.glb
 assets/guns/New/SK_VortexBlaster.fbx
 assets/guns/New/SK_VortexBlaster_raw.glb
 
+# --- World props (art pass): the game ships ONLY the compressed set in assets/World/props/
+# (~23 MB total, WebP + meshopt-simplified). The raw Meshy sources in assets/World/meshy_batch/
+# are ~600 MB (20 x 15-49 MB) — over the 500 MB/push limit and never fetched at runtime; they are
+# offline-only inputs to tools/compress_props.mjs, kept on disk (Git LFS) for regeneration. ---
+assets/World/meshy_batch/
+
 # --- Editor / OS cruft ---
 .DS_Store
 Thumbs.db

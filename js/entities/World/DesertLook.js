@@ -360,7 +360,10 @@ export function setFogTime(t){
 	vec3 fgSp = cameraPosition + fgRay * min(1.0, 220.0 / fgDist);
 	vec3 fgNp = (fgSp + ${v3(w)} * (fogTime * ${f1(FOG_DRIFT_MPS)})) * vec3(${f1(freq)}, ${f1(freq * 2.6)}, ${f1(freq)});
 	float fgBank = fgNoise(fgNp) * 0.65 + fgNoise(fgNp * 2.7 + 13.1) * 0.35;
-	float fgAmp = (0.20 + 0.33 * fgLow) * smoothstep(55.0, 170.0, fgDist);
+	// Bank contrast raised for the cinematic re-grade (0.20/0.33 -> 0.26/0.42): the drifting
+	// haze reads as distinct layered sheets of dust rather than an even wash, which is most of
+	// what sells the extra atmospheric depth. Combat gate (zero inside 55 m) is untouched.
+	float fgAmp = (0.26 + 0.42 * fgLow) * smoothstep(55.0, 170.0, fgDist);
 	fgI *= 1.0 + (fgBank * 2.0 - 1.0) * fgAmp;
 	#ifdef FOG_EXP2
 		float fogFactor = 1.0 - exp(-fogDensity * fogDensity * fgI * fgI);
@@ -374,7 +377,10 @@ export function setFogTime(t){
 	// glowing amber sheets.
 	float fgSun = pow(clamp(dot(fgDir, ${v3(s)}) * 0.5 + 0.5, 0.0, 1.0), 5.0) * (1.0 - fgLow * 0.45);
 	vec3 fgCol = mix(fogColor, ${c3(PALETTE.sunDeep)} * 1.06, fgSun * 0.62);
-	fgCol = mix(fgCol, ${c3(PALETTE.mist)}, fgLow * 0.45 * (1.0 - fgSun * 0.55));
+	// Cold pooled mist claiming the low, far ground — pushed 0.45 -> 0.55 for the cinematic
+	// re-grade so the distance reads cool against the warm sky (the teal/orange split again),
+	// deepening the sense of receding layers.
+	fgCol = mix(fgCol, ${c3(PALETTE.mist)}, fgLow * 0.55 * (1.0 - fgSun * 0.55));
 	gl_FragColor.rgb = mix(gl_FragColor.rgb, fgCol, fogFactor);
 #endif`
 
@@ -636,6 +642,30 @@ const GROUND_TEX_TILE = 2.6
 // full warm push was fighting the grey-blue macro layer it now sits under.
 const GROUND_WARM = 0.30
 
+// --- Dark-red ground re-grade (2026-07-25) ----------------------------------------------------
+// The near ground reads as a mix of DARK RED and ALMOST BLACK, with the erosion drainage cuts
+// lifted BRIGHTER so they streak across the dark surface. Applied to OUTGOING LIGHT (the only place
+// colour survives ACES — see the GROUND_WARM note), and it REPLACES the warm ochre grade above.
+//
+// Mechanism: crush the shaded luminance toward near-black and tint it deep red; where the erosion
+// 'active cut' channel (ero.R) is strong, lift the value back up toward a warmer, brighter tone so
+// the streaks are the bright element the eye reads instead of the whole ground. The lit-vs-shadowed
+// spread of the existing shading, multiplied by a dark factor, is what gives the dark-red -> black
+// range for free. All four look values ride uniforms for live tuning.
+//
+// READABILITY NOTE: this deliberately abandons the old "bright sand, dark silhouettes" model (the
+// ground was the bright surface enemies read against). The bright erosion streaks + the new AO pass
+// now carry that separation; watch enemy legibility against the dark ground when tuning.
+const GROUND_DARK = 0.22          // base outgoing-luma multiplier (lower = darker / nearer black)
+const GROUND_STREAK_VAL = 0.85    // erosion-streak outgoing-luma multiplier (higher = brighter cuts)
+// Streak MASK: the active-cut channel (ero.R) is remapped through smoothstep(LO, HI) so only the
+// strong drainage lines lift bright — a low LO/HI would brighten the whole surface (ero.R mean ~0.20)
+// and wash the dark base back out, which is exactly what an early try did.
+const GROUND_STREAK_LO = 0.30     // ero.R at/below this = pure dark base (no streak)
+const GROUND_STREAK_HI = 0.54     // ero.R at/above this = full streak lift
+const GROUND_BASE_TINT = new THREE.Vector3(1.0, 0.16, 0.10)    // deep-red hue direction (pre-norm)
+const GROUND_STREAK_TINT = new THREE.Vector3(1.0, 0.36, 0.22)  // deep-red-warm hue for the cuts (dialed back from an orange ember: too bright/warm read as glowing patches)
+
 // --- Rugged erosion look (the "Dark Alien Landscape" bake — tools/terrain_prep) ---------------
 // The geometry side of the pack lives in JourneyWorld (ENV_AMP/TRAIL_AMP); these knobs own how
 // the LOOK layers read. All of them ride uniforms, so a whole tuning sweep can run against a
@@ -675,7 +705,11 @@ export function gradeGround(material, tex = null, rugged = null){
             shader.uniforms.dlGroundTex = { value: tex }
             shader.uniforms.dlTexMean = { value: GROUND_TEX_MEAN.clone() }
             shader.uniforms.dlTexHue = { value: GROUND_TEX_HUE }
-            shader.uniforms.dlGroundWarm = { value: GROUND_WARM }
+            // Dark-red re-grade (replaces the warm ochre grade). Live-tunable.
+            shader.uniforms.dlGroundDark = { value: GROUND_DARK }
+            shader.uniforms.dlGroundStreakVal = { value: GROUND_STREAK_VAL }
+            shader.uniforms.dlBaseTint = { value: GROUND_BASE_TINT.clone() }
+            shader.uniforms.dlStreakTint = { value: GROUND_STREAK_TINT.clone() }
         }
         if(rugged){
             const meta = rugged.meta || {}
@@ -698,6 +732,8 @@ export function gradeGround(material, tex = null, rugged = null){
                 shader.uniforms.dlRugEro = { value: rugged.ero }
                 shader.uniforms.dlRugEroLuma = { value: RUG_ERO_LUMA }
                 shader.uniforms.dlRugEroHue = { value: RUG_ERO_HUE }
+                shader.uniforms.dlStreakLo = { value: GROUND_STREAK_LO }
+                shader.uniforms.dlStreakHi = { value: GROUND_STREAK_HI }
             }
         }
 
@@ -709,6 +745,11 @@ export function gradeGround(material, tex = null, rugged = null){
             uniform vec3 dlGravel;
             ${(tex || rugged) ? /* glsl */`
             const vec3 dlLuma = vec3(0.2126, 0.7152, 0.0722);
+
+            // Erosion-streak factor (0..1), written from the ero 'active cut' channel in the surface
+            // block and read at the dark-red grade to lift the streaks brighter. Global-mutable, the
+            // same carried-local pattern as dlAO. Stays 0 when the ero sheet is absent (no streaks).
+            float dlStreak = 0.0;
 
             // Hand-rolled sRGB decode. three generates one of these automatically for material.map,
             // but these textures ride plain uniforms (the heightfield has no uv attribute), so
@@ -738,6 +779,8 @@ export function gradeGround(material, tex = null, rugged = null){
             uniform sampler2D dlRugEro;
             uniform float dlRugEroLuma;
             uniform float dlRugEroHue;
+            uniform float dlStreakLo;
+            uniform float dlStreakHi;
             ` : ''}
             vec2 dlRugUV(vec2 xz){ return (xz + dlRugHalf) / dlRugSize; }
             // Terrain AO rides indirect light only — written in the surface block, applied after
@@ -748,7 +791,10 @@ export function gradeGround(material, tex = null, rugged = null){
             uniform sampler2D dlGroundTex;
             uniform vec3 dlTexMean;
             uniform float dlTexHue;
-            uniform float dlGroundWarm;
+            uniform float dlGroundDark;
+            uniform float dlGroundStreakVal;
+            uniform vec3 dlBaseTint;
+            uniform vec3 dlStreakTint;
 
             vec3 dlTap(vec2 uv){ return dlSrgbToLinear(texture2D(dlGroundTex, uv).rgb); }
 
@@ -965,6 +1011,11 @@ export function gradeGround(material, tex = null, rugged = null){
                     // average and the WHOLE floor quietly drops ~8% out of its luma budget.
                     float eLum = ev.g * 0.85 + ev.r * 0.30 - varn * 0.95 + 0.146;
                     col *= clamp(1.0 + eLum * dlRugEroLuma * g8, 0.68, 1.32);
+                    // Carry the active-cut drainage streaks (ero.R) to the dark-red grade, where
+                    // they are lifted bright against the crushed ground. The LO/HI remap keeps this
+                    // to the strong cuts only (see the constants). Gated by the detail mask so arena
+                    // floors stay clean.
+                    dlStreak = smoothstep(dlStreakLo, dlStreakHi, ev.r) * g8;
                     // Hue split at near-constant value: patina pulls brown-grey (cool), silt
                     // pulls pale-warm. Multiplicative, so per-texel chroma ratios survive.
                     vec3 eHue = mix(vec3(1.0), vec3(0.90, 0.87, 0.84), clamp(varn * 1.15, 0.0, 1.0) * dlRugEroHue * g8);
@@ -1033,21 +1084,27 @@ export function gradeGround(material, tex = null, rugged = null){
         if(tex){
             shader.fragmentShader = injectBefore(shader.fragmentShader, OUTPUT_ANCHOR, /* glsl */`
             {
-                // Warm the shaded result toward the far dune sea's ochre.
+                // DARK-RED GROUND GRADE (replaces the old warm ochre grade). Colour is set on the
+                // OUTGOING light because that is the only stage where it survives ACES (see the
+                // GROUND_WARM note above — a bright saturated albedo just tonemaps toward white).
                 //
-                // A MULTIPLICATIVE tint, not a mix toward a fixed hue. Mixing chromaticity toward a
-                // constant target is the obvious form, but at the strength this needs (~0.9) it
-                // drags almost every pixel onto one hue and flattens the per-texel chroma the
-                // albedo block works to keep — the grey pebbles go orange along with the sand.
-                // Scaling instead preserves the RATIOS between pixels, so the pebbles stay
-                // relatively cooler than the sand they sit in while everything warms together.
+                // VALUE: crush the shaded luminance toward near-black at the base and lift it back up
+                // on the erosion streaks. The lit-vs-shadowed spread already carried in outgoingLight,
+                // multiplied by this dark factor, is what produces the dark-red -> almost-black range
+                // across the surface for free — lit faces land in deep red, shadow pools in near black.
                 //
-                // Renormalised back to the original luminance, so this is hue-only by construction
-                // and cannot quietly darken the sand out of its readability budget.
+                // HUE: a deep-red direction for the base and a warmer, brighter ember for the streaks,
+                // each renormalised to unit luminance so the tint is PURE chromaticity and the value is
+                // owned solely by the term above (a saturated tint can't secretly re-brighten the base).
                 float l = max(dot(outgoingLight, dlLuma), 1e-4);
-                vec3 warm = dlTexMean / max(dot(dlTexMean, dlLuma), 1e-4);
-                vec3 c = outgoingLight * mix(vec3(1.0), warm, dlGroundWarm);
-                outgoingLight = c * (l / max(dot(c, dlLuma), 1e-4));
+                float streak = clamp(dlStreak, 0.0, 1.0);
+
+                vec3 tint = mix(dlBaseTint, dlStreakTint, streak);
+                tint /= max(dot(tint, dlLuma), 1e-4);
+
+                float val = l * mix(dlGroundDark, dlGroundStreakVal, streak);
+
+                outgoingLight = tint * val;
             }
             `)
         }
