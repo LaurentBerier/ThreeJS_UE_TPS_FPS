@@ -149,6 +149,7 @@ export default class WorldProps extends Component{
         this._switchbacks()
         this._gate()
         this._summit()
+        this._citadel()
         this._scatter()
     }
 
@@ -156,14 +157,18 @@ export default class WorldProps extends Component{
     // low/side dressing here, nothing tall on the sightline.
     _startArea(){
         const yaw = Math.atan2(CASTLE.x - 150, CASTLE.z - 258)
-        // Two obelisks framing the castle bearing (replace the greybox piers). Pushed a touch wider
-        // than the old piers so the opening castle silhouette stays clear between them.
         const right = { x: Math.cos(yaw), z: -Math.sin(yaw) }
+        // Two obelisks framing the castle bearing (replace the greybox piers).
+        const pierH = 8.0, pierDist = 5.7, px0 = 145, pz0 = 252
         for(const s of [-1, 1]){
-            this._put('01_Obelisk', 145 + right.x * 6.2 * s, 252 + right.z * 6.2 * s, { size: 7.6, axis: 'y', yaw })
+            this._put('01_Obelisk', px0 + right.x * pierDist * s, pz0 + right.z * pierDist * s, { size: pierH, axis: 'y', yaw })
         }
-        // The lintel still spanning the two piers (replaces the start lintel box).
-        this._put('02_Archway_Lintel', 145, 252, { size: 12, axis: 'x', yaw, ground: this._g(145, 252) + 7.4 })
+        // The lintel spanning the piers — seated so it RESTS ON the pier tops. The models don't fill
+        // their bounding boxes to the very top/bottom, so the base is dropped ~1.9 m below the pier
+        // bbox top to close the gap; width overhangs the piers so the ends land on the stone.
+        this._put('02_Archway_Lintel', px0, pz0, { size: 13, axis: 'x', yaw, ground: this._g(px0, pz0) + pierH - 1.9 })
+        // The fallen block at the right pier's foot is now a tech crate (replaces the greybox).
+        this._put('20_Tech_Crate', 147.6, 250.4, { size: 1.8, axis: 'x', yaw: yaw + 0.4, tilt: [0.1, 0.08] })
         // A marker post at the trailhead, off to the side of the shot.
         this._put('19_Marker_Post', 156, 250, { size: 4.2, axis: 'y', yaw: 0.4 })
         // A downed marker mast where the old antenna lay.
@@ -263,6 +268,78 @@ export default class WorldProps extends Component{
         this._put('05_Barrier_Wall', A.x - 9, A.z + 6, { size: 2.7, axis: 'x', yaw: -0.5, ground: A.floor })
     }
 
+    // 9b. The summit skyline: the Meshy citadel on the far hill (replaces the procedural keep +
+    // towers) with a blue energy laser firing straight up — the destination beacon, seen from spawn.
+    _citadel(){
+        const entA = Math.atan2(CASTLE.lip.x - CASTLE.arena.x, CASTLE.lip.z - CASTLE.arena.z)
+        const back = 54                                   // metres behind the arena, on the far hill
+        const cx = CASTLE.x - Math.sin(entA) * back
+        const cz = CASTLE.z - Math.cos(entA) * back
+        const W = 132, sink = 4                           // 2x — a colossal fortress on the skyline
+        if(!this.templates['Citadel']){ console.warn('[WorldProps] Citadel model missing'); return }
+        this._put('Citadel', cx, cz, { size: W, axis: 'max', yaw: entA + Math.PI, sink })
+        // Laser origin = the citadel's top centre (base + full scaled height - sink), started a few
+        // metres inside the roofline so the beam reads as emerging from the structure.
+        const t = this.templates['Citadel']
+        const k = W / Math.max(t.size.x, t.size.y, t.size.z)
+        const topY = this._g(cx, cz) + t.size.y * k - sink
+        this._laser(cx, cz, topY - 4)
+    }
+
+    // A vertical energy beam: 3 crossed additive quads (reads as a beam from any angle) with a hot
+    // white-blue core, a soft blue glow, and energy pulses scrolling up; the PostFx bloom does the
+    // rest. fog:false so it stays a clean beacon across the 600 m from the start overlook.
+    _laser(x, z, baseY){
+        const H = 420, w = 17
+        this._laserMats = this._laserMats || []
+        const mat = new THREE.ShaderMaterial({
+            transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide,
+            blending: THREE.AdditiveBlending,
+            uniforms: {
+                uTime: { value: 0 },
+                uCore: { value: new THREE.Color(0xf2f8ff) },
+                uGlow: { value: new THREE.Color(0x2f86ff) },
+            },
+            vertexShader: /* glsl */`
+                varying vec2 vUv;
+                void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+            `,
+            fragmentShader: /* glsl */`
+                varying vec2 vUv;
+                uniform float uTime; uniform vec3 uCore; uniform vec3 uGlow;
+                void main(){
+                    float d = abs(vUv.x - 0.5) * 2.0;                          // 0 centre -> 1 edge
+                    float core = smoothstep(0.30, 0.0, d);                    // hot core (wider)
+                    float glow = pow(1.0 - d, 1.8);                           // soft wide glow
+                    float vfade = mix(1.0, 0.06, pow(vUv.y, 1.1));            // strong at base -> thin at top
+                    float pulse = 0.92 + 0.16 * sin(uTime * 3.0 - vUv.y * 24.0);   // energy scrolling up
+                    float a = (glow * 1.25 + core * 2.6) * vfade * pulse;     // brighter
+                    gl_FragColor = vec4(mix(uGlow, uCore, core) * (1.0 + core * 1.4), clamp(a, 0.0, 2.6));
+                }
+            `,
+        })
+        this._laserMats.push(mat)
+        const g = new THREE.Group()
+        for(let i = 0; i < 3; i++){
+            const geo = new THREE.PlaneGeometry(w, H)
+            geo.translate(0, H / 2, 0)                     // pivot at the base
+            const m = new THREE.Mesh(geo, mat)
+            m.rotation.y = (i / 3) * Math.PI
+            m.castShadow = m.receiveShadow = false
+            g.add(m)
+        }
+        g.position.set(x, baseY, z)
+        g.renderOrder = 3
+        this.root.add(g)
+        // A bright emitter flare where the beam leaves the roof.
+        const flare = new THREE.Mesh(new THREE.IcosahedronGeometry(6.0, 1),
+            new THREE.MeshBasicMaterial({ color: 0xe8f4ff, transparent: true, opacity: 1.0,
+                blending: THREE.AdditiveBlending, depthWrite: false, fog: false }))
+        flare.position.set(x, baseY, z)
+        flare.castShadow = flare.receiveShadow = false
+        this.root.add(flare)
+    }
+
     // 10. Off-route scatter — dead trees, bones, crystals, mesas, rock platforms. All placed OFF the
     // walkable set (arena skirts, dune flanks) so none needs a collider. Kept clear of the opening
     // vista cone (the start->castle sightline) so the first frame still shows the fortress.
@@ -294,7 +371,11 @@ export default class WorldProps extends Component{
         this._put('03_Ceiling_Anchor', -32, 96, { size: 5.5, axis: 'y', yaw: 1.0, tilt: [0.12, 0.08] })
     }
 
-    Update(){}
+    Update(t){
+        if(!this._laserMats){ return }
+        this._time = (this._time || 0) + t
+        for(const m of this._laserMats){ m.uniforms.uTime.value = this._time }
+    }
 
     Dispose(){
         this.scene.remove(this.root)

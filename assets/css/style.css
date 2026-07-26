@@ -252,3 +252,10 @@ button:hover {
   right: 5%;
   top: 5%;
 }
+
+/* --- TEMPORARY: all in-game UI/HUD hidden ("remove all UI for now"). The crosshair, ammo, health,
+   weapon name, camera-mode tag, damage vignette and debug overlay. Delete this block to restore
+   (the Stats.js FPS panel is hidden alongside it in entry.js SetupGraphics). --- */
+#game_hud,
+#blood_overlay,
+#debug { display: none !important; }

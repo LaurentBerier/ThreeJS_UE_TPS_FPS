@@ -42,6 +42,9 @@ assets/guns/New/SK_VortexBlaster_raw.glb
 # are ~600 MB (20 x 15-49 MB) — over the 500 MB/push limit and never fetched at runtime; they are
 # offline-only inputs to tools/compress_props.mjs, kept on disk (Git LFS) for regeneration. ---
 assets/World/meshy_batch/
+# The summit citadel ships as the compressed assets/World/props/Citadel.glb (~1.2 MB); this is the
+# 15 MB raw Meshy source (offline input to tools/compress_citadel.mjs).
+assets/World/Citadel_0723213948_texture.glb
 
 # --- Editor / OS cruft ---
 .DS_Store

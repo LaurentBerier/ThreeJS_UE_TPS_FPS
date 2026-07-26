@@ -230,9 +230,9 @@ export default class Structures extends Component{
                 new THREE.Euler(0, yaw, 0), { family: 'concrete', standalone: true, visual: false })   // -> WorldProps obelisks
         }
         // A fallen block half-buried at the right pier's foot (grounded — an earlier tilted
-        // version floated in the frame and read as a glitch, not a ruin).
+        // version floated in the frame and read as a glitch, not a ruin). (-> WorldProps 20_Tech_Crate)
         this.box(1.6, 1.3, 1.2, 147.6, g(147.6, 250.4) + 0.35, 250.4,
-            new THREE.Euler(0.12, yaw + 0.4, 0.1), { family: 'concrete', standalone: true })
+            new THREE.Euler(0.12, yaw + 0.4, 0.1), { family: 'concrete', standalone: true, visual: false })
         // A lintel still spanning the piers — the frame the whole journey is first seen through.
         this.box(11.6, 1.4, 1.5, 145, g(145, 252) + 8.2, 252, new THREE.Euler(0, yaw, 0.03),
             { family: 'concrete', noFootprint: true, visual: false })   // -> WorldProps 02_Archway_Lintel
@@ -471,13 +471,15 @@ export default class Structures extends Component{
 
         // --- The keep: the colossal mass behind the arena, climbing toward the sun. Backdrop and
         // skyline — outside the wall ring, unreachable, but REAL geometry with real colliders.
+        // Keep + towers + buttresses are now the WorldProps Citadel model (visual:false keeps their
+        // colliders — they sit outside the wall ring, unreachable, so the change is skyline-only).
         const K = { x: CASTLE.x - Math.sin(entA) * 26, z: CASTLE.z - Math.cos(entA) * 26 }
         const kYaw = entA
         const kg = this._g(K.x, K.z)
-        this.box(34, 20, 22, K.x, kg + 10, K.z, new THREE.Euler(0, kYaw, 0), { family: 'concrete' })
-        this.box(26, 16, 17, K.x, kg + 27, K.z, new THREE.Euler(0, kYaw, 0), { family: 'concrete', noFootprint: true })
+        this.box(34, 20, 22, K.x, kg + 10, K.z, new THREE.Euler(0, kYaw, 0), { family: 'concrete', visual: false })
+        this.box(26, 16, 17, K.x, kg + 27, K.z, new THREE.Euler(0, kYaw, 0), { family: 'concrete', noFootprint: true, visual: false })
         this.box(18, 13, 13, K.x - Math.sin(kYaw) * 2, kg + 41, K.z - Math.cos(kYaw) * 2,
-            new THREE.Euler(0, kYaw, 0), { family: 'concrete', noFootprint: true })
+            new THREE.Euler(0, kYaw, 0), { family: 'concrete', noFootprint: true, visual: false })
 
         // Towers: two intact with spires, two snapped. Heights uneven — a ruin's skyline. Sized to
         // DOMINATE: the tallest spire tops out ~95 m over the summit, which is what keeps the
@@ -492,18 +494,18 @@ export default class Structures extends Component{
             const tx = K.x + t.dx, tz = K.z + t.dz
             const tg = this._g(tx, tz)
             const shaft = t.broken ? t.h * 0.55 : t.h
-            this.cyl(t.r * 0.84, t.r, shaft, tx, tg + shaft / 2, tz, null, { family: 'concrete', segs: 9 })
+            this.cyl(t.r * 0.84, t.r, shaft, tx, tg + shaft / 2, tz, null, { family: 'concrete', segs: 9, visual: false })
             if(t.broken){
                 for(let i = 0; i < 5; i++){
                     const a = (i / 5) * Math.PI * 2
                     this.box(t.r * 0.5, 1.5 + (i % 3), t.r * 0.5,
                         tx + Math.cos(a) * t.r * 0.6, tg + shaft + 0.8 + (i % 3) * 0.5, tz + Math.sin(a) * t.r * 0.6,
-                        new THREE.Euler(0, a, 0), { family: 'concrete', collider: false })
+                        new THREE.Euler(0, a, 0), { family: 'concrete', collider: false, visual: false })
                 }
             }else{
-                this.box(t.r * 2.5, 1.6, t.r * 2.5, tx, tg + shaft + 0.8, tz, null, { family: 'concrete', collider: false })
+                this.box(t.r * 2.5, 1.6, t.r * 2.5, tx, tg + shaft + 0.8, tz, null, { family: 'concrete', collider: false, visual: false })
                 this.cyl(0.25, t.r * 0.95, t.h * 0.5, tx, tg + shaft + 1.6 + t.h * 0.25, tz, null,
-                    { family: 'concrete', collider: false, segs: 8 })
+                    { family: 'concrete', collider: false, segs: 8, visual: false })
             }
         }
         // Flying buttresses off the keep's flanks — the gothic verticals.
@@ -512,14 +514,10 @@ export default class Structures extends Component{
             this.box(1.5, 24, 2.0,
                 K.x + Math.cos(kYaw) * (14 + k * 5) * s, kg + 15 + k * 3,
                 K.z - Math.sin(kYaw) * (14 + k * 5) * s,
-                new THREE.Euler(0, kYaw, s * 0.42), { family: 'concrete', collider: false })
+                new THREE.Euler(0, kYaw, s * 0.42), { family: 'concrete', collider: false, visual: false })
         }
-        // Ancient-tech conduits climbing the keep face.
-        this.strip(0.16, 16, 0.14, K.x + Math.sin(kYaw) * 11.2 + 4, kg + 15, K.z + Math.cos(kYaw) * 11.2,
-            new THREE.Euler(0, kYaw, 0.05))
-        this.strip(0.13, 12, 0.11, K.x + Math.sin(kYaw) * 11.2 - 5, kg + 12, K.z + Math.cos(kYaw) * 11.2,
-            new THREE.Euler(0, kYaw, -0.04))
-        this.banner(K.x + Math.sin(kYaw) * 11.3, kg + 16.5, K.z + Math.cos(kYaw) * 11.3, kYaw, 1.8, 4.8)
+        // (Ancient-tech conduits + banner on the old keep face are gone with it — the Citadel model
+        // carries the summit skyline now, and the blue laser beam is its accent.)
     }
 
     // ---- Kits -----------------------------------------------------------------------------------

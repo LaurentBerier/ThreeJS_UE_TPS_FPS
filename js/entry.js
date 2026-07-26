@@ -243,6 +243,8 @@ const PROP_FILES = [
   '06_Portal_Pad', '07_Platform_Octagon', '08_Tech_Stairs', '09_Red_Rock_Arch', '10_Red_Rock_Platform',
   '11_Red_Mesa', '12_Bone_Tusk', '13_Bone_Ribs', '14_Dead_Tree', '15_Crystal_Cluster',
   '16_Broken_Mechanism', '17_Tech_Pod', '18_Wreckage', '19_Marker_Post', '20_Tech_Crate',
+  // The summit citadel (replaces the procedural keep/towers — see WorldProps._citadel).
+  'Citadel',
 ]
 
 // Sky: the dusk sky is generated in a shader (see entities/World/DesertSky.js), so the old
@@ -329,8 +331,10 @@ class FPSGameApp{
 
     document.body.appendChild( this.renderer.domElement );
 
-    // Stats.js
+    // Stats.js — created (Step() still calls update()) but HIDDEN with the rest of the UI for now
+    // (see the temporary block in style.css). Remove this display toggle to restore the FPS panel.
     this.stats = new Stats();
+    this.stats.dom.style.display = 'none';
     document.body.appendChild(this.stats.dom);
   }
 
