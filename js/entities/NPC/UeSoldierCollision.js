@@ -61,7 +61,13 @@ export default class UeSoldierCollision extends Component{
             // spring-arm sweeps against — so the camera would dolly off the soldier's body
             // capsules. CharacterFilter stays hittable by the weapon ray (mask = All & ~Sensor)
             // while the camera (mask = StaticFilter) passes through. See CharacterCollision.
-            this.world.addCollisionObject(object, CollisionFilterGroups.CharacterFilter, CollisionFilterGroups.AllFilter);
+            // MASK = DefaultFilter, not AllFilter: these spheres exist to be RAY-HIT (rays carry
+            // group DefaultFilter, so (sphereGroup & rayMask) && (rayGroup & sphereMask) still
+            // passes). An AllFilter mask made every sphere form broadphase pairs with the terrain
+            // trimesh, the structures and every OTHER sphere — thousands of useless pairs the
+            // narrow phase chewed on each step. DefaultFilter keeps only pairs vs group-1 bodies
+            // (the player capsule, dropped guns) — a handful.
+            this.world.addCollisionObject(object, CollisionFilterGroups.CharacterFilter, CollisionFilterGroups.DefaultFilter);
 
             this.parts.push({bone, object});
         });
@@ -80,7 +86,21 @@ export default class UeSoldierCollision extends Component{
 
     Update(t){
         if(!this.enabled){ return; }
+        // Dormant soldier (AiDirector asleep): sync ONCE so the spheres park at the resting pose,
+        // then skip the per-frame bone syncs. The one-shot park is critical — a soldier dormant
+        // from birth has never run an Update, and without it every ghost in the level sat stacked
+        // at the WORLD ORIGIN, which alone generated ~18k broadphase pairs (~40 ms of narrow
+        // phase per step). A bullet that finds a parked sphere still lands (TakeHit wakes the
+        // encounter).
+        if(this.controller && this.controller.dormant){
+            if(!this._parked){ this._parked = true; this.SyncToBones(); }
+            return;
+        }
+        this._parked = false;
+        this.SyncToBones();
+    }
 
+    SyncToBones(){
         for(const {bone, object} of this.parts){
             bone.getWorldPosition(this.bonePos);
             const transform = object.getWorldTransform();

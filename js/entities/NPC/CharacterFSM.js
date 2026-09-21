@@ -107,10 +107,12 @@ class ChaseState extends State{
     constructor(parent){
         super(parent);
         // Re-acquire the player's position often so the beast tracks you tightly and stays
-        // dangerous instead of running to where you *were* half a second ago. Tightened (was 0.2)
-        // so the chase path follows the moving player closely and the beast stops over-running
-        // stale routes into corners.
-        this.updateFrequency = 0.12;
+        // dangerous instead of running to where you *were* half a second ago. The cadence was
+        // 0.12 s with an UNCONDITIONAL rebuild — the most expensive habit in the AI (FindPath +
+        // a SmoothPath clearance pass 8x a second, even against a standing player). Each check
+        // now goes through NavigateToPlayerIfMoved's dest-moved gate, so 0.25 s keeps the same
+        // effective tracking (a sprinting player moves ~1.1 m per check) at a fraction of the cost.
+        this.updateFrequency = 0.25;
         this.updateTimer = 0.0;
         this.attackDistance = 2.0;
         this.shouldRotate = false;
@@ -146,8 +148,15 @@ class ChaseState extends State{
         // detour (detourTimer), in which case we let that alternate waypoint play out instead of
         // immediately re-routing back into the corner that wedged us.
         if(this.parent.proxy.detourTimer <= 0.0 && this.updateTimer <= 0.0){
-            this.parent.proxy.NavigateToPlayer();
+            this.parent.proxy.NavigateToPlayerIfMoved(1.5);   // rebuild only when the player moved
             this.updateTimer = this.updateFrequency;
+        }
+
+        // No route this moment (player on an unreachable perch / across the arena moat): keep the
+        // body trained on them while the empty-path recovery detours play out, so the beast reads
+        // as a prowling hunter sizing you up — not a statue frozen mid-combat facing nowhere.
+        if(!this.parent.proxy.path?.length && !this.parent.proxy.IsCloseToPlayer){
+            this.parent.proxy.FacePlayer(t, 4.0);
         }
 
         if(this.parent.proxy.IsCloseToPlayer){

@@ -101,7 +101,11 @@ export default class CharacterCollision extends Component{
             // colliding with the beast's arms/fists and dollying in when it punched near the lens.
             // CharacterFilter keeps these hittable by the weapon raycast (mask = All & ~Sensor,
             // which includes CharacterFilter) while the camera (mask = StaticFilter) passes through.
-            this.world.addCollisionObject(collision.object, CollisionFilterGroups.CharacterFilter, CollisionFilterGroups.AllFilter);
+            // MASK = DefaultFilter (see UeSoldierCollision): rays still hit (ray group is
+            // DefaultFilter), but the capsules stop forming broadphase pairs with the terrain,
+            // the structures and every other hit volume — pairs the narrow phase paid for every
+            // step for nothing.
+            this.world.addCollisionObject(collision.object, CollisionFilterGroups.CharacterFilter, CollisionFilterGroups.DefaultFilter);
         });
 
     }
@@ -123,6 +127,16 @@ export default class CharacterCollision extends Component{
 
     Update(t){
         if(this._disposed){ return; }
+        // Dormant beast (AiDirector asleep): sync ONCE so the capsules park at the resting pose
+        // (a beast dormant from birth has never synced — unparked ghosts would sit stacked at the
+        // world origin), then skip the per-bone syncs. A bullet that finds one still lands
+        // (TakeHit wakes the encounter).
+        if(this.controller && this.controller.dormant){
+            if(this._parked){ return; }
+            this._parked = true;
+        }else{
+            this._parked = false;
+        }
         Object.keys(this.collisions).forEach(key=>{
             const collision = this.collisions[key];
 

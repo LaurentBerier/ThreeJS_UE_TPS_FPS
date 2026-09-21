@@ -55,6 +55,20 @@ export default class PlayerControls extends Component{
         this._crouchCamEased = 0;           // eased 0..crouchCamDrop applied to the TPS camera pivot
         this.crouchCamLerp = 8;             // ease rate (1/s) for the camera drop
 
+        // --- Static idle PARK. Standing still on a slope used to visibly CREEP downhill: the move
+        // path zeroes X/Z velocity every frame, but within each physics step gravity still adds a
+        // downhill tangential component at the contact and the capsule slid a few cm per second
+        // (worst on the steep authored ramps, where no auto-slide fires because they're on-route).
+        // While idle (no move input, grounded, settled) the body is PARKED: full velocity zeroed and
+        // the capsule transform held at an anchor each frame, so no per-step drift can accumulate —
+        // the character stands truly static on any hill. Input/jump/airborne frames release it; a
+        // crouch resize or a big external displacement (knockback, teleport) re-anchors instead.
+        this._parked = false;
+        this._parkPos = new THREE.Vector3();     // anchored capsule origin while parked
+        this._parkCur = new THREE.Vector3();     // scratch: current capsule origin
+        this._parkCrouched = false;              // capsule stance at anchor time (resize => re-anchor)
+        this.parkReanchorDistSq = 0.5 * 0.5;     // legit external move beyond this => re-anchor, not snap-back
+
         this.mouseSpeed = 0.002;
         this.mouseSpikeCap = 260;        // max |movementX/Y| (px) accepted per mouse event — rejects pointer-lock spikes that read as a camera "reset" mid-orbit
         this.physicsComponent = null;
@@ -1429,16 +1443,23 @@ export default class PlayerControls extends Component{
             if(!this._crouchLatch){ this._crouchLatch = true; this._crouchToggle = !this._crouchToggle; }
         }else{ this._crouchLatch = false; }
         const crouchHeld = Input.GetKeyDown('AltLeft') || Input.GetKeyDown('AltRight');
+        // MOVING CANCELS THE CROUCH: the crouch is a stationary stance — any move input stands the
+        // player up and the regular walk takes over (there is no crouch-walk gait any more). The
+        // C-toggle is cleared so stopping doesn't surprise-re-crouch (a held Alt DOES re-crouch on
+        // stopping, which is the natural hold-key expectation). SetCrouched below still gates the
+        // stand on head clearance, so under a low ceiling the crouch (and its slow speed) persists
+        // until there's room — `crouching` reflects the capsule's ACTUAL state either way.
+        const moveInput = (forwardFactor !== 0 || rightFactor !== 0);
+        if(moveInput){ this._crouchToggle = false; }
         // Require grounded to ENTER a crouch, but STAY crouched through brief IsGrounded flickers (it's
-        // computed from contact manifolds, which drop for a frame on faceted-terrain crests). Gating
-        // purely on IsGrounded made crouch-walking over bumps stand up for a frame and re-crouch — a
-        // capsule resize + pose pop every few steps (the crouch-walk "animation glitch"). `|| crouching`
-        // latches the crouch so only releasing the toggle/key (or the explicit jump force-stand) lifts it.
-        const wantCrouch = (this._crouchToggle || crouchHeld) && (this.IsGrounded || this.crouching);
+        // computed from contact manifolds, which drop for a frame on faceted-terrain crests). `|| crouching`
+        // latches the crouch so only releasing the toggle/key, moving, or the explicit jump force-stand
+        // lifts it (the latch predates the move-cancel; it still guards the blocked-stand case).
+        const wantCrouch = !moveInput && (this._crouchToggle || crouchHeld) && (this.IsGrounded || this.crouching);
         this.physicsComponent.SetCrouched(wantCrouch);
         this.crouching = this.physicsComponent.crouched;
         if(this.crouching){
-            this.maxSpeed *= this.crouchSpeedMultiplier;   // slow crouch-walk (composes with aim)
+            this.maxSpeed *= this.crouchSpeedMultiplier;   // slow move while a low ceiling blocks the stand
             this.isSprinting = false;                      // no crouch-sprint
         }
 
@@ -1561,8 +1582,39 @@ export default class PlayerControls extends Component{
             }
         }
 
-        velocity.setX(moveVector.x);
-        velocity.setZ(moveVector.z);
+        // --- Static idle park (see the constructor note): with no move input, grounded and settled,
+        // hold the capsule dead still instead of letting per-step gravity creep it down the slope.
+        // The steep-slope reactions above already ran (an off-route auto-slide fires before this and
+        // returns), so parking only ever engages where standing still is the intended outcome.
+        const idleStill = !moveInput && !jumpedThisFrame && this.IsGrounded
+            && this.speed.lengthSq() < 0.01;
+        if(idleStill){
+            const msP = this.physicsBody.getMotionState();
+            if(msP){
+                msP.getWorldTransform(this.transform);
+                const o = this.transform.getOrigin();
+                this._parkCur.set(o.x(), o.y(), o.z());
+                const crouchedNow = this.physicsComponent.crouched;
+                if(!this._parked || this._parkCrouched !== crouchedNow
+                   || this._parkPos.distanceToSquared(this._parkCur) > this.parkReanchorDistSq){
+                    // Fresh park / capsule resize / something moved us legitimately: anchor HERE.
+                    this._parked = true;
+                    this._parkCrouched = crouchedNow;
+                    this._parkPos.copy(this._parkCur);
+                }else{
+                    // Hold: snap the capsule back onto the anchor so the within-step slide can't stack.
+                    o.setValue(this._parkPos.x, this._parkPos.y, this._parkPos.z);
+                    this.transform.setOrigin(o);
+                    this.physicsBody.setWorldTransform(this.transform);
+                    msP.setWorldTransform(this.transform);
+                }
+            }
+            velocity.setX(0); velocity.setY(0); velocity.setZ(0);
+        }else{
+            this._parked = false;
+            velocity.setX(moveVector.x);
+            velocity.setZ(moveVector.z);
+        }
 
         this.physicsBody.setLinearVelocity(velocity);
         this.physicsBody.setAngularVelocity(this.zeroVec);

@@ -79,12 +79,30 @@ export class IKChainSolver{
         }else{
             this._u.multiplyScalar(1 / Math.sqrt(uLenSq));
             if(refValid){
+                // NEAR-STRAIGHT GUARD. When the animated chain is almost straight (the knee sits only a
+                // couple cm off the hip->ankle chord — a standing clip leg the crouch is about to pull
+                // into a DEEP bend), the animated pole's DIRECTION is numeric noise: solving a big bend
+                // along it flipped the knee sideways/backward frame-to-frame (the crouch/stand knee
+                // flips). Below ~2 cm of true bend the reference pole takes over fully, fading back to
+                // the animated pole by ~6 cm — smooth, so the handover itself can never pop.
+                const uLen = Math.sqrt(uLenSq);
+                const refBias = 1 - THREE.MathUtils.clamp((uLen - 0.02) / 0.04, 0, 1);
+                const stab = Math.max(poleStabilize, refBias);
                 // Stabilize: bias the animated pole toward the fixed reference so the joint doesn't
                 // swivel/gimbal as the animated chain (and any aim) move — it stays in a consistent plane.
-                if(poleStabilize > 0){ this._u.lerp(this._poleRef, poleStabilize).normalize(); }
-                // Flip-guard: if it still points to the wrong side, correct fully.
-                const align = this._u.dot(this._poleRef);             // <0 => bend on the wrong side
-                if(align < 0){ this._u.lerp(this._poleRef, Math.min(1, -align)).normalize(); }
+                if(stab > 0){ this._u.lerp(this._poleRef, stab).normalize(); }
+                // Flip-guard with a positive MARGIN. The old guard corrected only a strictly negative
+                // alignment, and only proportionally — a pole just past perpendicular was left nearly
+                // perpendicular, i.e. a knee pointing 90° sideways (the visible "half flip"). Now any
+                // pole within ~84° of perpendicular is pulled toward the reference just far enough to
+                // restore a healthy positive alignment; fully opposite still corrects fully. Continuous
+                // in the input, so the correction can't snap.
+                const margin = 0.1;
+                const align = this._u.dot(this._poleRef);
+                if(align < margin){
+                    const pull = THREE.MathUtils.clamp((margin - align) / (1 - align), 0, 1);
+                    this._u.lerp(this._poleRef, pull).normalize();
+                }
             }
         }
 

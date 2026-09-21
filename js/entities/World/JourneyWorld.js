@@ -582,4 +582,20 @@ export function IsOnRoute(x, z){
     return false
 }
 
+// Walkable EXTENSION test for the navmesh generator: within `margin` metres past the corridor
+// edge (trail spine, branch, or an arena flat). The generator opens these cells under a LOWER
+// slope limit than the authored route, so enemies can chase a player who steps OFF the trail
+// onto the flanking dunes/bunds instead of freezing at the corridor edge (the navmesh used to
+// end exactly where the player's freedom didn't). NOTE: SpineQuery's hash grid registers samples
+// into ±1 of their 32 m cell, so the distance test is only guaranteed out to ~32 m from the
+// spine — keep margins at or below that, which also keeps the extension local to the route.
+export function IsNearRoute(x, z, margin = 24){
+    const q = SpineQuery(x, z)
+    if(q.d < q.w + margin){ return true }
+    for(const f of FLATS){
+        if(Math.hypot(x - f.x, z - f.z) < f.r + margin){ return true }
+    }
+    return false
+}
+
 export { FLATS, SPINE }

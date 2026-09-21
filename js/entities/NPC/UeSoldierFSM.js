@@ -98,7 +98,11 @@ class PatrolState extends State{
 class ChaseState extends State{
     constructor(parent){
         super(parent);
-        this.updateFrequency = 0.2;
+        // Repath cadence. Raised from 0.2 s: each check now also passes through the controller's
+        // dest-moved gate (NavigateToTargetIfMoved), so a path is only rebuilt when the target has
+        // actually gone somewhere — the squad no longer fires synchronized A* bursts five times a
+        // second while chasing. Tracking stays tight: a sprinting player moves ~1.6 m per check.
+        this.updateFrequency = 0.35;
         this.updateTimer = 0.0;
         this.lostTimer = 0.0;
     }
@@ -158,7 +162,7 @@ class ChaseState extends State{
         }
 
         if(this.updateTimer <= 0.0){
-            proxy.NavigateToTarget();
+            proxy.NavigateToTargetIfMoved(1.8);   // rebuild only when the target actually moved
             this.updateTimer = this.updateFrequency;
         }
         this.updateTimer -= t;
@@ -260,10 +264,10 @@ class CombatState extends State{
         this.fireTimer = 0.15;                      // short wind-up: engage almost immediately
         this.loseSightTimer = 0.0;
         this.retargetTimer = 0.4;
-        // Open by STRAFING so the soldier is moving the moment the firefight starts (it falls back to a
-        // brief hold if it can't find a strafe path); the duty cycle then favours movement with short
-        // organic pauses rather than planting and standing.
-        this.EnterStrafe(proxy);
+        // Open PLANTED and shooting. This used to open with a strafe so the soldier was moving the
+        // instant the firefight started; the duty cycle now favours holding position with occasional
+        // short repositions instead ("they move too much").
+        this.EnterHold(proxy);
     }
 
     Exit(){
@@ -272,27 +276,41 @@ class CombatState extends State{
         proxy.combatFacing = false;
     }
 
-    // Plant and fire — a BRIEF organic pause (more accurate while still), not a long stand. Cautious
-    // soldiers pause a touch longer than aggressive ones; jittered per soldier so a squad isn't in sync.
-    // Kept short (~0.25..1.0s) so the soldier is moving most of the firefight (see EnterStrafe).
+    // Plant and fire — now the DOMINANT combat phase, not a brief pause. Cautious soldiers hold
+    // longer than aggressive ones; jittered per soldier so a squad isn't in sync. Lengthened hard
+    // (~1.3..3.9s, was ~0.25..1.0s) so the soldier spends most of the firefight standing and
+    // shooting. While suppressed (actively being shot) the hold is extended to cover the rest of
+    // the suppression window, so the player's own fire keeps him pinned.
     EnterHold(proxy){
         this.phase = 'hold';
         proxy.SetMoveIntent(0.0);                    // stop: the legs settle to idle, the torso keeps firing
         proxy.ClearPath();
-        const base = 0.7 - 0.3 * proxy.aggression;   // cautious ~0.7s, aggressive ~0.4s
-        this.phaseTimer = base * (0.6 + Math.random() * 0.8);
+        // repositionInterval IS the firing window ("seconds of firing before relocating"), so it
+        // drives the hold; aggression shortens it a little so pushers relocate sooner.
+        const base = proxy.repositionInterval * (1.15 - 0.35 * proxy.aggression);
+        this.phaseTimer = base * (0.7 + Math.random() * 0.6);   // ~2.7 .. 7.4 s
+        if(proxy.suppressedTimer > 0.0){
+            this.phaseTimer = Math.max(this.phaseTimer, proxy.suppressedTimer);
+        }
     }
 
     // Reposition: pick a fresh flanking spot and strafe to it while facing + firing. Some soldiers
-    // (holdGroundChance) skip the move and just hold again, for variety. No usable path => hold.
+    // (holdGroundChance) skip the move and just hold again, for variety. When the scored pick can't
+    // find a path, fall back to a plain short lateral juke (NavigateLateralStrafe) before giving up
+    // and holding — a soldier whose every reposition failed used to plant for the whole firefight,
+    // which read as "stuck in combat". Only if BOTH fail does it hold (degrade, never freeze).
     EnterStrafe(proxy){
+        // Being shot right now: stay planted and trade fire instead of juking away mid-burst.
+        if(proxy.suppressedTimer > 0.0){ this.EnterHold(proxy); return; }
         if(!proxy.target || Math.random() < proxy.holdGroundChance){ this.EnterHold(proxy); return; }
-        const ok = proxy.NavigateToCombatPosition(proxy.target);
+        const ok = proxy.NavigateToCombatPosition(proxy.target)
+                || proxy.NavigateLateralStrafe(proxy.target);
         if(!ok){ this.EnterHold(proxy); return; }
         this.phase = 'strafe';
         proxy.SetMoveIntent(proxy.combatMoveSpeed);
-        // Strafe for a juke or two; shorter than the hold so movement stays unpredictable.
-        this.phaseTimer = 0.7 + Math.random() * (0.5 + proxy.repositionInterval * 0.4);
+        // One short juke, then back to holding — much shorter than the hold phase now, so movement
+        // reads as a deliberate occasional relocation rather than constant circling.
+        this.phaseTimer = 0.45 + Math.random() * 0.5;
     }
 
     Update(t){

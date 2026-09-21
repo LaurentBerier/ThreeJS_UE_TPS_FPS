@@ -3,11 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- Deliberately unbranded: no game title, no engine or template names anywhere the player
-         can see (the brief strips all titles/logos/branding — only the world remains). -->
+    <!-- The tab title stays blank; the branding the player sees is the title key art on the
+         menu + loading screen (assets/ui/title_art.webp, wired up in style.css). No engine or
+         template names anywhere. -->
     <title>&#8212;</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="assets/css/style.css" />
+    <!-- The menu is the first thing revealed after boot, so fetch its backdrop alongside the
+         stylesheet rather than waiting for the CSS to discover it. -->
+    <link rel="preload" as="image" href="assets/ui/title_art.webp" />
 
     <!--
       Buildless ES-module setup (Sandscape game format — fully self-contained, no CDN):

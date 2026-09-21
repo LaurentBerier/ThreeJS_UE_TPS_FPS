@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { WORLD, IsOnRoute, CASTLE, SPAWNS } from './JourneyWorld.js'
+import { WORLD, IsOnRoute, IsNearRoute, CASTLE, SPAWNS } from './JourneyWorld.js'
 
 // Procedural navmesh for the journey level, replacing the baked navmesh.obj the old depot shipped.
 //
@@ -30,6 +30,25 @@ const CELL = 2.75          // metres per nav cell — fine enough for the 9 m ca
 // cut (the ~50° ramp and the drop-in lip are similar steepness, so any limit that passes the ramp
 // passes the lip too) — it is severed instead by the rim-moat band below, widened to guarantee it.
 const SLOPE_LIMIT = 3.0    // rise/run (~71.6°) — above this a cell is unwalkable (near-vertical only)
+// OFF-ROUTE extension: a band of walkable cells past the corridor edge so enemies can FOLLOW a
+// player who leaves the trail (the player's slope physics let them roam the flanking dunes/bunds;
+// the navmesh used to end at the corridor edge, so chasers froze there — the biggest remaining
+// "they get stuck" case).
+//
+// The off-route band used to be gated by a LOWER slope limit than the route (1.07 ≈ 47°) on the
+// reasoning that the player tops out at ~36° uphill, so anything steeper was unreachable anyway.
+// In practice that still left chasers stalling at the foot of steep off-trail ground the player
+// could reach by other means (sliding in, dropping down, the ~50° on-route ramp spilling them
+// off-corridor). Raised to the SAME limit as the route on request — "make them climb any slope,
+// they should never get stuck" — so the only cells still cut anywhere are the near-vertical ones
+// (~72°+). The band is also widened so the walkable area extends well past where a player can
+// plausibly wander off-trail.
+//
+// The boss arena is NOT at risk from this: it is severed by the explicit rim-moat band below,
+// which cuts every radial regardless of route/extension (and BuildJourneyNavmesh warns loudly if
+// the island ever ends up connected).
+const OFF_ROUTE_MARGIN = 40        // metres of extra walkable band past the corridor edge (was 24)
+const OFF_SLOPE_LIMIT = SLOPE_LIMIT // same ~71.6° limit as the route: only near-vertical is cut
 const CLEARANCE = 1.0      // structure-footprint inflation (m) — the beast's path clearance
 
 export function BuildJourneyNavmesh(terrain, footprints){
@@ -60,11 +79,11 @@ export function BuildJourneyNavmesh(terrain, footprints){
     // Short one-sided probes measure the worst local step instead. 1.2 m is shorter than the
     // trail-to-bund standoff (2 m), so canyon floors don't get eaten by the walls beside them.
     const PROBE = 1.2
-    const tooSteep = (x, z, h0) => {
-        if(Math.abs(terrain.HeightAt(x + PROBE, z) - h0) / PROBE > SLOPE_LIMIT){ return true }
-        if(Math.abs(terrain.HeightAt(x - PROBE, z) - h0) / PROBE > SLOPE_LIMIT){ return true }
-        if(Math.abs(terrain.HeightAt(x, z + PROBE) - h0) / PROBE > SLOPE_LIMIT){ return true }
-        if(Math.abs(terrain.HeightAt(x, z - PROBE) - h0) / PROBE > SLOPE_LIMIT){ return true }
+    const tooSteep = (x, z, h0, limit) => {
+        if(Math.abs(terrain.HeightAt(x + PROBE, z) - h0) / PROBE > limit){ return true }
+        if(Math.abs(terrain.HeightAt(x - PROBE, z) - h0) / PROBE > limit){ return true }
+        if(Math.abs(terrain.HeightAt(x, z + PROBE) - h0) / PROBE > limit){ return true }
+        if(Math.abs(terrain.HeightAt(x, z - PROBE) - h0) / PROBE > limit){ return true }
         return false
     }
 
@@ -78,16 +97,24 @@ export function BuildJourneyNavmesh(terrain, footprints){
     // cut on every radial; the arena floor (r 19) only loses a 0.6 m rim, still a 17.6 m walkable bowl.
     const A = CASTLE.arena
 
+    let onRouteCells = 0, offRouteCells = 0
     for(let j = 0; j < nz; j++){
         for(let i = 0; i < nx; i++){
             const x = cellX(i), z = cellZ(j)
-            if(!IsOnRoute(x, z)){ continue }
+            // On-route keeps the near-vertical limit (the authored ~50° gate ramp must pass);
+            // the off-route extension band opens at the lower limit so enemies can climb any
+            // hill the player can actually stand on, without walking the canyon walls.
+            const onRoute = IsOnRoute(x, z)
+            if(!onRoute && !IsNearRoute(x, z, OFF_ROUTE_MARGIN)){ continue }
+            // The boss-arena rim moat cuts EVERY radial regardless of route/extension, so the
+            // summit island stays severed even with the wider walkable band around the hill.
             const dA = Math.hypot(x - A.x, z - A.z)
             if(dA > A.r - 1.4 && dA < A.r + 1.6){ continue }
             const h0 = terrain.HeightAt(x, z)
-            if(tooSteep(x, z, h0)){ continue }
+            if(tooSteep(x, z, h0, onRoute ? SLOPE_LIMIT : OFF_SLOPE_LIMIT)){ continue }
             if(inFootprint(x, z)){ continue }
             walk[j * nx + i] = 1
+            if(onRoute){ onRouteCells++ } else { offRouteCells++ }
         }
     }
 
@@ -188,8 +215,8 @@ export function BuildJourneyNavmesh(terrain, footprints){
     mesh.visible = false             // debug aid: scene never shows it, but it can be toggled
     mesh.userData.noExport = true
 
-    console.log(`[NavmeshGen] ${cells} cells, ${positions.length / 3} verts, ` +
-        `${nComp} raw components (kept ${keep.size}: route + boss island)`)
+    console.log(`[NavmeshGen] ${cells} cells (${onRouteCells} route + ${offRouteCells} off-route band), ` +
+        `${positions.length / 3} verts, ${nComp} raw components (kept ${keep.size}: route + boss island)`)
     return mesh
 }
 

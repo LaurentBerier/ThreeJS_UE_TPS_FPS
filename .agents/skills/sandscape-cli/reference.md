@@ -6,8 +6,8 @@ workflow; this file is the detail you reach for when a command misbehaves.
 ## Auth & configuration
 
 - `sandscape login` runs the device-code flow (RFC 8628): it prints a
-  verification URL and a short user code; the user opens the URL, signs in, and
-  authorizes the code. The CLI polls until approved, then stores a scoped,
+  verification URL and a short user code; the user opens the URL, signs in (or
+  creates a free account right there), and authorizes the code. The CLI polls until approved, then stores a scoped,
   revocable token in the user's home config (managed by the CLI — do not
   hand-edit). Tokens can be revoked from the Sandscape account UI.
 - Backend selection:
@@ -19,6 +19,9 @@ workflow; this file is the detail you reach for when a command misbehaves.
     (scheme, hostname, or port) and redirect credentials.
   - `SANDSCAPE_WEB_URL` (or `--web-url`) — web origin used to print the play URL
     after `publish`.
+  - `SANDSCAPE_CONFIG_DIR` — directory containing `credentials.json`. Give
+    development and production different directories to keep both logins without
+    replacing `HOME` for the surrounding coding tool.
 
 ## Local clone layout
 
@@ -57,13 +60,50 @@ files** (exact byte limits: 50 × 1024² per file and 500 × 1024² total). File
 stream in 64 KB chunks; add intentionally local large files to
 `.sandscapeignore` rather than trying to bypass the server limit.
 
+On success it also prints a **play link** (`<web>/creating?session=<sid>`) so the
+user can try the pushed game; the bare URL lands on the Sandbox preview tab. The
+link needs a web origin, resolved the same way as the asset review links:
+`--web-url`, else `$SANDSCAPE_WEB_URL`. Without one, `push` prints a hint and the
+`--json` `play_url` is `null`.
+
 ### `sandscape list [--json]`
 Lists the user's projects. `--json` emits the complete project array as one
 compact JSON document and never opens the interactive picker.
 
-### `sandscape publish --title "<title>" [dir] [--web-url <url>] [--json]`
+### `sandscape publish [dir] [--check|--prepare] [metadata] [media] [--web-url <url>] [--json]`
 Publishes the game. The server rebuilds and re-validates from its own bundle; the
-CLI sends only metadata. Prints the play URL (`<web-origin>/play?g=<short_code>`).
+CLI sends metadata and media. Prints the play URL
+(`<web-origin>/play?g=<short_code>`).
+
+Modes:
+- `--check` — readiness report only: which fields are set/missing, the allowed
+  `--genre` values, and whether the game is already published. Changes nothing.
+- `--prepare` — saves the draft, then uploads media and generates cover art from
+  it, prints a `review_url`, and stops short of publishing. The user finishes on
+  that page.
+- neither — publishes directly.
+
+Metadata: `--title <t>`, `--genre <g>` (must be one of the values from
+`--check`), `--tagline <t>`, `--short-description <d>`, `--long-description <d>`,
+`--tags a,b,c`, `--visibility public|unlisted` (default `public`),
+`--platforms desktop|mobile|both` (server default `both`; an unknown value is
+exit 2 client-side).
+
+Media:
+- `--banner <path>` — png/jpg/webp/gif, ≤10 MB; converted server-side to WebP.
+- `--gameplay <path>` — mp4/mov/webm/m4v/avi/mkv, ≤200 MB; converted server-side
+  to WebM, trimmed to the **first 20 seconds**, audio dropped. Optional but
+  strongly encouraged — footage drives plays. No local encoding tools are
+  required, but if you can edit video, pre-cut the best ~20 s as a muted WebM
+  and upload that instead of a large raw capture.
+- `--generate-banner [direction]` — AI cover art, native 16:9, with the game
+  title rendered as key-art lettering. The image is composed from the staged
+  draft, your art direction, and stills sampled from the uploaded gameplay
+  footage — so stage the draft and upload footage first (a single `--prepare`
+  call does this in the right order). Always pass a direction. First **3 per
+  project** are free, capped at **6/day per user** server-side, then it costs
+  coins; the response includes `free_generations_remaining`. Regenerating with a refined direction is the
+  intended way to iterate.
 
 ### `sandscape clone <session_id> [dir] [--json]`
 Clones a project into `dir` (defaults to the session id). Writes the
@@ -72,13 +112,14 @@ skill in a private sibling staging directory. Every download is SHA-256 verified
 the complete tree is atomically published at the end. `dir` must not already
 exist, and a failure leaves no partial clone there.
 
-### `sandscape init <folder> [--name <n>] [--backfill] [--json]`
+### `sandscape init <folder> [--name <n>] [--json]`
 Imports `folder` as a NEW Sandscape project: creates the project, maps the folder
 tree verbatim into the game, uploads it, and auto-registers recognized asset files
 (images/3D/audio) for free. Code/config files are kept but not registered as
-assets. `--backfill` (optional, coin-metered) runs a richer metadata pass; it
-reports `estimated_cost` and `current_balance` up front and spends nothing if the
-balance is insufficient.
+assets. The import is open to every account — just a login.
+
+`--name` sets the project name; omitted, it falls back to the folder basename
+prettified (`train-game` → "Train Game"). Pass the game's real title instead.
 
 **Exclusions.** init (and `push`) skip paths matched by `.gitignore` or
 `.sandscapeignore` at the folder root, and ALWAYS skip `node_modules/` and
@@ -91,6 +132,14 @@ one-line summary of what it excluded. This is intentional: a file ignored by
 asset belongs on Sandscape; use `.sandscapeignore` for additional local-only
 paths. Create a `.gitignore` before importing if the folder has build output or
 dev dependencies.
+
+**Compiled projects.** The CLI does not run a build command. Connect a
+browser-ready static folder with `index.html` at its root, not a source tree
+that requires Vite, Webpack, TypeScript, JSX, or a server runtime. Build first.
+If the build tool clears its output directory, copy the finished build to a
+stable staging directory and connect that directory so later builds do not erase
+`.sandscape/project.json`. Preserve `.sandscape/` when refreshing the staged
+files, then run `sandscape push <staging-directory>`.
 
 ## `--json` event shapes
 
@@ -109,6 +158,14 @@ Progress (clone/pull/push/init transfers):
 {"event":"progress","done":12,"total":76,"path":"assets/img/hero.png","kind":"download"}
 {"event":"done","total":76,"kind":"download"}
 ```
+
+Push (`sandscape push --json`) ends with a `pushed` event:
+```
+{"event":"pushed","success":true,"session_id":"…","new_version":42,"play_url":"https://web.example/creating?session=…","files":["assets/index.html"],"assets":[],"rejected_assets":[],"intents_cleared":0,"intents_pending":0}
+```
+`play_url` is the play link (`<web>/creating?session=<sid>`) when a web origin is
+known (`--web-url` or `$SANDSCAPE_WEB_URL`), else `null`.
+
 Every output line in `--json` mode is independently parseable JSON. Warnings use
 `event:"warning"`; handled and unexpected errors use `event:"error"`, an
 `error` code, a message, and a non-zero exit code.

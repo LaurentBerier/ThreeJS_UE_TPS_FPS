@@ -47,6 +47,7 @@ import {  SkeletonUtils } from 'three/examples/jsm/utils/SkeletonUtils.js'
 import NpcCharacterController from './entities/NPC/CharacterController.js'
 import UeSoldierController from './entities/NPC/UeSoldierController.js'
 import UeSoldierCollision from './entities/NPC/UeSoldierCollision.js'
+import AiDirector from './entities/NPC/AiDirector.js'
 import { Faction } from './entities/NPC/Factions.js'
 import Input from './Input.js'
 
@@ -841,6 +842,17 @@ class FPSGameApp{
       soldierEntity.AddComponent(new UeSoldierCollision(this.physicsWorld));
       this.entityManager.Add(soldierEntity);
     });
+
+    // AI DIRECTOR — the proximity spawning system. Every enemy above is fully BUILT here behind
+    // the loading screen (so activation never hitches), but starts DORMANT: invisible, zero
+    // per-frame logic, zero draw. The director wakes each encounter group as the player
+    // approaches and puts it back to sleep when they leave — so of the ~16 AI along the journey
+    // only the local fight ever costs anything. Added AFTER the enemies so its Initialize can
+    // enumerate them all.
+    const aiDirectorEntity = new Entity();
+    aiDirectorEntity.SetName("AiDirector");
+    aiDirectorEntity.AddComponent(new AiDirector());
+    this.entityManager.Add(aiDirectorEntity);
 
     const uimanagerEntity = new Entity();
     uimanagerEntity.SetName("UIManager");

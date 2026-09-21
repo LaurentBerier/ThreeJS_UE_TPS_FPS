@@ -10,6 +10,7 @@ import Ragdoll from './Ragdoll.js'
 import DroppedWeapon from './DroppedWeapon.js'
 import HurtFlinch from '../Common/HurtFlinch.js'
 import { Faction, isHostile, isPriorityThreat, isHuman } from './Factions.js'
+import { GetNpcMuzzleFlashPool } from './NpcMuzzleFlashPool.js'
 
 
 // A velocity-driven UE Mannequin enemy ("soldier"). It shares the player's rig,
@@ -106,6 +107,57 @@ export default class UeSoldierController extends Component{
         this.navGroup = null;
         this.navNode = null;
         this.waypointRadius = 0.6;
+        this.pathClearance = 0.45;   // agent-radius corner clearance applied to every path (SmoothPath)
+        this._lastNavDest = null;    // destination the current path was built for (repath change-gate)
+
+        // ---- Squad separation (anti-stack) ----
+        // Soldiers have no body-vs-body physics (their hit volumes are sensor ghosts), so two agents
+        // routed down the same corridor could end up standing INSIDE each other — which reads as
+        // "stuck together" mid-fight, and a pair converging on the same combat spot ground in place.
+        // Each frame an awake soldier shoulders a small push apart from any overlapping living
+        // soldier, clamped to the navmesh like every other move. Zero work when nobody overlaps.
+        this.separationRadius = 0.9;    // start shouldering apart inside this range (m)
+        this.separationRate = 1.4;      // max sidestep speed (m/s) — a nudge, not a shove
+
+        // ---- Dormancy (AiDirector's proximity spawning) ----
+        // While dormant the soldier is INVISIBLE and runs zero per-frame logic — no mixer, no IK,
+        // no raycasts, no pathfinding, no draw. The director wakes the whole encounter group when
+        // the player approaches; TakeHit / OnNoise also request a wake so a dormant soldier can
+        // never be a frozen statue that ignores being shot at.
+        this.dormant = false;
+        this.requestWake = null;     // installed by AiDirector
+
+        // ---- Perception / think budget ----
+        // AcquireTarget used to run EVERY FRAME from whatever FSM state was active — with CanSee's
+        // line-of-sight ray that was 1+ physics raycast per soldier per frame before a fight even
+        // started, and the whole squad paid it in lockstep. Full perception now runs on a short
+        // THINK TICK (phase-jittered per soldier so squads never sync up), with the last result
+        // cached between ticks. 0.14 s is far below human reaction time, so behaviour is unchanged.
+        this.thinkInterval = 0.14;
+        this._thinkTimer = Math.random() * this.thinkInterval;   // random phase per instance
+        this._acqCached = false;
+        // Per-frame line-of-sight memo: range check, fire gate and combat scoring all ask about
+        // the SAME target within one frame — one raycast serves them all.
+        this._losEntity = null;
+        this._losFrame = -1;
+        this._losResult = false;
+        this._frame = 0;
+
+        // ---- Distance LOD ----
+        // Beyond this range from the player the fine pose work (foot-IK ground rays, rifle aim IK,
+        // spine lean) is invisible — skip it. Perception/navigation are unaffected.
+        this.lodFarDistance = 45.0;
+        this.lodFarSq = this.lodFarDistance * this.lodFarDistance;
+        this._lodFar = false;
+
+        // ---- Micro stuck-recovery ----
+        // When the navmesh clamp eats most of a commanded step for a sustained beat, the soldier is
+        // pressed on a mesh boundary (usually a funnel corner routed flush against a wall). Rather
+        // than grinding until the 2.5 s macro recovery fires, skip the wedged waypoint / repath
+        // after ~half a second — the visible difference between "brushes the corner and keeps
+        // moving" and "runs in place against a wall".
+        this.blockedTime = 0.0;
+        this.blockedSkipTime = 0.45;
 
         // Stuck detection & recovery. While the soldier should be travelling (chase/patrol)
         // but stops making progress, it first re-evaluates its path; if it is STILL wedged a
@@ -184,13 +236,26 @@ export default class UeSoldierController extends Component{
         // LONG-range hold distance (was 6.5..13): the gunner keeps well back and never closes to
         // brawling range — aggressive ones sit a touch nearer (11 m), cautious ones farther (18 m).
         this.preferredRange = THREE.MathUtils.lerp(18.0, 11.0, this.aggression);  // closer when aggressive
-        this.repositionInterval = 1.6 + Math.random() * 2.4;   // ~1.6 .. 4.0 s of firing before relocating
-        this.combatMoveSpeed = THREE.MathUtils.lerp(3.4, 4.8, this.aggression);   // strafe/relocate speed
+        // Combat movement dialled WAY down on request ("they move too much"): the gunner now spends
+        // most of the firefight planted and shooting, with occasional short repositions, instead of
+        // near-continuously circle-strafing. Longer firing windows, slower relocations, and a much
+        // higher chance a reposition is skipped entirely.
+        this.repositionInterval = 3.4 + Math.random() * 3.0;   // ~3.4 .. 6.4 s of firing before relocating (was 1.6..4.0)
+        this.combatMoveSpeed = THREE.MathUtils.lerp(2.0, 2.9, this.aggression);   // strafe/relocate speed (was 3.4..4.8)
         this.flankSign = Math.random() < 0.5 ? -1 : 1;         // preferred lateral direction around the target
-        this.holdGroundChance = 0.12;                          // chance a reposition just re-aims instead of moving (low: keep moving)
-        // Kept LOW so the player drops him quickly (player AK does 2 dmg/shot => ~8 hits at 15 hp;
-        // was 30 hp => ~15 hits, 100 hp => ~50). Reduced on request so soldiers are easier to kill.
-        this.health = 15;
+        this.holdGroundChance = 0.55;                          // chance a reposition just re-aims instead of moving (was 0.12)
+        // Kept LOW so the player drops him quickly (player AK does 2 dmg/shot => ~3 hits at 6 hp;
+        // was 15 hp => ~8 hits, 30 => ~15, 100 => ~50). Cut hard on request: soldiers die fast.
+        this.health = 6;
+
+        // ---- Suppression: "move a lot less when being attacked" ----
+        // Taking fire PLANTS the soldier. TakeHit refreshes this timer; the FSM's combat state
+        // refuses to start a reposition while it is running and holds position instead, so a
+        // soldier the player is actively shooting stays put and trades fire rather than juking
+        // away mid-burst. It decays on its own, so once the player stops shooting the normal
+        // (already much calmer) hold/strafe duty cycle resumes.
+        this.suppressTime = 2.2;        // seconds planted per hit taken
+        this.suppressedTimer = 0.0;     // ticked down in Update; read by UeSoldierFSM CombatState
 
         // Facing: a smoothed yaw the body turns toward (movement dir or the target).
         this.facingYaw = 0.0;
@@ -359,11 +424,12 @@ export default class UeSoldierController extends Component{
     }
 
     SetupMuzzleFlash(){
-        // Warm point light: cheap (no shadow) and reads as the gun lighting the room.
-        this.flashLight = new THREE.PointLight(0xffd08a, 0.0, 7.0, 2.0);
-        this.flashLight.castShadow = false;
-        this.flashLight.visible = false;
-        this.scene.add(this.flashLight);
+        // Warm point light: borrowed per shot from the SHARED pool. Never toggle a light's
+        // `.visible` per shot — in r127 the visible-light count keys the shader program cache, so
+        // every new count recompiled every material in view (a hard mid-firefight hitch). The pool
+        // keeps a constant light count; a shot only moves a light and spikes its intensity.
+        this.flashPool = GetNpcMuzzleFlashPool(this.scene);
+        this.flashLight = null;   // pool light held only while a flash is live
 
         // Small additive blob at the muzzle so the flash is visible from afar.
         const geo = new THREE.SphereGeometry(0.08, 8, 8);
@@ -409,7 +475,16 @@ export default class UeSoldierController extends Component{
     // ---- Interface consumed by UeSoldierFSM ----
     SetMoveIntent(speed){ this.desiredSpeed = speed; this.canMove = speed > 0.0; }
 
-    ClearPath(){ if(this.path){ this.path.length = 0; } }
+    ClearPath(){ if(this.path){ this.path.length = 0; } this._lastNavDest = null; }
+
+    // Every soldier path gets the same agent-radius corner clearance the beast uses
+    // (Navmesh.SmoothPath): the funnel otherwise plants waypoints EXACTLY on wall-corner
+    // vertices, and a body routed flush into a corner grinds on the navmesh boundary — the most
+    // common way a soldier used to wedge. Cheap now that the smoothing runs on the spatial index.
+    SetPath(raw){
+        this.path = this.navmesh.SmoothPath(this.position, raw, this.pathClearance) || raw || [];
+        this.blockedTime = 0.0;
+    }
 
     // Drop a navigation DESTINATION onto the navmesh's vertical band. three-pathfinding's
     // closest-node lookup measures 3D distance and its polygon-containment test has a narrow
@@ -425,7 +500,7 @@ export default class UeSoldierController extends Component{
     NavigateToRandomPoint(){
         const node = this.navmesh.GetRandomNode(this.position, 50);
         if(!node){ this.path = []; return; }
-        this.path = this.navmesh.FindPath(this.position, node) || [];
+        this.SetPath(this.navmesh.FindPath(this.position, node));
     }
 
     // Path toward the current target (or its last-seen spot if it just slipped out of view).
@@ -434,9 +509,25 @@ export default class UeSoldierController extends Component{
         if(this.target && this.IsAlive(this.target)){ dest = this.target.Position; }
         else if(this.hasLastSeen){ dest = this.lastSeenPos; }
         if(!dest){ this.path = []; return; }
+        this._lastNavDest = (this._lastNavDest || new THREE.Vector3()).copy(dest);
         this.tempVec.copy(dest);
         this.NavY(this.tempVec);
-        this.path = this.navmesh.FindPath(this.position, this.tempVec) || [];
+        this.SetPath(this.navmesh.FindPath(this.position, this.tempVec));
+    }
+
+    // Repath toward the target ONLY when it's needed: no current path, or the target has drifted
+    // more than `threshold` metres from the destination the live path was built for. A chasing
+    // squad used to rebuild its paths on a fixed timer whether or not anything moved — a burst of
+    // A* every 0.2 s per soldier; this gate removes almost all of it against a slow/standing
+    // target while staying exactly as responsive to a running one.
+    NavigateToTargetIfMoved(threshold = 1.8){
+        let dest = null;
+        if(this.target && this.IsAlive(this.target)){ dest = this.target.Position; }
+        else if(this.hasLastSeen){ dest = this.lastSeenPos; }
+        if(!dest){ this.path = []; return; }
+        if(this.path.length && this._lastNavDest &&
+           this._lastNavDest.distanceToSquared(dest) < threshold * threshold){ return; }
+        this.NavigateToTarget();
     }
 
     // Path to the spot the target was LAST SEEN (used by the search behaviour after losing sight). Unlike
@@ -445,7 +536,7 @@ export default class UeSoldierController extends Component{
         if(!this.hasLastSeen){ this.path = []; return; }
         this.tempVec.copy(this.lastSeenPos);
         this.NavY(this.tempVec);
-        this.path = this.navmesh.FindPath(this.position, this.tempVec) || [];
+        this.SetPath(this.navmesh.FindPath(this.position, this.tempVec));
         return this.path.length > 0;
     }
 
@@ -459,7 +550,7 @@ export default class UeSoldierController extends Component{
         if(!node){ this.path = []; return false; }
         // A node returned by the navmesh already sits AT the navmesh surface — keep its y.
         this.tempVec.copy(node);
-        this.path = this.navmesh.FindPath(this.position, this.tempVec) || [];
+        this.SetPath(this.navmesh.FindPath(this.position, this.tempVec));
         return this.path.length > 0;
     }
 
@@ -520,8 +611,30 @@ export default class UeSoldierController extends Component{
         if(!node){ this.path = []; return false; }
         // Navmesh nodes carry the correct surface y already.
         this.tempVec.copy(node);
-        this.path = this.navmesh.FindPath(this.position, this.tempVec) || [];
+        this.SetPath(this.navmesh.FindPath(this.position, this.tempVec));
         return this.path.length > 0;
+    }
+
+    // Fallback combat juke when the scored reposition can't produce a path (tight mesh, wedged in
+    // a pocket, every sampled node unreachable): a plain SHORT strafe perpendicular to the target
+    // axis, preferred flank side first, other side if that fails. FindPath snaps the endpoint onto
+    // the walkable mesh, so this nearly always yields a couple of strides — keeping the firefight
+    // MOVING where the soldier used to fall back to planting again and again (reads as stuck).
+    NavigateLateralStrafe(target){
+        if(!target || !target.Position){ return false; }
+        const dx = target.Position.x - this.position.x, dz = target.Position.z - this.position.z;
+        const len = Math.hypot(dx, dz);
+        if(len < 1e-3){ return false; }
+        const lx = -dz / len, lz = dx / len;                      // left perpendicular of the target axis
+        for(const sign of [this.flankSign, -this.flankSign]){
+            const d = 2.0 + Math.random() * 1.5;
+            this.tempVec.set(this.position.x + lx * sign * d, this.position.y,
+                             this.position.z + lz * sign * d);
+            this.NavY(this.tempVec);
+            const raw = this.navmesh.FindPath(this.position, this.tempVec);
+            if(raw && raw.length){ this.SetPath(raw); return true; }
+        }
+        return false;
     }
 
     // Line of sight from an ARBITRARY world position to an entity (used to score candidate combat
@@ -587,7 +700,20 @@ export default class UeSoldierController extends Component{
     //   * NEUTRAL — passive: only whoever provoked it (and only while still visible).
     // Sets this.target (+ remembers its last-seen position), fires a one-shot squad call-out on a fresh
     // sighting, and returns true if a target was found.
-    AcquireTarget(){
+    AcquireTarget(force = false){
+        // Think-tick throttle: the FSM asks every frame, but a full perception pass (per-candidate
+        // visibility raycasts) only runs each thinkInterval — phase-jittered per soldier, so a
+        // squad's raycasts spread across frames instead of landing on the same one. Between ticks
+        // the cached answer is returned (revalidated against the target dying).
+        if(!force && this._thinkTimer > 0){
+            return this._acqCached && !!this.target && this.IsAlive(this.target);
+        }
+        this._thinkTimer = this.thinkInterval;
+        this._acqCached = this._AcquireTargetNow();
+        return this._acqCached;
+    }
+
+    _AcquireTargetNow(){
         if(this.faction === Faction.NEUTRAL){
             const ok = this.provokedBy && this.IsAlive(this.provokedBy) && this.CanSee(this.provokedBy);
             this._setTarget(ok ? this.provokedBy : null);
@@ -639,6 +765,7 @@ export default class UeSoldierController extends Component{
         if(this.faction === Faction.NEUTRAL && !fromDamage){ return; }
 
         this.alertTimer = this.alertDuration;
+        this._thinkTimer = 0.0;   // a stimulus bypasses the think-tick throttle: perceive NOW
         if(pos){
             this.lastSeenPos.copy(pos);
             this.hasLastSeen = true;
@@ -688,6 +815,9 @@ export default class UeSoldierController extends Component{
         if(msg.source && msg.source !== this.player){ return; }
         const d2 = this.tempVec.copy(msg.position).sub(this.position).lengthSq();
         if(d2 > this.hearingRadiusSq){ return; }
+        // Gunfire in earshot of a SLEEPING soldier wakes its whole encounter group first (the
+        // AiDirector hook), so noise is never swallowed by a dormant statue.
+        if(this.dormant && this.requestWake){ this.requestWake(); }
         this.Alert(msg.position, d2 <= this.engageHearingRadiusSq, false);
     }
 
@@ -725,10 +855,20 @@ export default class UeSoldierController extends Component{
     // Per-frame: while the soldier should be travelling but isn't making progress, escalate
     // repath -> subtle teleport so it never wedges in one spot (see the constructor note).
     UpdateStuckRecovery(t){
-        // Only meaningful while actively trying to travel (chase/patrol set canMove true;
-        // idle/attack/dead set it false, where standing still is intended).
-        if(this.dead || !this.canMove){
+        if(this.dead){
             this.stuckTimer = 0.0; this._stuckSampleAccum = 0.0; this._didRepath = false;
+            this.stuckSamplePos.copy(this.position);
+            return;
+        }
+        // Intentional standing (combat hold / idle / attack): PAUSE the watchdog, don't wipe it.
+        // Combat alternates hold<->strafe every second or so, and the old hard reset here meant a
+        // soldier that ground fruitlessly through EVERY strafe phase never accumulated enough
+        // no-progress time for the repath/teleport escalation to fire — it stayed wedged for the
+        // whole firefight. The timer now DRAINS while standing (a long deliberate idle still
+        // forgets), but a wedge that persists across phases keeps climbing and recovery triggers.
+        if(!this.canMove){
+            this.stuckTimer = Math.max(0.0, this.stuckTimer - t);
+            this._stuckSampleAccum = 0.0; this._didRepath = false;
             this.stuckSamplePos.copy(this.position);
             return;
         }
@@ -812,10 +952,23 @@ export default class UeSoldierController extends Component{
         return out;
     }
 
-    // Clear shot to `entity`: cast from the soldier's eye toward it and confirm the first thing
+    // Clear shot to `entity` — memoized per frame: the FSM's fire gate, FireAtTarget's damage
+    // roll and CanSee all ask about the same target within a single frame, so one physics ray
+    // serves them all (a 2-3x cut in per-soldier raycasts during combat).
+    HasLineOfSightTo(entity){
+        if(!entity){ return false; }
+        if(entity === this._losEntity && this._losFrame === this._frame){ return this._losResult; }
+        const result = this._CastLineOfSight(entity);
+        this._losEntity = entity;
+        this._losFrame = this._frame;
+        this._losResult = result;
+        return result;
+    }
+
+    // The actual ray: cast from the soldier's eye toward the entity and confirm the first thing
     // the ray reaches belongs to that entity (not a wall / another body in between). AI bodies
     // carry `parentEntity` on their hit colliders; the player is the capsule rigid body.
-    HasLineOfSightTo(entity){
+    _CastLineOfSight(entity){
         if(!entity){ return false; }
         const eyePos = this.tempVec2.copy(this.position);
         eyePos.y += 1.5;
@@ -860,9 +1013,9 @@ export default class UeSoldierController extends Component{
         this.muzzlePos.addScaledVector(this.fireDir, 0.55);
 
         this.flashMesh.position.copy(this.muzzlePos);
-        this.flashLight.position.copy(this.muzzlePos);
         this.flashMesh.visible = true;
-        this.flashLight.visible = true;
+        if(!this.flashLight){ this.flashLight = this.flashPool.Acquire(this.muzzlePos); }
+        else{ this.flashLight.position.copy(this.muzzlePos); }
         this.flashLight.intensity = 6.0;
         this.flashTimer = this.flashDuration;
 
@@ -884,11 +1037,19 @@ export default class UeSoldierController extends Component{
         if(this.flashTimer <= 0.0){ return; }
         this.flashTimer = Math.max(0.0, this.flashTimer - t);
         const k = this.flashTimer / this.flashDuration;
-        this.flashLight.intensity = 6.0 * k;
+        if(this.flashLight){ this.flashLight.intensity = 6.0 * k; }
         this.flashMesh.material.opacity = k;
-        if(this.flashTimer <= 0.0){
-            this.flashLight.visible = false;
-            this.flashMesh.visible = false;
+        if(this.flashTimer <= 0.0){ this.KillMuzzleFlash(); }
+    }
+
+    // Snuff any live flash and hand the pooled light back (idempotent; used by expiry, death,
+    // dormancy and dispose).
+    KillMuzzleFlash(){
+        this.flashTimer = 0.0;
+        if(this.flashMesh){ this.flashMesh.visible = false; }
+        if(this.flashLight){
+            this.flashPool && this.flashPool.Release(this.flashLight);
+            this.flashLight = null;
         }
     }
 
@@ -949,6 +1110,28 @@ export default class UeSoldierController extends Component{
         this.PlayUpperLocomotion(this.DesiredLocoState(), 0.15);
     }
 
+    // ---- Dormancy (driven by AiDirector) ----
+    // Dormant = invisible + zero per-frame logic (see the Update guard). Waking re-poses the rig
+    // the same frame (no bind-pose flash) and resets the progress trackers so the sleep gap can
+    // never read as "stuck". Corpses are exempt — their short ragdoll->despawn lifecycle runs out.
+    SetDormant(dormant){
+        dormant = !!dormant;
+        if(this.dead || this.dormant === dormant){ return; }
+        this.dormant = dormant;
+        if(this.modelRoot){ this.modelRoot.visible = !dormant; }
+        if(dormant){
+            this.KillMuzzleFlash();
+            if(this.shotSound && this.shotSound.isPlaying){ try{ this.shotSound.stop(); }catch(_){ /* ignore */ } }
+        }else{
+            this.mixer && this.mixer.update(0.02);   // pose the skeleton before it renders again
+            this.stuckTimer = 0.0;
+            this._stuckSampleAccum = 0.0;
+            this.blockedTime = 0.0;
+            this.stuckSamplePos.copy(this.position);
+            this._thinkTimer = 0.0;                  // perceive immediately on wake
+        }
+    }
+
     Die(){
         if(this.dead){ return; }
         this.dead = true;
@@ -960,9 +1143,7 @@ export default class UeSoldierController extends Component{
         this.mixer.stopAllAction();
         this.collision && this.collision.Disable();
         // Kill any in-flight muzzle flash so the corpse doesn't keep glowing.
-        this.flashTimer = 0.0;
-        if(this.flashLight){ this.flashLight.visible = false; }
-        if(this.flashMesh){ this.flashMesh.visible = false; }
+        this.KillMuzzleFlash();
 
         try{
             if(!this.skinnedmesh){ throw new Error('no skinned mesh'); }
@@ -1065,7 +1246,7 @@ export default class UeSoldierController extends Component{
     // their own components' Dispose.
     Dispose(){
         if(this.modelRoot && this.modelRoot.parent){ this.modelRoot.parent.remove(this.modelRoot); }
-        if(this.flashLight && this.flashLight.parent){ this.flashLight.parent.remove(this.flashLight); }
+        this.KillMuzzleFlash();   // returns the pooled light (the pool owns its scene lifetime)
         if(this.flashMesh && this.flashMesh.parent){ this.flashMesh.parent.remove(this.flashMesh); }
         if(this.shotSound){ try{ this.shotSound.isPlaying && this.shotSound.stop(); }catch(_){ /* ignore */ } }
         if(this.droppedWeapon){ try{ this.droppedWeapon.dispose(); }catch(_){ /* ignore */ } this.droppedWeapon = null; }
@@ -1149,6 +1330,22 @@ export default class UeSoldierController extends Component{
                         ? this.terrain.StanceHeightAt(this.clampTarget.x, this.clampTarget.z) : this.position.y;
                     moved = Math.hypot(this.clampTarget.x - this.position.x, this.clampTarget.z - this.position.z);
                     this.position.copy(this.clampTarget);
+
+                    // Micro stuck-recovery: the clamp ate most of the commanded step, so we're
+                    // pressed on a mesh boundary (a funnel corner routed against a wall edge).
+                    // After a sustained beat, give up on the wedged waypoint and head for the next
+                    // one (or repath when it was the last) — freeing the soldier in ~0.5 s instead
+                    // of letting it grind until the 2.5 s macro recovery notices.
+                    if(step > 1e-4 && moved < step * 0.35){
+                        this.blockedTime += t;
+                        if(this.blockedTime >= this.blockedSkipTime){
+                            this.blockedTime = 0.0;
+                            if(this.path.length > 1){ this.path.shift(); }
+                            else{ this.RepathForRecovery(); }
+                        }
+                    }else{
+                        this.blockedTime = 0.0;
+                    }
                 }else{
                     // Still off the mesh after re-acquiring: hold at the last on-mesh spot rather
                     // than moving freely through geometry (recovery will re-route/teleport us).
@@ -1169,6 +1366,50 @@ export default class UeSoldierController extends Component{
         // Smooth the measured speed so the idle/jog choice doesn't flicker.
         const instSpeed = t > 0 ? moved / t : 0.0;
         this.currentSpeed += (instSpeed - this.currentSpeed) * Math.min(1.0, t * 10.0);
+    }
+
+    // Squad separation (anti-stack — see the constructor note): shoulder a small navmesh-clamped
+    // sidestep away from any overlapping living soldier. Runs every frame after Locomote so the
+    // nudge composes with (and is clamped exactly like) the normal path move.
+    UpdateSeparation(t){
+        const r = this.separationRadius, r2 = r * r;
+        let px = 0, pz = 0, any = false;
+        for(const entity of this.manager.entities){
+            if(entity === this.parent || !entity.GetComponent){ continue; }
+            const other = entity.GetComponent('UeSoldierController');
+            if(!other || other === this || other.dead || other.dormant){ continue; }
+            const dx = this.position.x - other.position.x, dz = this.position.z - other.position.z;
+            const d2 = dx * dx + dz * dz;
+            if(d2 >= r2){ continue; }
+            any = true;
+            const d = Math.sqrt(d2);
+            if(d < 1e-3){
+                // Exactly coincident: a deterministic per-instance tiebreak off the facing, so both
+                // step apart instead of computing equal-and-opposite zero.
+                px += Math.sin(this.facingYaw + 1.9); pz += Math.cos(this.facingYaw + 1.9);
+            }else{
+                const w = (r - d) / r;               // 0 at touch range -> 1 fully overlapped
+                px += (dx / d) * w; pz += (dz / d) * w;
+            }
+        }
+        if(!any){ return; }
+        const len = Math.hypot(px, pz);
+        if(len < 1e-4){ return; }
+        const step = Math.min(this.separationRate * t, 0.2);
+        this.desiredPos.copy(this.position);
+        this.desiredPos.x += (px / len) * step;
+        this.desiredPos.z += (pz / len) * step;
+        if(!this.navNode || this.navGroup === null){
+            this.navGroup = this.navmesh.GetGroup(this.position);
+            this.navNode = this.navGroup !== null
+                ? this.navmesh.GetClosestNode(this.position, this.navGroup) : null;
+        }
+        if(!this.navNode || this.navGroup === null){ return; }   // off-mesh: stuck recovery owns it
+        this.navNode = this.navmesh.ClampStep(
+            this.position, this.desiredPos, this.navNode, this.navGroup, this.clampTarget);
+        this.clampTarget.y = this.terrain
+            ? this.terrain.StanceHeightAt(this.clampTarget.x, this.clampTarget.z) : this.position.y;
+        this.position.copy(this.clampTarget);
     }
 
     // The leg state from the measured speed + the move direction relative to facing: idle when slow,
@@ -1275,6 +1516,7 @@ export default class UeSoldierController extends Component{
     // while ENGAGED (combatFacing on a live target) so patrol/idle/chase-without-LOS read as authored.
     UpdateCombatAim(t){
         if(!this.weaponAimIK){ return; }
+        if(this._lodFar){ return; }   // invisible at range; resumes (eased) when the player closes in
         const engaged = !!(this.combatFacing && this.target && this.IsAlive(this.target) && this.target.Position);
         if(engaged){
             // Aim at the target's torso/centre (the player capsule pos is ~eye height; raise other
@@ -1330,6 +1572,9 @@ export default class UeSoldierController extends Component{
 
     TakeHit = (msg) => {
         if(this.dead){ return; }
+        // Shot while dormant (long-range snipe into a sleeping encounter): wake the whole group
+        // before processing, so the reaction below runs on a live squad.
+        if(this.dormant && this.requestWake){ this.requestWake(); }
 
         // Blood splatter at the bullet's impact point (ranged hits carry a hitResult). Spray OUT of the
         // entry wound — back toward the shooter (the side facing the camera for the player's own shots)
@@ -1369,6 +1614,10 @@ export default class UeSoldierController extends Component{
 
         this.health = Math.max(0, this.health - (msg.amount ?? 0));
 
+        // Being shot pins the soldier in place for a beat (see suppressTime). Refreshed per hit, so
+        // sustained fire keeps him planted for as long as the player keeps shooting.
+        this.suppressedTimer = this.suppressTime;
+
         // Additive hit-react flinch (scaled by the damage, so a beast swipe rocks harder than an AK
         // round). Fire it for any non-fatal hit; on a fatal hit the ragdoll takes over instead. A
         // GUARANTEED visible base (0.7) plus a damage term: the player AK only does 2/shot, and the
@@ -1399,6 +1648,20 @@ export default class UeSoldierController extends Component{
     }
 
     Update(t){
+        // Dormant (far from the player, AiDirector asleep): zero work. Corpses keep running so the
+        // ragdoll/despawn lifecycle finishes even if the player walks away mid-death.
+        if(this.dormant && !this.dead){ return; }
+
+        this._frame++;
+        this._thinkTimer -= t;
+        // Decay the "being shot" plant (see suppressTime).
+        if(this.suppressedTimer > 0.0){ this.suppressedTimer = Math.max(0.0, this.suppressedTimer - t); }
+
+        // Distance LOD: beyond lodFarDistance the fine pose work (foot-IK ground rays, weapon aim
+        // IK, spine lean) is skipped — invisible at that range, and it keeps a woken-but-distant
+        // squad cheap while it patrols toward relevance.
+        this._lodFar = this.tempVec.copy(this.player.Position).sub(this.position).lengthSq() > this.lodFarSq;
+
         this.mixer && this.mixer.update(t);
         this.UpdateMuzzleFlash(t);
 
@@ -1421,6 +1684,7 @@ export default class UeSoldierController extends Component{
         if(this.alertTimer > 0){ this.alertTimer = Math.max(0, this.alertTimer - t); }
 
         this.Locomote(t);
+        this.UpdateSeparation(t);      // anti-stack: shoulder apart from overlapping squadmates
         this.UpdateLocomotionAnim();
         this.UpdateLocoTimeScale();    // foot-sync the live walk/run playback rate to ground speed
         this.UpdateStuckRecovery(t);   // repath / subtle teleport if wedged (after the move)
@@ -1446,6 +1710,7 @@ export default class UeSoldierController extends Component{
     // foot-synced jog isn't fought into a skate; it conforms the planted feet when slow/standing.
     UpdateFootIK(t){
         if(!this.footIK){ return; }
+        if(this._lodFar){ return; }   // skips the per-foot ground raycasts; invisible at range
         this.footIK.Update(t, { enabled: !this.dead, speed: this.currentSpeed, bodyYaw: this.facingYaw });
     }
 

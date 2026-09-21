@@ -221,7 +221,7 @@
   },
   "assets/assets/css/style.css": {
     "sha256": "6b0a8a5850463b16af699fe4217448257872b8a636e2db36cb87be245cc5adfa",
-    "version": 2,
+    "version": 1,
     "size": 12946
   },
   "assets/assets/decals/Blood_decal_1.png": {
@@ -484,6 +484,11 @@
     "version": 1,
     "size": 469280
   },
+  "assets/assets/World/heightmaps_20260609_150752_1584m_concept.png": {
+    "sha256": "0fce72c61c52800d45db573a72dd688350e29c3a21a3592d125272365a9c5f34",
+    "version": 1,
+    "size": 7922076
+  },
   "assets/assets/World/heightmaps_20260609_150752_1584m.png": {
     "sha256": "0fce72c61c52800d45db573a72dd688350e29c3a21a3592d125272365a9c5f34",
     "version": 1,
@@ -624,11 +629,6 @@
     "version": 1,
     "size": 726264
   },
-  "assets/CLAUDE.md.sandscape.bak": {
-    "sha256": "f15de119ac78dafe2bb616cecc965bbfe4a44b35bebfffe50c91751bc637470f",
-    "version": 1,
-    "size": 1205
-  },
   "assets/data/mechanics.schema.json": {
     "sha256": "243285197172a35aa591a1df19ea234def97c770dd13353765bc7cb7b447dbbb",
     "version": 1,
@@ -636,7 +636,7 @@
   },
   "assets/index.html": {
     "sha256": "ebc88036fdb608156a7c9ee268b0bcb3797e0969e7771cc9ed89803d2e81b3fa",
-    "version": 2,
+    "version": 1,
     "size": 4163
   },
   "assets/js/AmmoLib.js": {
@@ -735,9 +735,9 @@
     "size": 6664
   },
   "assets/js/entities/NPC/CharacterController.js": {
-    "sha256": "edf9162a20fbe85f29f188340f92a2887f433a8cb00c3f10fc3ec4a5be0294b1",
-    "version": 1,
-    "size": 52611
+    "sha256": "4e87ad19902b25cb8e559cdb4de7e668aa389ee94c0117303fb95dfc3e20de74",
+    "version": 2,
+    "size": 53870
   },
   "assets/js/entities/NPC/CharacterFSM.js": {
     "sha256": "db414633c647f1bfb78efebbef368cde1b8890b8701ef8063687300891c35c9f",
@@ -775,14 +775,14 @@
     "size": 5025
   },
   "assets/js/entities/NPC/UeSoldierController.js": {
-    "sha256": "3426a38bd5e0ba858efd4bfe3b066e64ea1c9b11328c32cdc158cf922e579afe",
-    "version": 1,
-    "size": 102621
+    "sha256": "fc29ca1da7bee4f4c0120d793cbd39dd3f2167e02425060195e6f43e9d294967",
+    "version": 2,
+    "size": 104111
   },
   "assets/js/entities/NPC/UeSoldierFSM.js": {
-    "sha256": "033780c2feef1bb88e64f6c29d7df0de8204b2c95d70779154f6aba69c222426",
-    "version": 1,
-    "size": 16403
+    "sha256": "0ee56219d9ffd7095632fd6682665a7f380abadd8cd18ec708dcdb99f3cd3c1c",
+    "version": 2,
+    "size": 17121
   },
   "assets/js/entities/Player/FootIK.js": {
     "sha256": "e6027f17c9c93a46505762412c7bf7ba66fb157e6a0f3c916f8709a70e610aac",
@@ -925,9 +925,9 @@
     "size": 32280
   },
   "assets/js/entities/World/NavmeshGen.js": {
-    "sha256": "3daf888cf922aa9a94965113f9ecc0bd544f14bd4f8840ee7bceda7e42e7d5c0",
-    "version": 1,
-    "size": 11369
+    "sha256": "2f6cdde57b5237aa309241bdfe920b333c358fb78a702d0ac96ff649a911414c",
+    "version": 2,
+    "size": 12244
   },
   "assets/js/entities/World/Structures.js": {
     "sha256": "ea0fbfe6efba702d18363c9308eb69d51182a5cee32d3e507244ae0478039dba",

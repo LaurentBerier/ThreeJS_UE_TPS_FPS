@@ -401,7 +401,7 @@ export default class FootIK{
                 // Per-leg knee pole: body-forward, blended toward the way THIS foot points (ankle->toe) by
                 // kneeAlign — FULL at crouch-idle (knee/foot agree, the requested alignment), 0 when
                 // crouch-walking (stable body-forward, no swing-foot oscillation). Into this._pole per leg.
-                this._kneePole(leg, bodyYaw, kneeAlign, this._pole);
+                this._kneePole(leg, bodyYaw, kneeAlign, this._pole, t);
                 this.ik.solveTwoBone(leg.thigh, leg.calf, leg.foot, this._target, this._pole, poleStab);
             }
             // FOOT-ORIENTATION CONFORM (skipped entirely when conformFootOrient is false — the alien player
@@ -454,18 +454,44 @@ export default class FootIK{
     // body-forward while a splayed foot points elsewhere (the reported "knees not aligned with the
     // feet" when crouched). The upward bias is preserved so the knee still lifts forward, not dead
     // level. Falls back to pure body-forward with no toe bone or a degenerate heading.
-    _kneePole(leg, bodyYaw, crouch, out){
-        out.set(Math.sin(bodyYaw), 0.4, Math.cos(bodyYaw)).normalize();
-        if(crouch < 1e-3 || !leg.ball){ return out; }
-        leg.foot.getWorldPosition(this._footPos);
-        leg.ball.getWorldPosition(this._ball);
-        this._heading.set(this._ball.x - this._footPos.x, 0, this._ball.z - this._footPos.z);
-        if(this._heading.lengthSq() < 1e-8){ return out; }
-        this._heading.normalize();
-        // Blend only the HORIZONTAL components toward the foot heading by the crouch amount; keep the
-        // vertical bias (out.y) from the body-forward pole so the bend still has its forward lift.
-        out.set(THREE.MathUtils.lerp(out.x, this._heading.x, crouch), out.y,
-                THREE.MathUtils.lerp(out.z, this._heading.z, crouch)).normalize();
+    //
+    // TWO hardenings against the crouch/uncrouch KNEE FLIP:
+    //  * The heading is only trusted when the metatarsal actually has horizontal reach (>35% of its
+    //    length) AND points broadly forward of the body. A steeply pitched foot (this rig's clips
+    //    dangle the toe ~60-80° down, worst mid crouch-transition) leaves the horizontal projection
+    //    as millimetre noise that can point ANY way — including BACKWARD, which aimed the knee pole
+    //    behind the body and solved the knee inverted.
+    //  * The final pole is LOW-PASSED per leg (leg.poleSm, ~12 1/s), so a gate/blend hand-off or a
+    //    swinging heading can only TURN the knee, never snap its bend plane frame-to-frame.
+    _kneePole(leg, bodyYaw, crouch, out, t = 0){
+        const fx = Math.sin(bodyYaw), fz = Math.cos(bodyYaw);
+        out.set(fx, 0.4, fz).normalize();
+        if(crouch >= 1e-3 && leg.ball){
+            leg.foot.getWorldPosition(this._footPos);
+            leg.ball.getWorldPosition(this._ball);
+            const dx = this._ball.x - this._footPos.x, dy = this._ball.y - this._footPos.y,
+                  dz = this._ball.z - this._footPos.z;
+            this._heading.set(dx, 0, dz);
+            const horizSq = this._heading.lengthSq();
+            const metaSq = horizSq + dy * dy;
+            // Trust gate: real horizontal reach + broadly body-forward (never aim a knee backward).
+            if(horizSq > 1e-8 && horizSq > metaSq * 0.35 * 0.35
+               && (dx * fx + dz * fz) > 0.05 * Math.sqrt(horizSq)){
+                this._heading.multiplyScalar(1 / Math.sqrt(horizSq));
+                // Blend only the HORIZONTAL components toward the foot heading by the crouch amount;
+                // keep the vertical bias (out.y) so the bend still has its forward lift.
+                out.set(THREE.MathUtils.lerp(out.x, this._heading.x, crouch), out.y,
+                        THREE.MathUtils.lerp(out.z, this._heading.z, crouch)).normalize();
+            }
+        }
+        // Temporal smoothing: ease the stored per-leg pole toward this frame's target and return THAT.
+        if(!leg.poleSm){ leg.poleSm = out.clone(); }
+        else if(t > 0){
+            leg.poleSm.lerp(out, 1 - Math.exp(-12 * t));
+            if(leg.poleSm.lengthSq() > 1e-8){ leg.poleSm.normalize(); }
+            else{ leg.poleSm.copy(out); }
+        }
+        out.copy(leg.poleSm);
         return out;
     }
 
@@ -502,7 +528,9 @@ export default class FootIK{
             this._target.set(this._footPos.x, this._footPos.y + leg.lift, this._footPos.z);
             // Same speed-tapered knee pole AND the same crouch-aware pole stabilization as Pass C — solving
             // the guard's correction with the raw (0) stabilize let it flip the knee's bend plane.
-            this._kneePole(leg, bodyYaw, align, this._pole);
+            // `t` is passed so the per-leg pole smoothing still advances when the guard is the ONLY
+            // pass running (plant faded at speed); when Pass C ran too the extra ease is harmless.
+            this._kneePole(leg, bodyYaw, align, this._pole, t);
             this.ik.solveTwoBone(leg.thigh, leg.calf, leg.foot, this._target, this._pole, poleStab);
         }
     }

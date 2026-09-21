@@ -193,14 +193,35 @@ canvas {
   transition: opacity 0.6s ease;
 }
 
+/* --- Title key art -------------------------------------------------------------------------------
+   "THE BLACK HIVE PROJECT" splash art, shared by the menu and the loading screen (the CSS-painted
+   dusk backdrop it replaces is gone — the art is the same golden-hour world, now with the title on
+   it). Shipped as a 1920-cap WebP (~190 KB; tools/compress_titleart.py regenerates it from the raw
+   PNG) so the first screen the player sees is not a multi-megabyte blocking fetch.
+   Both screens layer their own scrim gradients OVER this in background-image; each layered list is
+   ordered front-to-back, so the art is always the LAST entry. */
+#menu,
+#loading {
+  background-color: #0e1018;
+  background-repeat: no-repeat;
+  background-position: center center;
+}
+
 /* Loading screen revealed (curtain clear) while the game is built. Below the
-   curtain so a fade-to-black covers it. Its own black bg hides the live render
-   that starts behind it. */
+   curtain so a fade-to-black covers it. Its own opaque bg hides the live render
+   that starts behind it — the same title art as the menu, so the hand-off from
+   NEW GAME reads as one continuous screen, under a heavy scrim that pushes it back
+   behind the spinner. Deliberately NOT animated (no pan/zoom): this screen is up
+   precisely while the level and entities are built, and a compositing loop there
+   would fight the build for frames. */
 #loading {
   position: fixed;
   inset: 0;
   z-index: 40;
-  background-color: #000;
+  background-image:
+    linear-gradient(rgba(4, 3, 2, 0.74), rgba(4, 3, 2, 0.74)),
+    url('../ui/title_art.webp');
+  background-size: 100% 100%, cover;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -253,22 +274,28 @@ canvas {
   position: absolute;
   width: 100%;
   height: 100%;
-  background-color: #0e1018;
-  /* Unbranded menu backdrop: the splashscreen art carried a logo, a title and an engine mark, all
-     of which the brief strips. This is the same golden-hour world painted in pure CSS — storm-lit
-     dusk sky, the sun burning low, dark dune silhouettes — with not a letter on it. Layer order is
-     top-to-bottom: near dune, far dune, sun glow, sky bands. */
+  /* Two scrims keep the UI legible on the art without muddying it: a soft centre pool that seats
+     NEW GAME against the bright sun/horizon it sits on, and a bottom fade for the controls hint. */
   background-image:
-    radial-gradient(130% 30% at 26% 101%, #140d07 0 54%, transparent 55%),
-    radial-gradient(150% 26% at 78% 103%, #1d1209 0 56%, transparent 57%),
-    radial-gradient(46% 34% at 66% 44%, rgba(255, 152, 70, 0.55), rgba(255, 118, 40, 0.15) 55%, transparent 78%),
-    linear-gradient(180deg, #10131f 0%, #262c48 22%, #55405c 38%, #b06a3c 52%, #cf8f52 58%, #7c4d2c 68%, #33231a 82%, #191009 100%);
+    radial-gradient(38% 26% at 50% 52%, rgba(6, 4, 2, 0.5), rgba(6, 4, 2, 0.22) 60%, transparent 100%),
+    linear-gradient(180deg, transparent 55%, rgba(6, 4, 2, 0.45) 82%, rgba(6, 4, 2, 0.85) 100%),
+    url('../ui/title_art.webp');
+  background-size: 100% 100%, 100% 100%, cover;
   text-align: center;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-direction: column;
   visibility: hidden;
+}
+
+/* The art is 16:9 and its title lockup sits in the LEFT THIRD, so a `cover` crop on a portrait
+   or otherwise narrow window slices the branding clean off. Under 4:3 letterbox the whole frame
+   instead (background-color fills the bars) — the scrim layers stay at 100% 100% either way, so
+   they always cover the full element rather than just the art. */
+@media (max-aspect-ratio: 4/3) {
+  #menu { background-size: 100% 100%, 100% 100%, contain; }
+  #loading { background-size: 100% 100%, contain; }
 }
 
 #menu .hint {

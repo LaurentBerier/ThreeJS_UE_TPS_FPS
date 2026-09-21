@@ -157,11 +157,31 @@ export default class CharacterController extends Component{
         this.attackDistance = 2.2;
 
         this.canMove = true;
+
+        // Dormancy (AiDirector's proximity spawning): invisible + zero per-frame logic until the
+        // player nears this beast's encounter. TakeHit requests a wake so a sniped sleeper reacts.
+        this.dormant = false;
+        this.requestWake = null;    // installed by AiDirector
+
+        // Repath change-gate: the chase used to rebuild (FindPath + SmoothPath) ~8x a second
+        // whether or not the player had moved — the single most expensive habit in the AI.
+        this._lastNavDest = new THREE.Vector3();
+        this._haveNavDest = false;
+
         // Beast balancing: health dropped HARD (was 100, then 30) so it dies fast for quick death-feel
         // iteration, while its melee damage is cranked up (see HitPlayer / meleeDamage) so it stays a
         // genuine high-threat target that forces an immediate reaction despite the low health pool.
-        // Reduced to 20 on request (player AK 2 dmg/shot => ~10 hits) so it's easier to bring down.
-        this.health = 20;
+        // Cut again on request to 8 (player AK 2 dmg/shot => ~4 hits) so it drops fast.
+        this.health = 8;
+
+        // Hit stagger: "move a lot less when being attacked". The beast is a MELEE attacker, so
+        // planting it outright the way the ranged soldiers are planted would make it harmless — it
+        // would never reach the player. Instead each hit throttles its forward root motion for a
+        // beat (folded into moveGate in ApplyRootMotion), so sustained fire visibly checks its
+        // charge and it lumbers rather than closing at full speed, without freezing it.
+        this.staggerTime = 0.45;      // seconds of throttled advance per hit taken
+        this.staggerFactor = 0.35;    // forward-motion scale while staggered
+        this.staggerTimer = 0.0;
         this.meleeDamage = 35;   // per landed punch (was the PlayerHealth default of 10) — very dangerous
         this.lastAttacker = null;   // entity that last damaged us — the corpse is flung away from it
     }
@@ -314,7 +334,22 @@ export default class CharacterController extends Component{
         this._havePlayerPrev = true;
     }
 
+    // Repath toward the player only when needed: no live path, or the player has moved more than
+    // `threshold` metres from where the current path was aimed. Combined with the chase cadence
+    // this cuts the beast's path rebuilds (each one FindPath + a SmoothPath clearance pass) from
+    // ~8/s to only what tracking genuinely requires.
+    NavigateToPlayerIfMoved(threshold = 1.5){
+        if(this.path?.length && this._haveNavDest){
+            const p = this.player.Position;
+            const dx = p.x - this._lastNavDest.x, dz = p.z - this._lastNavDest.z;
+            if(dx * dx + dz * dz < threshold * threshold){ return; }
+        }
+        this.NavigateToPlayer();
+    }
+
     NavigateToPlayer(){
+        this._lastNavDest.copy(this.player.Position);
+        this._haveNavDest = true;
         // Predictive interception: aim a short time AHEAD of the player along their current velocity so
         // the beast cuts the corner to head you off, rather than forever pathing to the spot you just
         // left. Only when you're far enough that leading helps (up close it makes a straight beeline),
@@ -394,7 +429,27 @@ export default class CharacterController extends Component{
         this.player.Broadcast({topic: 'hit', amount: this.meleeDamage, from: this.parent});
     }
 
+    // ---- Dormancy (driven by AiDirector) ----
+    // Dormant = invisible + zero per-frame logic (see the Update guard). Waking re-poses the rig
+    // the same frame and resets the progress/tracking state so the sleep gap can't read as being
+    // stuck or as a huge fake player velocity. Corpses are exempt (their despawn runs out).
+    SetDormant(dormant){
+        dormant = !!dormant;
+        if(this.dead || this.dormant === dormant){ return; }
+        this.dormant = dormant;
+        if(this.model){ this.model.visible = !dormant; }
+        if(!dormant){
+            this.mixer && this.mixer.update(0.02);   // pose the skeleton before it renders again
+            this.progressAnchor.copy(this.model.position);
+            this.noProgressTime = 0.0;
+            this.stuckRetries = 0;
+            this._havePlayerPrev = false;            // don't derive a velocity across the sleep gap
+        }
+    }
+
     TakeHit = msg => {
+        // Shot while dormant (long-range snipe): wake the encounter before reacting.
+        if(this.dormant && this.requestWake){ this.requestWake(); }
         // Blood splatter at the bullet's impact point (ranged hits carry a hitResult; the beast's own
         // melee does not). Spray OUT of the wound — back toward the shooter — lifted off the collision
         // surface so it reads as coming off the body rather than from inside the mesh. Scaled up, and a
@@ -414,6 +469,10 @@ export default class CharacterController extends Component{
         // `?? 0` guard: a hit that ever omits amount would otherwise NaN the health and the
         // `== 0` death check would never fire (NaN == 0 is false), making the beast unkillable.
         this.health = Math.max(0, this.health - (msg.amount ?? 0));
+
+        // Throttle the charge for a beat (see staggerTime); refreshed per hit, so sustained fire
+        // keeps the beast slowed for as long as the player keeps shooting.
+        this.staggerTimer = this.staggerTime;
         // Remember the killer so the death ragdoll is flung away from whoever actually dropped it
         // (the player's gun, or a soldier ganging up on it), not always the player.
         this.lastAttacker = msg.from || this.lastAttacker;
@@ -534,9 +593,12 @@ export default class CharacterController extends Component{
         // (player on a disconnected navmesh island / momentarily off-mesh). Treat that as being
         // stuck too, so the timer still climbs to the last-resort escape instead of resetting every
         // frame and freezing forever (an empty path otherwise bypasses ALL the recovery below).
+        // SHORT budget (not the full wedge budget): an empty path means the route itself failed, so
+        // there is nothing to keep trying — detour after a beat so mid-combat the beast reads as
+        // prowling for another way in rather than standing frozen for seconds between detours.
         if(!this.path?.length){
             this.noProgressTime += t;
-            if(this.noProgressTime >= this.abandonTime){
+            if(this.noProgressTime >= this.abandonTime * 0.4){
                 this.FindAnotherWaypoint();   // detour to a reachable node, or SubtleTeleport if none
                 this.noProgressTime = 0.0;
                 this.stuckRetries = 0;
@@ -762,6 +824,8 @@ export default class CharacterController extends Component{
                 // wide into the wall. Applied AFTER the clip-loop spike rejection above so a legitimate
                 // run step is never mistaken for the loop spike.
                 vel.multiplyScalar(this.moveGate);
+                // ...and throttle further while under fire (see staggerTime).
+                if(this.staggerTimer > 0.0){ vel.multiplyScalar(this.staggerFactor); }
                 if(this.navNode && this.navGroup !== null){
                     // Constrain the move to the navmesh so the agent can't clip
                     // through collisions and wander off the walkable surface.
@@ -836,11 +900,18 @@ export default class CharacterController extends Component{
     }
 
     Update(t){
+        // Dormant (far from the player, AiDirector asleep): zero work. Corpses still run below so
+        // the ragdoll/despawn lifecycle finishes even if the player leaves mid-death.
+        if(this.dormant && !this.dead){ return; }
+
         // Dead: physics drives the skinned mesh as it settles, then the corpse sinks and is removed.
         if(this.dead){
             this.UpdateDeath(t);
             return;
         }
+
+        // Decay the under-fire throttle BEFORE root motion consumes it (see staggerTime).
+        if(this.staggerTimer > 0.0){ this.staggerTimer = Math.max(0.0, this.staggerTimer - t); }
 
         this.mixer && this.mixer.update(t);
         this.UpdatePlayerTracking(t);   // estimate player velocity so the chase can LEAD the target
