@@ -1,0 +1,527 @@
+/* Ported from the reference three-fps inline <style>, plus TPS/FPS additions. */
+body {
+  margin: 0;
+  overflow: hidden;
+  /* System stack (was Google-hosted Roboto): the game must be fully self-contained for
+     Sandscape hosting — no CDN fetches. Roboto still wins on Android/ChromeOS. */
+  font-family: Roboto, 'Segoe UI', system-ui, -apple-system, Helvetica, Arial, sans-serif;
+  color: white;
+  background: #000;
+}
+
+canvas {
+  display: block;
+}
+
+/* --- Sci-fi aim reticle -------------------------------------------------------------------------
+   A layered HUD reticle drawn in pure CSS, centred on a zero-size point at screen centre:
+     * four DYNAMIC spread ticks — the centre-to-tick GAP is driven by WeaponManager via
+       --reticle-gap (wider hipfire = less precision, tighter ADS, a small fire bloom); the tick
+       thickness/length are FIXED, so a bigger spread never means fatter lines;
+     * a slowly-rotating SEGMENTED scanner ring (four cardinal arcs, gaps at the diagonals);
+     * four CORNER BRACKETS framing the target box; and
+     * a centre pip for the precise aim point.
+   Everything inherits --reticle-color / --reticle-glow, so adding `.aiming` to #crosshair (set by
+   WeaponManager on ADS) recolours the whole reticle to a hot amber "lock", tightens the frame and
+   speeds the scan. */
+#crosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  --reticle-gap: 1vw;            /* centre -> inner end of each tick (set per-frame by WeaponManager) */
+  --reticle-thickness: 2px;     /* CONSTANT outline weight — identical hipfire & ADS */
+  --reticle-length: 9px;        /* CONSTANT tick length */
+  --reticle-color: rgba(130, 240, 255, 0.95);   /* cyan HUD */
+  --reticle-glow: rgba(90, 220, 255, 0.6);
+  --reticle-ring: 56px;         /* scanner-ring diameter */
+  --reticle-frame: 34px;        /* corner-bracket half-extent (centre -> outer corner) */
+}
+
+/* Centre pip — the precise aim point. */
+.ch-dot {
+  position: absolute;
+  width: 3px; height: 3px;
+  left: -1.5px; top: -1.5px;
+  border-radius: 50%;
+  background: var(--reticle-color);
+  box-shadow: 0 0 4px 1px var(--reticle-glow), 0 0 0 1px rgba(0, 0, 0, 0.5);
+}
+
+/* Frame wrapper (ring + brackets): a zero-size point so `.aiming` can scale the whole frame in
+   around centre without disturbing the dynamic ticks. */
+.ch-frame {
+  position: absolute;
+  left: 0; top: 0;
+  width: 0; height: 0;
+  transition: transform 0.18s ease;
+}
+
+/* Rotating segmented scanner ring: a conic gradient of four 45deg cardinal arcs (45deg gaps at the
+   diagonals), masked down to a thin annulus. */
+.ch-ring {
+  position: absolute;
+  width: var(--reticle-ring);
+  height: var(--reticle-ring);
+  left: calc(var(--reticle-ring) / -2);
+  top: calc(var(--reticle-ring) / -2);
+  border-radius: 50%;
+  background: conic-gradient(from -22.5deg,
+    var(--reticle-color) 0 45deg, transparent 45deg 90deg,
+    var(--reticle-color) 90deg 135deg, transparent 135deg 180deg,
+    var(--reticle-color) 180deg 225deg, transparent 225deg 270deg,
+    var(--reticle-color) 270deg 315deg, transparent 315deg 360deg);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+          mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.6)) drop-shadow(0 0 3px var(--reticle-glow));
+  opacity: 0.85;
+  animation: ch-spin 7s linear infinite;
+}
+@keyframes ch-spin { to { transform: rotate(360deg); } }
+
+/* Four L-shaped corner brackets forming the target frame (each keeps only two adjacent borders). */
+.ch-bracket {
+  position: absolute;
+  box-sizing: border-box;
+  width: 10px; height: 10px;
+  border: 2px solid var(--reticle-color);
+  filter: drop-shadow(0 0 2px var(--reticle-glow));
+  opacity: 0.8;
+}
+.ch-tl { left: calc(var(--reticle-frame) * -1);      top: calc(var(--reticle-frame) * -1);      border-right: none; border-bottom: none; }
+.ch-tr { left: calc(var(--reticle-frame) - 10px);    top: calc(var(--reticle-frame) * -1);      border-left:  none; border-bottom: none; }
+.ch-bl { left: calc(var(--reticle-frame) * -1);      top: calc(var(--reticle-frame) - 10px);    border-right: none; border-top:    none; }
+.ch-br { left: calc(var(--reticle-frame) - 10px);    top: calc(var(--reticle-frame) - 10px);    border-left:  none; border-top:    none; }
+
+/* Dynamic spread ticks — glowing blades that taper toward centre. Gap driven by WeaponManager;
+   easing the gap makes hipfire<->ADS (and the fire bloom) bloom rather than snap. */
+.ch-tick {
+  position: absolute;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.7)) drop-shadow(0 0 3px var(--reticle-glow));
+  transition: top 0.1s ease-out, bottom 0.1s ease-out, left 0.1s ease-out, right 0.1s ease-out;
+}
+
+/* Vertical ticks (above/below centre): narrow = thickness, tall = length, centred on X. */
+.ch-top, .ch-bottom {
+  width: var(--reticle-thickness);
+  height: var(--reticle-length);
+  left: calc(var(--reticle-thickness) / -2);
+}
+.ch-top    { bottom: var(--reticle-gap); background: linear-gradient(to bottom, transparent, var(--reticle-color)); }
+.ch-bottom { top:    var(--reticle-gap); background: linear-gradient(to top,    transparent, var(--reticle-color)); }
+
+/* Horizontal ticks (left/right of centre): wide = length, short = thickness, centred on Y. */
+.ch-left, .ch-right {
+  height: var(--reticle-thickness);
+  width: var(--reticle-length);
+  top: calc(var(--reticle-thickness) / -2);
+}
+.ch-left  { right: var(--reticle-gap); background: linear-gradient(to right, transparent, var(--reticle-color)); }
+.ch-right { left:  var(--reticle-gap); background: linear-gradient(to left,  transparent, var(--reticle-color)); }
+
+/* ADS "lock": hot amber, tighter frame, faster scan. */
+#crosshair.aiming {
+  --reticle-color: rgba(255, 186, 92, 0.98);
+  --reticle-glow: rgba(255, 150, 60, 0.7);
+}
+#crosshair.aiming .ch-frame { transform: scale(0.72); }
+#crosshair.aiming .ch-ring  { animation-duration: 2.6s; opacity: 1; }
+
+/* Damage vignette: a red glow that pools at the screen edges. Flashed (opacity 0 -> ~0.8 -> 0)
+   by UIManager.FlashDamage on a hit. Above the world, below the HUD readouts; never eats input. */
+#blood_overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  z-index: 30;
+  background: radial-gradient(ellipse at center,
+    rgba(120, 0, 0, 0) 45%,
+    rgba(120, 0, 0, 0.25) 75%,
+    rgba(110, 0, 0, 0.7) 100%);
+}
+
+#ammo_container {
+  position: absolute;
+  right: 5%;
+  bottom: 5%;
+  font-size: 3em;
+}
+
+#weapon_name {
+  position: absolute;
+  right: 5%;
+  bottom: 13%;
+  font-size: 1.4em;
+  opacity: 0.85;
+  letter-spacing: 1px;
+}
+
+#camera_mode {
+  position: absolute;
+  left: 5%;
+  top: 5%;
+  font-size: 1.2em;
+  font-weight: 700;
+  letter-spacing: 2px;
+  opacity: 0.8;
+}
+
+#progress {
+  position: absolute;
+  bottom: 9%;
+  left: 0;
+  width: 0;
+  height: 2%;
+  background-color: white;
+  /* Above the black curtain so the boot loading bar stays visible on it. */
+  z-index: 60;
+}
+
+/* Full-screen black curtain that cross-fades the onboarding states. Sits above the
+   menu/loading/game but below the boot progress bar; starts opaque (page fades in).
+   Driven from entry.js by toggling opacity between 1 (black) and 0 (clear). */
+#fade {
+  position: fixed;
+  inset: 0;
+  background-color: #000;
+  opacity: 1;
+  z-index: 50;
+  pointer-events: none;
+  transition: opacity 0.6s ease;
+}
+
+/* --- Title key art -------------------------------------------------------------------------------
+   "THE BLACK HIVE PROJECT" splash art, shared by the menu and the loading screen (the CSS-painted
+   dusk backdrop it replaces is gone — the art is the same golden-hour world, now with the title on
+   it). Shipped as a 1920-cap WebP (~190 KB; tools/compress_titleart.py regenerates it from the raw
+   PNG) so the first screen the player sees is not a multi-megabyte blocking fetch.
+   Both screens layer their own scrim gradients OVER this in background-image; each layered list is
+   ordered front-to-back, so the art is always the LAST entry. */
+#menu,
+#loading {
+  background-color: #0e1018;
+  background-repeat: no-repeat;
+  background-position: center center;
+}
+
+/* Loading screen revealed (curtain clear) while the game is built. Below the
+   curtain so a fade-to-black covers it. Its own opaque bg hides the live render
+   that starts behind it — the same title art as the menu, so the hand-off from
+   NEW GAME reads as one continuous screen, under a heavy scrim that pushes it back
+   behind the spinner. Deliberately NOT animated (no pan/zoom): this screen is up
+   precisely while the level and entities are built, and a compositing loop there
+   would fight the build for frames. */
+#loading {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background-image:
+    linear-gradient(rgba(4, 3, 2, 0.74), rgba(4, 3, 2, 0.74)),
+    url('../ui/title_art.webp');
+  background-size: 100% 100%, cover;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 22px;
+  visibility: hidden;
+}
+
+#loading p {
+  margin: 0;
+  letter-spacing: 6px;
+  font-size: 1.1em;
+  opacity: 0.75;
+}
+
+#loading .spinner {
+  width: 46px;
+  height: 46px;
+  border: 3px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+#health_container {
+  position: absolute;
+  bottom: 8%;
+  left: 5%;
+  width: 18%;
+  height: 2%;
+  border: 1px solid #ffffff;
+}
+
+#health_progress {
+  position: absolute;
+  background-color: #ffffff;
+  width: 100%;
+  height: 100%;
+}
+
+#game_hud {
+  visibility: hidden;
+}
+
+#menu {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  /* Two scrims keep the UI legible on the art without muddying it: a soft centre pool that seats
+     NEW GAME against the bright sun/horizon it sits on, and a bottom fade for the controls hint. */
+  background-image:
+    radial-gradient(38% 26% at 50% 52%, rgba(6, 4, 2, 0.5), rgba(6, 4, 2, 0.22) 60%, transparent 100%),
+    linear-gradient(180deg, transparent 55%, rgba(6, 4, 2, 0.45) 82%, rgba(6, 4, 2, 0.85) 100%),
+    url('../ui/title_art.webp');
+  background-size: 100% 100%, 100% 100%, cover;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  visibility: hidden;
+}
+
+/* The art is 16:9 and its title lockup sits in the LEFT THIRD, so a `cover` crop on a portrait
+   or otherwise narrow window slices the branding clean off. Under 4:3 letterbox the whole frame
+   instead (background-color fills the bars) — the scrim layers stay at 100% 100% either way, so
+   they always cover the full element rather than just the art. */
+@media (max-aspect-ratio: 4/3) {
+  #menu { background-size: 100% 100%, 100% 100%, contain; }
+  #loading { background-size: 100% 100%, contain; }
+}
+
+#menu .hint {
+  position: absolute;
+  bottom: 2%;
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  text-align: center;
+  opacity: 0.55;
+  font-size: 0.95em;
+}
+
+button {
+  background-color: rgba(0, 0, 0, 0);
+  color: rgb(221, 221, 221);
+  font-size: 1.5em;
+  border: none;
+  cursor: pointer;
+  margin-top: 4%;
+  font-weight: 700;
+}
+
+button:hover {
+  color: #fff;
+}
+
+/* NEW GAME: boxed outline + hover effect so it reads clearly as a clickable button,
+   centred on the horizon line of the CSS backdrop. */
+#start_game {
+  position: relative;
+  top: 20px;
+  padding: 12px 34px;
+  border: 2px solid rgba(255, 255, 255, 0.55);
+  border-radius: 3px;
+  letter-spacing: 2px;
+  background-color: rgba(0, 0, 0, 0.25);
+  transition: background-color 0.18s ease, border-color 0.18s ease,
+              color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+#start_game:hover {
+  color: #fff;
+  border-color: #fff;
+  background-color: rgba(255, 255, 255, 0.18);
+  transform: scale(1.06);
+  box-shadow: 0 0 14px rgba(255, 255, 255, 0.35);
+}
+
+#debug {
+  position: absolute;
+  right: 5%;
+  top: 5%;
+}
+
+/* --- In-game UI: the aim reticle, objective line, journey bar and event toast are live; the
+   ammo, health, weapon-name and camera-mode readouts, the damage vignette and the debug overlay
+   stay hidden (they were stripped with the rest of the HUD). #game_hud is shown (its visibility
+   is flipped on by UIManager.Initialize so the reticle appears only in-game); remove any id
+   below to bring that readout back too. (The Stats.js FPS panel is still hidden in entry.js.) --- */
+#ammo_container,
+#weapon_name,
+#health_container,
+#camera_mode,
+#blood_overlay,
+#debug { display: none !important; }
+
+/* ============================================================================================
+   JOURNEY CAMPAIGN HUD (see JourneyProgress.js / UIManager). Everything below inherits the
+   reticle's cyan HUD colour family; the alert state swaps to the reticle's hot amber. All of it
+   is pointer-events:none except the overlay buttons.
+   ============================================================================================ */
+
+/* Objective line — top-centre. Letter-spaced small caps; `alert` warms it while hostiles remain. */
+#objective {
+  position: absolute;
+  top: 4.5%;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 1.05em;
+  letter-spacing: 4px;
+  color: rgba(190, 240, 250, 0.92);
+  text-shadow: 0 0 8px rgba(90, 220, 255, 0.35), 0 1px 2px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+  transition: color 0.35s ease, text-shadow 0.35s ease;
+}
+#objective.alert {
+  color: rgba(255, 196, 110, 0.96);
+  text-shadow: 0 0 10px rgba(255, 160, 60, 0.45), 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+/* Route-progress bar — bottom-centre. A thin amber line filling left-to-right across the journey,
+   with the metres remaining beneath it. Both are HUD elements inside #game_hud. */
+#journey_bar {
+  position: absolute;
+  bottom: 3.2%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 30%;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 2px;
+  pointer-events: none;
+}
+#journey_fill {
+  width: 0;
+  height: 100%;
+  background: linear-gradient(to right, rgba(255, 170, 80, 0.55), rgba(255, 210, 130, 0.95));
+  box-shadow: 0 0 6px rgba(255, 180, 90, 0.5);
+  border-radius: 2px;
+  transition: width 0.5s ease;
+}
+#journey_dist {
+  position: absolute;
+  bottom: 1.2%;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 0.85em;
+  letter-spacing: 2px;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* Event toast — mid-upper screen, brief fade in/out (`.show` class toggled by UIManager). */
+#toast {
+  position: absolute;
+  top: 13%;
+  left: 0;
+  right: 0;
+  text-align: center;
+  font-size: 1.5em;
+  font-weight: 700;
+  letter-spacing: 6px;
+  color: rgba(255, 214, 150, 0.95);
+  text-shadow: 0 0 14px rgba(255, 160, 60, 0.5), 0 2px 4px rgba(0, 0, 0, 0.9);
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity 0.35s ease, transform 0.35s ease;
+  pointer-events: none;
+}
+#toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* --- Campaign overlays: victory (finale) + defeat (death). Full-screen scrims that fade in over
+   the frozen gameplay frame; a kicker line, a title, a stats row and a restart button. The
+   restart buttons re-enable pointer events — everything else in the HUD never eats input. --- */
+#finale,
+#death {
+  position: fixed;
+  inset: 0;
+  z-index: 45;                       /* above the HUD + vignette, below the boot curtain */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 18px;
+  text-align: center;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 1.4s ease, visibility 0s linear 1.4s;
+}
+#finale.show,
+#death.show {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 1.4s ease;
+}
+#finale {
+  background: radial-gradient(ellipse at center,
+    rgba(20, 10, 4, 0.55) 0%,
+    rgba(8, 4, 2, 0.82) 70%,
+    rgba(0, 0, 0, 0.92) 100%);
+}
+#death {
+  background: radial-gradient(ellipse at center,
+    rgba(30, 2, 2, 0.6) 0%,
+    rgba(10, 1, 1, 0.86) 70%,
+    rgba(0, 0, 0, 0.94) 100%);
+}
+#finale h1, #death h1 {
+  margin: 0;
+  font-size: 3.2em;
+  letter-spacing: 10px;
+  font-weight: 700;
+  text-shadow: 0 0 24px rgba(255, 180, 90, 0.35), 0 2px 6px rgba(0, 0, 0, 0.9);
+}
+#death h1 { color: rgba(255, 120, 100, 0.95); }
+.ov-kicker {
+  font-size: 1.0em;
+  letter-spacing: 6px;
+  opacity: 0.65;
+}
+.ov-stats {
+  display: flex;
+  gap: 56px;
+  margin: 8px 0 6px;
+}
+.ov-stat { display: flex; flex-direction: column; gap: 4px; }
+.ov-num {
+  font-size: 2.4em;
+  font-weight: 700;
+  color: rgba(255, 214, 150, 0.95);
+  text-shadow: 0 0 12px rgba(255, 170, 70, 0.4);
+}
+.ov-label {
+  font-size: 0.8em;
+  letter-spacing: 3px;
+  opacity: 0.55;
+}
+#finale button, #death button {
+  margin-top: 14px;
+  padding: 12px 34px;
+  border: 2px solid rgba(255, 255, 255, 0.55);
+  border-radius: 3px;
+  letter-spacing: 2px;
+  background-color: rgba(0, 0, 0, 0.25);
+  font-size: 1.1em;
+  transition: background-color 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+#finale button:hover, #death button:hover {
+  color: #fff;
+  border-color: #fff;
+  background-color: rgba(255, 255, 255, 0.18);
+}

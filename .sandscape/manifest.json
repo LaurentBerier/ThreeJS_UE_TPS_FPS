@@ -484,6 +484,11 @@
     "version": 1,
     "size": 469280
   },
+  "assets/assets/World/heightmaps_20260609_150752_1584m_concept.png": {
+    "sha256": "0fce72c61c52800d45db573a72dd688350e29c3a21a3592d125272365a9c5f34",
+    "version": 1,
+    "size": 7922076
+  },
   "assets/assets/World/heightmaps_20260609_150752_1584m.png": {
     "sha256": "0fce72c61c52800d45db573a72dd688350e29c3a21a3592d125272365a9c5f34",
     "version": 1,
@@ -624,11 +629,6 @@
     "version": 1,
     "size": 726264
   },
-  "assets/CLAUDE.md.sandscape.bak": {
-    "sha256": "f15de119ac78dafe2bb616cecc965bbfe4a44b35bebfffe50c91751bc637470f",
-    "version": 1,
-    "size": 1205
-  },
   "assets/data/mechanics.schema.json": {
     "sha256": "243285197172a35aa591a1df19ea234def97c770dd13353765bc7cb7b447dbbb",
     "version": 1,
@@ -735,9 +735,9 @@
     "size": 6664
   },
   "assets/js/entities/NPC/CharacterController.js": {
-    "sha256": "edf9162a20fbe85f29f188340f92a2887f433a8cb00c3f10fc3ec4a5be0294b1",
-    "version": 1,
-    "size": 52611
+    "sha256": "4e87ad19902b25cb8e559cdb4de7e668aa389ee94c0117303fb95dfc3e20de74",
+    "version": 2,
+    "size": 53870
   },
   "assets/js/entities/NPC/CharacterFSM.js": {
     "sha256": "db414633c647f1bfb78efebbef368cde1b8890b8701ef8063687300891c35c9f",
@@ -775,14 +775,14 @@
     "size": 5025
   },
   "assets/js/entities/NPC/UeSoldierController.js": {
-    "sha256": "3426a38bd5e0ba858efd4bfe3b066e64ea1c9b11328c32cdc158cf922e579afe",
-    "version": 1,
-    "size": 102621
+    "sha256": "fc29ca1da7bee4f4c0120d793cbd39dd3f2167e02425060195e6f43e9d294967",
+    "version": 2,
+    "size": 104111
   },
   "assets/js/entities/NPC/UeSoldierFSM.js": {
-    "sha256": "033780c2feef1bb88e64f6c29d7df0de8204b2c95d70779154f6aba69c222426",
-    "version": 1,
-    "size": 16403
+    "sha256": "0ee56219d9ffd7095632fd6682665a7f380abadd8cd18ec708dcdb99f3cd3c1c",
+    "version": 2,
+    "size": 17121
   },
   "assets/js/entities/Player/FootIK.js": {
     "sha256": "e6027f17c9c93a46505762412c7bf7ba66fb157e6a0f3c916f8709a70e610aac",
@@ -864,9 +864,14 @@
     "version": 1,
     "size": 1016
   },
+  "assets/js/entities/UI/JourneyProgress.js": {
+    "sha256": "37ca711dc6ec24b08d403c04a3c57333c566465fe77edc9f896aa7cefc5b8759",
+    "version": 1,
+    "size": 7994
+  },
   "assets/js/entities/UI/UIManager.js": {
     "sha256": "f5ae5c1ab905b46ca7d27a4eb730e4f4d90b6a7876d031c2340efd4edf8ff390",
-    "version": 1,
+    "version": 2,
     "size": 2103
   },
   "assets/js/entities/World/Atmosphere.js": {
@@ -925,9 +930,9 @@
     "size": 32280
   },
   "assets/js/entities/World/NavmeshGen.js": {
-    "sha256": "3daf888cf922aa9a94965113f9ecc0bd544f14bd4f8840ee7bceda7e42e7d5c0",
-    "version": 1,
-    "size": 11369
+    "sha256": "2f6cdde57b5237aa309241bdfe920b333c358fb78a702d0ac96ff649a911414c",
+    "version": 2,
+    "size": 12244
   },
   "assets/js/entities/World/Structures.js": {
     "sha256": "ea0fbfe6efba702d18363c9308eb69d51182a5cee32d3e507244ae0478039dba",
@@ -935,9 +940,9 @@
     "size": 39594
   },
   "assets/js/entities/World/WorldProps.js": {
-    "sha256": "52c36142bf6dc5e75fa85bc3e69da04b962c2dd0c222f137feb6fcafbf0eeef0",
-    "version": 1,
-    "size": 22209
+    "sha256": "298b0de4855427581d1b3c62f113f85431cde5114e7cc983e44cc97db730d137",
+    "version": 2,
+    "size": 22595
   },
   "assets/js/Entity.js": {
     "sha256": "fbade1afd2aa57fdfa73d5fca2401c26e9ef5644e93e405ab9f68da7f66cfa7e",
@@ -950,9 +955,9 @@
     "size": 2168
   },
   "assets/js/entry.js": {
-    "sha256": "7de2ec7c440cb5aeb21d94fcee0854077dce9718d8196d79832baa0a26588cd4",
-    "version": 1,
-    "size": 57953
+    "sha256": "351242ecfd2fe008a77d7c2d6472263055c86f48ed9fac3cfee31837f94a3094",
+    "version": 2,
+    "size": 58942
   },
   "assets/js/export/UeExporter.js": {
     "sha256": "3b7e62b1571b8bd1f4b8804589dd13831b55a3128f2c77c0d38bf2fcf841b0ba",
@@ -973,5 +978,180 @@
     "sha256": "5b35904d4e864807113c8860dfa3bf90d13c9a6b311a7217b3a9188674bc674e",
     "version": 1,
     "size": 13038
+  },
+  "assets/js/sandscape/blockout-import.js": {
+    "sha256": "ff4994b03be9a1d0d18be9262380fc4671e6e00642f33196c3ed4b0713935661",
+    "version": 1,
+    "size": 4190
+  },
+  "assets/js/sandscape/kit-uv.js": {
+    "sha256": "e80380c8fd5cdd0306af5498f438001a41191641952f41a98e443ff5d2fb0110",
+    "version": 1,
+    "size": 14463
+  },
+  "assets/js/sandscape/level-export.js": {
+    "sha256": "9cd8c8bf506afe4b094dbf567cec12192db35da2e0b08a109823b746b214b3ca",
+    "version": 1,
+    "size": 24577
+  },
+  "assets/js/sandscape/level-import.js": {
+    "sha256": "bcdbddbd67e30b83963fd46a103516d16b5a0eb6645a4c84d9def29065d0da38",
+    "version": 1,
+    "size": 25409
+  },
+  "assets/scenes/journey_level.json": {
+    "sha256": "09b940de5a732f7aa007cf4b5d3b3e1b467cace60ec5fc572fd6423b271916c1",
+    "version": 1,
+    "size": 1317883
+  },
+  "assets/thumbnails/01_obelisk_thumb_d96ad9ef.png": {
+    "sha256": "531f542cadd751828d3b1f05423384f6ac2edbe36a0ddfcb808e78806c50e505",
+    "version": 1,
+    "size": 19504
+  },
+  "assets/thumbnails/02_archway_lintel_thumb_5593de92.png": {
+    "sha256": "b83939d6992194e215a88b6732aad39b57958e63c5102daa989ca23e5338fb90",
+    "version": 1,
+    "size": 19855
+  },
+  "assets/thumbnails/03_ceiling_anchor_thumb_66c78113.png": {
+    "sha256": "4bdfe7acde92b07ef4936c19a7e8a68001a9ad7b318c30d9bb638c2925d1e484",
+    "version": 1,
+    "size": 38195
+  },
+  "assets/thumbnails/04_wall_broken_pipes_thumb_da440077.png": {
+    "sha256": "c748d26293cb22d943be1f82bdaab2d8c13992777e1fe7ee84cca9ef45d209f4",
+    "version": 1,
+    "size": 33934
+  },
+  "assets/thumbnails/05_barrier_wall_thumb_d9274206.png": {
+    "sha256": "f54cc624e5cc2a48424970153e3f2b4e77ff1b53e40b6c5203fc7cbcb82abdc8",
+    "version": 1,
+    "size": 21957
+  },
+  "assets/thumbnails/06_portal_pad_thumb_8c7f3fc2.png": {
+    "sha256": "5742ca9225401d01664338cfd1f62da0430cb972c38e3f97c57f3cf20553a7f9",
+    "version": 1,
+    "size": 36776
+  },
+  "assets/thumbnails/07_platform_octagon_thumb_ac5648fc.png": {
+    "sha256": "d615fc52f0f284d217a6113dc3019503d3abd998bbc3ac64652c21dbe6d0e469",
+    "version": 1,
+    "size": 42684
+  },
+  "assets/thumbnails/08_tech_stairs_thumb_5be987ad.png": {
+    "sha256": "331fed47f23a0619236b320d6a6c0fbea1e98b638a6b3e0e88948398314dae43",
+    "version": 1,
+    "size": 46355
+  },
+  "assets/thumbnails/09_red_rock_arch_thumb_da53c2d5.png": {
+    "sha256": "5d10dece62948c495dc5cffb9634cc4fb928bb49db21626d0c1e3b67cf68f17d",
+    "version": 1,
+    "size": 39364
+  },
+  "assets/thumbnails/10_red_rock_platform_thumb_aa23bc22.png": {
+    "sha256": "df4e7090db11e3d66aa0ea749e0cac8f8c9a9066868fa5dbcb94c786a61b36fe",
+    "version": 1,
+    "size": 31446
+  },
+  "assets/thumbnails/11_red_mesa_thumb_a6c48db4.png": {
+    "sha256": "6aa123c959820fa901b3566d9f79119055ef83263f4294e81012a727837f1b8b",
+    "version": 1,
+    "size": 38712
+  },
+  "assets/thumbnails/12_bone_tusk_thumb_23ecf805.png": {
+    "sha256": "9ee6a7759f5cf2cd28bc369970360aefe615c28b381e88acdb89d651b4c6e437",
+    "version": 1,
+    "size": 19805
+  },
+  "assets/thumbnails/13_bone_ribs_thumb_1f9e229a.png": {
+    "sha256": "6900d0991608cd145c719a09ffd349e5e36396cd4f6333f60a1986cb8f0a4985",
+    "version": 1,
+    "size": 27323
+  },
+  "assets/thumbnails/14_dead_tree_thumb_3bfe25f5.png": {
+    "sha256": "5a0bd489d5d5725c34d3deb2a1c1f58789055b68df7e51d3e8fb2144fef72da1",
+    "version": 1,
+    "size": 30576
+  },
+  "assets/thumbnails/15_crystal_cluster_thumb_5e24bbe9.png": {
+    "sha256": "2b8e96017e1c6ca6497bffae8da5112b087fcdcf0d858cb82a0906e29cda6f16",
+    "version": 1,
+    "size": 41185
+  },
+  "assets/thumbnails/16_broken_mechanism_thumb_0ba3ca5e.png": {
+    "sha256": "9a5b8d7160c4cec41dc0bef4554747e361e97d053e0f4274b5e3c12d6f22ed35",
+    "version": 1,
+    "size": 33093
+  },
+  "assets/thumbnails/17_tech_pod_thumb_c625c953.png": {
+    "sha256": "c3c95fb3d73ea24b0dec33272d625917954fcd312e4e9400c67f9055bb82851d",
+    "version": 1,
+    "size": 40333
+  },
+  "assets/thumbnails/18_wreckage_thumb_52f7244e.png": {
+    "sha256": "0fc8d2e44b735ec5a8d4e0480dd3b0580594937cd858be9e632dfebcdffbf20e",
+    "version": 1,
+    "size": 18394
+  },
+  "assets/thumbnails/19_marker_post_thumb_f37ecaf6.png": {
+    "sha256": "3a21fb74dce00da754a7e2386d569d693daa6178806454e2c2afa917ad92a0de",
+    "version": 1,
+    "size": 26196
+  },
+  "assets/thumbnails/20_tech_crate_thumb_68af9443.png": {
+    "sha256": "615448cae3fe8cd2214722d43b0cac1bee88d909afcda666103e36dfea64db98",
+    "version": 1,
+    "size": 44060
+  },
+  "assets/thumbnails/ak47_thumb_d4acd920.png": {
+    "sha256": "ce9d3114c8d2ff4db8539b1c03f65a75f4ce485f00ca142319143432605e6866",
+    "version": 1,
+    "size": 14262
+  },
+  "assets/thumbnails/alien_rib_arch_0723220210_texture_thumb_e3950961.png": {
+    "sha256": "fad19fe4553def106a84ea5e4cbaf8135fe7b73b4853d73fd58e925097fe64f1",
+    "version": 1,
+    "size": 30945
+  },
+  "assets/thumbnails/citadel_thumb_281b9c86.png": {
+    "sha256": "d42686af99012ca718d7f72c542361c06177a1c0bfd885dfeb990e61d55102c2",
+    "version": 1,
+    "size": 32654
+  },
+  "assets/thumbnails/hero_alien_rig_optimized_thumb_6b1d40ab.png": {
+    "sha256": "bb3a46c60a9e9c90cc5c607b0c248377347438f3b243bdc08c427f6562d955ce",
+    "version": 1,
+    "size": 17170
+  },
+  "assets/thumbnails/level_thumb_8953127b.png": {
+    "sha256": "2506a77ef781c07cd53f41461056333ef9d1ee610651455918dd9796c7578907",
+    "version": 1,
+    "size": 31859
+  },
+  "assets/thumbnails/muzzle_flash_thumb_a9bf6054.png": {
+    "sha256": "418a21829133c2fba04d218b896af624ea7b3204ea8cd61a2eeba5c2294b71f9",
+    "version": 1,
+    "size": 24100
+  },
+  "assets/thumbnails/sandscape_frog_2_optimized_thumb_b35b70de.png": {
+    "sha256": "4978c35b2f47d77bbd51bdc75575c677ebbb072509628f6388bf18031dce7179",
+    "version": 1,
+    "size": 20582
+  },
+  "assets/thumbnails/sandscape_liz_decimated_thumb_62318110.png": {
+    "sha256": "d57fab583b0d5b1f96f7fe25918896d76e84652d8ac0c2604590cdc2b29f76c1",
+    "version": 1,
+    "size": 19001
+  },
+  "assets/thumbnails/sk_mannequin_new_thumb_cdc2d5d0.png": {
+    "sha256": "5593120954086435330ba5b613e49e108a747e773f4626609991cf39480c0e89",
+    "version": 1,
+    "size": 17681
+  },
+  "assets/thumbnails/sk_vortexblaster_thumb_7a4156ba.png": {
+    "sha256": "17b72b1a3edac3a9d4a4026fdeb68c3ab57286f6eb231eac7f9b52ee0ae069f2",
+    "version": 1,
+    "size": 9949
   }
 }

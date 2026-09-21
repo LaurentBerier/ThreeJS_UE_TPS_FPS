@@ -1,0 +1,497 @@
+import * as THREE from 'three'
+import Component from '../../Component.js'
+import { CASTLE } from './JourneyWorld.js'
+
+// The ART PASS. Replaces the procedural greybox landmarks (Structures.js) and dresses the journey
+// with the 20 sculpted Meshy models — obelisks, arches, walls, wrecks, machinery, bones, dead
+// trees, crystals, mesas and marker posts — compressed to shipping GLBs (assets/World/props/,
+// ~0.6–2 MB each; see tools/compress_props.mjs).
+//
+// CONTRACTS (what keeps this from breaking the game):
+//
+//   * PURELY VISUAL. This component adds meshes and NOTHING else — no colliders, no physics
+//     bodies, no navmesh footprints, no spawns. Collision, line-of-sight, the camera boom and the
+//     navmesh are still owned entirely by Structures.js + Terrain, unchanged. Where a prop stands
+//     in for a greybox piece, that piece is flagged `visual:false` in Structures (collider kept,
+//     box mesh dropped) so the collider survives and there is no double geometry.
+//
+//   * OFF-ROUTE SCATTER carries no collider by design: dead trees, bones, crystals and mesas are
+//     placed off the walkable trail/arenas, where the navmesh never reaches, so nothing needs a
+//     hull. Anything a player can walk into sits on a Structures collider.
+//
+//   * FOG + PALETTE come for free. The materials are left STOCK (their own baked Meshy PBR), so
+//     DesertLook's global fog ShaderChunk override + the stock onBeforeCompile fog-uniform hook
+//     apply automatically (see DesertLook.js — "GLB props" is an explicit target of that hook).
+//     A light optional grade knits their albedo into the dark-red palette (GRADE below).
+//
+//   * Each prop model is normalised by Meshy to a ~1.9-unit box centred on the origin, Y-up — the
+//     same axis convention as three, so no axis swap is ever needed. Placement is authored in
+//     WORLD METRES along a chosen axis; the component measures each model's real bounds at load and
+//     derives the scale + the ground-seating offset, so the base always rests on the terrain.
+//
+// Built as a Level component after Structures. Deterministic: fixed placement table, no randomness.
+export default class WorldProps extends Component{
+    // `applyPlacement` is the level-import module's transform helper, handed in by entry.js rather
+    // than imported here: js/sandscape/ only exists once a game has round-tripped a level, so a
+    // static import would turn a missing module into a game that does not boot. entry.js already
+    // loads the module dynamically inside its fail-soft try/catch, so passing the function down
+    // costs nothing and keeps the ONE implementation of the transform contract (guardrail #69).
+    constructor(scene, terrain, propScenes, importedLevel, applyPlacement){
+        super()
+        this.name = 'WorldProps'
+        this.scene = scene
+        this.terrain = terrain
+        this.applyPlacement = applyPlacement || null
+        this.templates = {}         // name -> { object, box, size, center }
+
+        this.root = new THREE.Group()
+        this.root.name = 'WorldProps'
+
+        this._prepareTemplates(propScenes)
+        // 4b: the edited scene REPLACES the authored layout. Only build the built-in placements
+        // when the import did not place anything — never alongside them.
+        const placed = importedLevel ? this.PlaceImported(importedLevel.placements || []) : 0
+        this.importedPlaced = placed > 0
+        if(!this.importedPlaced && importedLevel){
+            console.warn('[level-import] nothing placed — falling back to the built-in layout.')
+        }
+        if(!this.importedPlaced){ this._build() }
+        // The beacon is NOT a placement, so branching `_build()` silently dropped it — the 420 m
+        // beam that reads as the destination from the start overlook simply stopped existing on an
+        // imported level, and no audit can see it (it carries no export tag). Re-derived from the
+        // citadel the import actually placed, per the round-trip rule that anything computed FROM
+        // prop positions is recomputed rather than reused: its world AABB gives the roofline
+        // directly, so a citadel the player moved or rescaled in the editor keeps its beam.
+        if(this.importedPlaced){ this._beaconFromPlacedCitadel() }
+        this.scene.add(this.root)
+    }
+
+    // Measure each loaded model once and set up its shared material/shadow flags. Clones made later
+    // share this geometry + material set (three's Object3D.clone keeps those by reference), so N
+    // placements of a prop cost one geometry and one texture set in memory.
+    _prepareTemplates(propScenes){
+        for(const [name, scene] of Object.entries(propScenes)){
+            if(!scene){ continue }
+            scene.traverse((n) => {
+                if(n.isMesh){
+                    n.castShadow = true
+                    n.receiveShadow = true
+                    // Meshy bakes a full-white emissiveFactor over a black map; the compressor drops
+                    // the map, but zero the factor too so no material can self-illuminate (the world's
+                    // only emissive is the cyan tech accent).
+                    const mats = Array.isArray(n.material) ? n.material : [n.material]
+                    for(const m of mats){
+                        if(!m){ continue }
+                        if(m.emissive){ m.emissive.setRGB(0, 0, 0) }
+                        m.fog = true
+                        this._grade(m)
+                    }
+                }
+            })
+            scene.updateMatrixWorld(true)     // Meshy wraps meshes in transformed nodes — bake them before measuring
+            const box = new THREE.Box3().setFromObject(scene)
+            const size = new THREE.Vector3(); box.getSize(size)
+            const center = new THREE.Vector3(); box.getCenter(center)
+            this.templates[name] = { object: scene, box, size, center }
+        }
+    }
+
+    // Light palette knit: the world is graded dark (structure albedo luminance ~0.16 so the sand
+    // stays the brightest surface — a combat-readability rule). Meshy's raw albedo reads a little
+    // bright/clean against that, so pull it down and toward the desert tone WITHOUT touching the
+    // texture detail. Applied on outgoing light would need a custom shader (which would drop the
+    // stock fog hook); a factor tweak on color/roughness is enough here and keeps the fog for free.
+    _grade(mat){
+        if(mat.userData.dlProp){ return }
+        mat.userData.dlProp = true
+        if(mat.color){ mat.color.multiplyScalar(0.82) }          // settle into the charcoal world
+        if(typeof mat.roughness === 'number'){ mat.roughness = Math.min(1, mat.roughness * 1.05 + 0.04) }
+    }
+
+    // groundY under a point.
+    _g(x, z){ return this.terrain.HeightAt(x, z) }
+
+    // Place one prop. opts:
+    //   size  target extent in metres along `axis`
+    //   axis  'y' (height) | 'x' | 'z' | 'max' (longest) — which model dimension `size` sets
+    //   yaw   rotation about up (radians)
+    //   sink  metres to bury the base below the terrain (settle a piece into the sand)
+    //   tilt  [rx, rz] extra lean for fallen pieces (approximate seating; pair with sink)
+    //   ground  explicit ground datum override (e.g. an arena floor)
+    _put(name, x, z, opts = {}){
+        const t = this.templates[name]
+        if(!t){ console.warn('[WorldProps] missing prop', name); return null }
+        const axis = opts.axis || 'max'
+        const dim = axis === 'max' ? Math.max(t.size.x, t.size.y, t.size.z) : t.size[axis]
+        const k = (opts.size || 2) / (dim || 1)
+
+        const g = new THREE.Group()
+        const inst = t.object.clone(true)
+        // Re-centre the model on the group origin so scale + yaw pivot on its centre; the base is
+        // seated via Y below. (Meshy centres at ~0 already, but this stays exact if it doesn't.)
+        inst.position.set(-t.center.x, -t.center.y, -t.center.z)
+        g.add(inst)
+        g.scale.setScalar(k)
+        g.rotation.order = 'YXZ'
+        g.rotation.y = opts.yaw || 0
+        if(opts.tilt){ g.rotation.x = opts.tilt[0] || 0; g.rotation.z = opts.tilt[1] || 0 }
+
+        const groundY = opts.ground != null ? opts.ground : this._g(x, z)
+        // world base = groundY - sink; base is (center.y - box.min.y) = size.y/2 below centre.
+        g.position.set(x, groundY + (t.size.y * 0.5) * k - (opts.sink || 0), z)
+        g.rotation.order = 'YXZ'
+        g.updateMatrix()
+        g.userData.propName = name
+        // Sandscape level-export tag: inert data on the final-placement node (the group whose
+        // world transform IS the placement). modelPath is the exact path entry.js fetches.
+        g.userData.sandscape = {
+            modelPath: `assets/World/props/${name}.glb`,
+            name,
+            game: { authored: { x, y: groundY, z }, size: opts.size || 2, axis: opts.axis || 'max',
+                    yaw: opts.yaw || 0, sink: opts.sink || 0 },
+        }
+        this.root.add(g)
+        return g
+    }
+
+    // Sandscape round trip: when an edited scene is loaded (see entry.js), place each placement
+    // with the EDITOR's transform as the authority instead of the authored table. Reuses the
+    // measured templates (materials/grading already applied); contentOffset is applied by
+    // level-import.js before this is called. Returns the number of props placed.
+    PlaceImported(placed){
+        if(!placed || !placed.length){ return 0 }
+        // No helper means js/sandscape/level-import.js is STALE — it loaded but predates
+        // applyPlacement. Refuse the whole import rather than hand-rolling the transform beside it:
+        // those four .set() calls have been written wrong twice, and a level built by a second
+        // implementation is exactly what guardrail #69 exists to stop. Returning 0 makes the
+        // constructor fall back to the authored layout, which is correct and visibly whole.
+        if(!this.applyPlacement){
+            console.error('[level-import] applyPlacement unavailable — js/sandscape/level-import.js ' +
+                'is stale. Re-provision the runtime modules (they travel together); using the ' +
+                'built-in layout for now.')
+            return 0
+        }
+        let n = 0
+        for(const p of placed){
+            // Placements come from level-import.js: { modelPath, assetName, game, visible,
+            // position, quaternion, scale } — contentOffset already applied.
+            const name = p.assetName || (p.modelPath || '').split('/').pop().replace(/\.glb$/i, '')
+            const t = this.templates[name]
+            // `p.name` does not exist on a placement — collectPlacements returns `assetName`. The
+            // warning printed `undefined` at exactly the moment it was needed: this is the path
+            // that produces SHORT PLACEMENT.
+            if(!t){ console.warn('[WorldProps] imported placement has no template:', name, p.modelPath); continue }
+            const inst = t.object.clone(true)
+            // At the group ORIGIN, not at -t.center like the authored `_put` path above. The two
+            // paths pivot differently by construction: `_put` builds a group whose origin is the
+            // model's box CENTRE, while the editor transform is the transform of the MODEL'S OWN
+            // ORIGIN — level-import.js has already composed `userData.contentOffset` into it, and
+            // the editor mounts the GLB at its wrapper's local identity. Re-centring here would
+            // displace every imported prop by R * S * center.
+            inst.position.set(0, 0, 0)
+            const g = new THREE.Group()
+            g.add(inst)
+            // BEFORE applyPlacement, not after: the helper only calls updateMatrix() when
+            // matrixAutoUpdate is already false. Set it afterwards and nothing ever composes the
+            // matrix — the whole level stacks at the origin.
+            g.matrixAutoUpdate = false
+            // The ONE implementation of the transform contract. It sets rotation.order before the
+            // quaternion; assigning it after makes three re-read the Euler angles it decomposed
+            // under the OLD order and recompose a DIFFERENT quaternion — silently, and only for
+            // rotations off a single axis, so a pure yaw survives and a spot check passes. That
+            // cost 20 of these 76 props their orientation (worst 165 degrees) while every count in
+            // the pipeline read healthy. Hand-writing the .set() calls here is how it happened; the
+            // helper exists so it cannot be written wrong again.
+            this.applyPlacement(g, p, { rotationOrder: 'YXZ' })
+            // Hidden placements are PLACED hidden, never skipped: auditImportedLevel counts the
+            // document's placements as `expected` without filtering on visibility, so skipping one
+            // reports a false SHORT PLACEMENT — an error about a bug that is not there.
+            if(p.visible === false){ g.visible = false }
+            g.userData.propName = name
+            // Re-tag so a later re-import still sees adapter-placed props.
+            const authored = p.game && p.game.authored ? p.game.authored
+                : { x: p.position.x, y: p.position.y, z: p.position.z }
+            g.userData.sandscape = { modelPath: `assets/World/props/${name}.glb`, name,
+                game: { authored } }
+            this.root.add(g)
+            n++
+        }
+        console.log(`[WorldProps] placed ${n} imported props`)
+        return n
+    }
+
+    // The citadel beacon on an IMPORTED level. `_citadel()` computes the beam from the authored
+    // table, and that whole method is branched off when the import runs — so the beam has to be
+    // re-derived from what was actually placed. The world AABB of the placed group gives the
+    // roofline whatever the player did to the citadel in the editor (moved, rescaled, yawed), which
+    // is the point: never reuse a number computed from the old placement.
+    _beaconFromPlacedCitadel(){
+        const citadel = this.root.children.find(o => o.userData && o.userData.propName === 'Citadel')
+        if(!citadel){ console.warn('[WorldProps] imported level has no Citadel — no beacon.'); return }
+        const box = new THREE.Box3().setFromObject(citadel)
+        if(box.isEmpty()){ return }
+        const c = new THREE.Vector3(); box.getCenter(c)
+        this._laser(c.x, c.z, box.max.y - 4)
+        // Logged because nothing else can see it: the beam carries no export tag, so
+        // auditImportedLevel is blind to whether it was rebuilt. Silence here is the failure.
+        console.log(`[WorldProps] beacon re-derived from the placed citadel (roof y=${box.max.y.toFixed(1)})`)
+    }
+
+    // A short line of the same prop (wall runs, pipe runs, marker rows). Steps along `yaw`.
+    _row(name, x, z, yaw, n, step, opts = {}){
+        const dx = Math.sin(yaw + Math.PI / 2), dz = Math.cos(yaw + Math.PI / 2)
+        for(let i = 0; i < n; i++){
+            this._put(name, x + dx * i * step, z + dz * i * step,
+                { ...opts, yaw: yaw + (opts.jitter ? (i % 2 ? 0.14 : -0.1) : 0) })
+        }
+    }
+
+    // ==============================================================================================
+    // THE PLACEMENTS. Coordinates mirror JourneyWorld / Structures landmarks. Pieces marked
+    // "(replaces …)" have their greybox twin flagged visual:false in Structures.js.
+    // ==============================================================================================
+    _build(){
+        this._startArea()
+        this._basin()
+        this._saddle()
+        this._ruins()
+        this._canyon()
+        this._wreckField()
+        this._switchbacks()
+        this._gate()
+        this._summit()
+        this._citadel()
+        this._scatter()
+    }
+
+    // 1. Start overlook — the opening frame. Keep the vista cone toward the castle CLEAR: only
+    // low/side dressing here, nothing tall on the sightline.
+    _startArea(){
+        const yaw = Math.atan2(CASTLE.x - 150, CASTLE.z - 258)
+        const right = { x: Math.cos(yaw), z: -Math.sin(yaw) }
+        // Two obelisks framing the castle bearing (replace the greybox piers).
+        const pierH = 8.0, pierDist = 5.7, px0 = 145, pz0 = 252
+        for(const s of [-1, 1]){
+            this._put('01_Obelisk', px0 + right.x * pierDist * s, pz0 + right.z * pierDist * s, { size: pierH, axis: 'y', yaw })
+        }
+        // The lintel spanning the piers — seated so it RESTS ON the pier tops. The models don't fill
+        // their bounding boxes to the very top/bottom, so the base is dropped ~1.9 m below the pier
+        // bbox top to close the gap; width overhangs the piers so the ends land on the stone.
+        this._put('02_Archway_Lintel', px0, pz0, { size: 13, axis: 'x', yaw, ground: this._g(px0, pz0) + pierH - 1.9 })
+        // The fallen block at the right pier's foot is now a tech crate (replaces the greybox).
+        this._put('20_Tech_Crate', 147.6, 250.4, { size: 1.8, axis: 'x', yaw: yaw + 0.4, tilt: [0.1, 0.08] })
+        // A dead tree on the plateau rim where the banner flag + greybox barricade used to stand.
+        this._put('14_Dead_Tree', 142, 265, { size: 6.2, axis: 'y', yaw: 1.1 })
+        // A marker post at the trailhead, off to the side of the shot.
+        this._put('19_Marker_Post', 156, 250, { size: 4.2, axis: 'y', yaw: 0.4 })
+        // A downed marker mast where the old antenna lay.
+        this._put('19_Marker_Post', 160, 267, { size: 4.6, axis: 'y', tilt: [0, 1.2], sink: 0.3 })
+    }
+
+    // 2. Basin arena — first contact. The dead hulk + a pipe wall as the long cover line.
+    _basin(){
+        // Wreck hulk over the basin wreck (replaces _wreckHulk 84,168).
+        this._put('18_Wreckage', 84, 168, { size: 10, axis: 'z', yaw: 0.9, sink: 0.2 })
+        // West-rim pipe wall run (replaces the basin _wallRun 82,194).
+        this._row('04_Wall_Broken_Pipes', 82, 194, -0.6, 4, 3.1, { size: 4.2, axis: 'x', jitter: true, sink: 0.15 })
+        // Cover barriers (replace the three basin cover boxes).
+        this._put('05_Barrier_Wall', 100, 186, { size: 3.0, axis: 'x', yaw: 0.4 })
+        this._put('05_Barrier_Wall', 92, 176, { size: 2.6, axis: 'x', yaw: -0.7 })
+        this._put('20_Tech_Crate', 104, 174, { size: 1.7, axis: 'x', yaw: 1.2 })
+        // Ammo cache crate (by the basin ammo at 91,176).
+        this._put('20_Tech_Crate', 90.4, 176.6, { size: 1.5, axis: 'x', yaw: 0.3 })
+    }
+
+    // 3. Saddle — the vista beat: a monolith pair gates the crest (replaces the two saddle boxes).
+    _saddle(){
+        this._put('01_Obelisk', 38, 144, { size: 8.2, axis: 'y', yaw: 0.2, tilt: [0, 0.06] })
+        this._put('01_Obelisk', 29, 137, { size: 7.2, axis: 'y', yaw: -0.3, tilt: [0, -0.05] })
+    }
+
+    // 4. Ruins arena — buried civilisation. The grand arch, wall runs, half-buried machinery + the
+    // first ancient-tech accent.
+    _ruins(){
+        // Red-rock arch centrepiece (replaces _brokenArch -14,86).
+        this._put('09_Red_Rock_Arch', -14, 86, { size: 12, axis: 'x', yaw: 0.7 })
+        // Two wall runs of broken pipe-wall (replace the ruins _wallRun pair).
+        this._row('04_Wall_Broken_Pipes', -2, 100, 0.35, 4, 3.1, { size: 4.4, axis: 'x', jitter: true, sink: 0.15 })
+        this._row('04_Wall_Broken_Pipes', 4, 80, -1.2, 3, 3.1, { size: 4.0, axis: 'x', jitter: true, sink: 0.2 })
+        // Broken ancient pillars the soldiers strafe between (replace the greybox cylinder pillars).
+        this._put('19_Marker_Post', -10, 96, { size: 3.4, axis: 'y', yaw: 0.3 })
+        this._put('19_Marker_Post', 2, 92, { size: 2.7, axis: 'y', yaw: 2.0 })
+        this._put('19_Marker_Post', -4, 78, { size: 3.7, axis: 'y', yaw: -1.1 })
+        // Half-buried machinery (replaces the ruins machinery box -18,82).
+        this._put('16_Broken_Mechanism', -18, 82, { size: 4.2, axis: 'x', yaw: 2.1, sink: 0.25 })
+        // The ancient-tech thread starts: a portal pad among the ruins + a crystal beside it.
+        this._put('06_Portal_Pad', -22, 90, { size: 6.5, axis: 'max', yaw: 0.5, sink: 0.05 })
+        this._put('15_Crystal_Cluster', -24.5, 88, { size: 3.0, axis: 'y', yaw: 1.3 })
+        // Overwatch ledge platform (the ruins branch flat at 34,95).
+        this._put('07_Platform_Octagon', 34, 95, { size: 7.5, axis: 'max', yaw: 0.75, ground: 11.0 - 0.2 })
+    }
+
+    // 5. Canyon — the squeeze. Pipes hug the wall; a vent pod; the alcove crystal cache.
+    _canyon(){
+        this._row('04_Wall_Broken_Pipes', -46.5, 45, 0.72, 3, 3.4, { size: 5.0, axis: 'x', sink: 0.2 })
+        this._put('17_Tech_Pod', -51, 49, { size: 3.0, axis: 'max', yaw: 0.7 })
+        // Alcove ammo cache: a crystal cluster glinting in the dark dead-end (by ammo -58.5,51).
+        this._put('15_Crystal_Cluster', -59, 52, { size: 3.4, axis: 'y', yaw: -0.6 })
+    }
+
+    // 6. Wreck field — the military graveyard. Hulks as hard cover; the beast prowls here.
+    _wreckField(){
+        this._put('18_Wreckage', -88, 12, { size: 12, axis: 'z', yaw: 2.2, sink: 0.3 })
+        this._put('18_Wreckage', -66, -9, { size: 9, axis: 'z', yaw: 5.1, sink: 0.25 })
+        // Generator cluster (replaces the two wreck-field generator boxes).
+        this._put('17_Tech_Pod', -78, 10, { size: 3.2, axis: 'max', yaw: 0.3 })
+        this._put('20_Tech_Crate', -75.6, 11.5, { size: 1.8, axis: 'x', yaw: 0.9 })
+        // South barricade line cover.
+        this._put('05_Barrier_Wall', -74, -14, { size: 3.3, axis: 'x', yaw: 0.35 })
+        this._put('05_Barrier_Wall', -82, -18, { size: 3.0, axis: 'x', yaw: 0.1 })
+        // Ammo cache crate (wreck-field ammo at -81,7).
+        this._put('20_Tech_Crate', -81, 7, { size: 1.5, axis: 'x', yaw: 0.6 })
+    }
+
+    // 7. Switchbacks — the vista spur breather + the watchtower decision point.
+    _switchbacks(){
+        // Vista spur marker (by the spur ammo/breather at -82,-111).
+        this._put('19_Marker_Post', -80.5, -110.5, { size: 4.6, axis: 'y', yaw: 0.75 })
+        this._put('20_Tech_Crate', -82, -111, { size: 1.5, axis: 'x', yaw: -0.4 })
+    }
+
+    // 8. Gate courtyard — the fortified last stand. Cover crates + a decorative broken stair.
+    _gate(){
+        this._put('20_Tech_Crate', -132, -224, { size: 1.7, axis: 'x', yaw: 0.9 })
+        this._put('05_Barrier_Wall', -143, -222, { size: 3.0, axis: 'x', yaw: -0.4 })
+        this._put('16_Broken_Mechanism', -137, -217, { size: 4.0, axis: 'x', yaw: 1.7, sink: 0.2 })
+        this._put('08_Tech_Stairs', -131, -230, { size: 5.0, axis: 'z', yaw: 0.5 })
+        // Ammo cache crate (gate ammo at -134,-229).
+        this._put('20_Tech_Crate', -134, -229, { size: 1.5, axis: 'x', yaw: 0.2 })
+    }
+
+    // 9. Summit boss arena — the cyan core among the fallen keep (arena floor datum).
+    _summit(){
+        const A = CASTLE.arena
+        const bossA = Math.atan2(CASTLE.lip.x - A.x, CASTLE.lip.z - A.z) + Math.PI
+        const cx = A.x + Math.sin(bossA) * 9, cz = A.z + Math.cos(bossA) * 9
+        // Ancient core: a portal pad with a crystal rising from it (replaces the arena tech box).
+        this._put('06_Portal_Pad', cx, cz, { size: 6.0, axis: 'max', yaw: 0.8, ground: A.floor + 0.02 })
+        this._put('15_Crystal_Cluster', cx, cz, { size: 3.2, axis: 'y', yaw: 0.4, ground: A.floor + 0.3 })
+        // Arena cover barriers on the ring lanes.
+        this._put('05_Barrier_Wall', A.x + 10, A.z - 3, { size: 3.0, axis: 'x', yaw: 1.1, ground: A.floor })
+        this._put('05_Barrier_Wall', A.x - 9, A.z + 6, { size: 2.7, axis: 'x', yaw: -0.5, ground: A.floor })
+    }
+
+    // 9b. The summit skyline: the Meshy citadel on the far hill (replaces the procedural keep +
+    // towers) with a blue energy laser firing straight up — the destination beacon, seen from spawn.
+    _citadel(){
+        const entA = Math.atan2(CASTLE.lip.x - CASTLE.arena.x, CASTLE.lip.z - CASTLE.arena.z)
+        const back = 54                                   // metres behind the arena, on the far hill
+        const cx = CASTLE.x - Math.sin(entA) * back
+        const cz = CASTLE.z - Math.cos(entA) * back
+        const W = 132, sink = 4                           // 2x — a colossal fortress on the skyline
+        if(!this.templates['Citadel']){ console.warn('[WorldProps] Citadel model missing'); return }
+        this._put('Citadel', cx, cz, { size: W, axis: 'max', yaw: entA + Math.PI, sink })
+        // Laser origin = the citadel's top centre (base + full scaled height - sink), started a few
+        // metres inside the roofline so the beam reads as emerging from the structure.
+        const t = this.templates['Citadel']
+        const k = W / Math.max(t.size.x, t.size.y, t.size.z)
+        const topY = this._g(cx, cz) + t.size.y * k - sink
+        this._laser(cx, cz, topY - 4)
+    }
+
+    // A vertical energy beam: 3 crossed additive quads (reads as a beam from any angle) with a hot
+    // white-blue core, a soft blue glow, and energy pulses scrolling up; the PostFx bloom does the
+    // rest. fog:false so it stays a clean beacon across the 600 m from the start overlook.
+    _laser(x, z, baseY){
+        const H = 420, w = 17
+        this._laserMats = this._laserMats || []
+        const mat = new THREE.ShaderMaterial({
+            transparent: true, depthWrite: false, fog: false, side: THREE.DoubleSide,
+            blending: THREE.AdditiveBlending,
+            uniforms: {
+                uTime: { value: 0 },
+                uCore: { value: new THREE.Color(0xf2f8ff) },
+                uGlow: { value: new THREE.Color(0x2f86ff) },
+            },
+            vertexShader: /* glsl */`
+                varying vec2 vUv;
+                void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+            `,
+            fragmentShader: /* glsl */`
+                varying vec2 vUv;
+                uniform float uTime; uniform vec3 uCore; uniform vec3 uGlow;
+                void main(){
+                    float d = abs(vUv.x - 0.5) * 2.0;                          // 0 centre -> 1 edge
+                    float core = smoothstep(0.30, 0.0, d);                    // hot core (wider)
+                    float glow = pow(1.0 - d, 1.8);                           // soft wide glow
+                    float vfade = mix(1.0, 0.06, pow(vUv.y, 1.1));            // strong at base -> thin at top
+                    float pulse = 0.92 + 0.16 * sin(uTime * 3.0 - vUv.y * 24.0);   // energy scrolling up
+                    float a = (glow * 1.25 + core * 2.6) * vfade * pulse;     // brighter
+                    gl_FragColor = vec4(mix(uGlow, uCore, core) * (1.0 + core * 1.4), clamp(a, 0.0, 2.6));
+                }
+            `,
+        })
+        this._laserMats.push(mat)
+        const g = new THREE.Group()
+        for(let i = 0; i < 3; i++){
+            const geo = new THREE.PlaneGeometry(w, H)
+            geo.translate(0, H / 2, 0)                     // pivot at the base
+            const m = new THREE.Mesh(geo, mat)
+            m.rotation.y = (i / 3) * Math.PI
+            m.castShadow = m.receiveShadow = false
+            g.add(m)
+        }
+        g.position.set(x, baseY, z)
+        g.renderOrder = 3
+        this.root.add(g)
+        // A bright emitter flare where the beam leaves the roof.
+        const flare = new THREE.Mesh(new THREE.IcosahedronGeometry(6.0, 1),
+            new THREE.MeshBasicMaterial({ color: 0xe8f4ff, transparent: true, opacity: 1.0,
+                blending: THREE.AdditiveBlending, depthWrite: false, fog: false }))
+        flare.position.set(x, baseY, z)
+        flare.castShadow = flare.receiveShadow = false
+        this.root.add(flare)
+    }
+
+    // 10. Off-route scatter — dead trees, bones, crystals, mesas, rock platforms. All placed OFF the
+    // walkable set (arena skirts, dune flanks) so none needs a collider. Kept clear of the opening
+    // vista cone (the start->castle sightline) so the first frame still shows the fortress.
+    _scatter(){
+        // Dead trees along the early trek edges.
+        const trees = [[112, 196, 5.8], [78, 158, 5.0], [46, 152, 5.4], [18, 128, 4.6],
+                       [-28, 104, 5.2], [8, 72, 4.4], [-64, 28, 4.8]]
+        for(const [x, z, s] of trees){ this._put('14_Dead_Tree', x, z, { size: s, axis: 'y', yaw: x * 0.7 + z }) }
+
+        // Giant bones in the wreck field + dunes (a dead titan motif).
+        this._put('12_Bone_Tusk', -95, 20, { size: 5.0, axis: 'y', yaw: 0.6, tilt: [0.15, 0.1] })
+        this._put('12_Bone_Tusk', -58, -22, { size: 4.4, axis: 'y', yaw: 2.3, tilt: [0.1, -0.2] })
+        this._put('13_Bone_Ribs', -100, -4, { size: 6.5, axis: 'x', yaw: 1.1, sink: 0.3 })
+        this._put('13_Bone_Ribs', -70, 22, { size: 5.5, axis: 'x', yaw: -0.7, sink: 0.4 })
+
+        // Crystal accents near the tech thread (off-route glints).
+        this._put('15_Crystal_Cluster', -30, 70, { size: 2.6, axis: 'y', yaw: 0.9 })
+        this._put('15_Crystal_Cluster', -108, -8, { size: 3.0, axis: 'y', yaw: -1.1 })
+
+        // Big landmark mesas + rock platforms, off the corridor and OFF the opening sightline
+        // (kept to the flanks / behind arenas).
+        this._put('11_Red_Mesa', 60, 214, { size: 18, axis: 'max', yaw: 0.5 })
+        this._put('11_Red_Mesa', -54, 118, { size: 20, axis: 'max', yaw: 2.1 })
+        this._put('11_Red_Mesa', -118, -58, { size: 22, axis: 'max', yaw: 1.2 })
+        this._put('10_Red_Rock_Platform', -20, 66, { size: 7, axis: 'max', yaw: 0.3, sink: 0.2 })
+        this._put('10_Red_Rock_Platform', 40, 108, { size: 6.5, axis: 'max', yaw: 1.4, sink: 0.2 })
+
+        // A hanging ceiling-anchor mass as a broken pylon off the ruins.
+        this._put('03_Ceiling_Anchor', -32, 96, { size: 5.5, axis: 'y', yaw: 1.0, tilt: [0.12, 0.08] })
+    }
+
+    Update(t){
+        if(!this._laserMats){ return }
+        this._time = (this._time || 0) + t
+        for(const m of this._laserMats){ m.uniforms.uTime.value = this._time }
+    }
+
+    Dispose(){
+        this.scene.remove(this.root)
+        this.root.traverse((n) => { if(n.isMesh && n.geometry){ n.geometry.dispose() } })
+    }
+}

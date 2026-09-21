@@ -25,6 +25,22 @@ game — any structure works. `.sandscape/`, `CLAUDE.md`, `AGENTS.md`,
 If `.sandscape/design.json` exists, it contains the game's design context
 (concept, style, assets). Read it to understand the project.
 
+## Level data
+
+If the game loads a level from `scenes/*.json`, derive gameplay placement (player
+start, enemy spawns, level exit) **from the scene at load** — never from a file a
+manual import step regenerates, which silently goes stale the moment the level is
+edited. Markers are at `userData.sandscapeProcgen.layout.zones`; read the union of
+the tag channel and the legacy cell code (`spawns`∪4, `encounters`∪5,
+`specials`∪6 in `zones.cells`), anchor to the marked tile
+(`(gx - gridWidth/2) * cellSize + cellSize/2` on X, gridDepth on Z), and warn — never guess — when a
+marker is missing. Face each marker from `zones.{spawn,encounter,special}Facings`
+— the same `"x,z"` keys mapped to DEGREES about +Y, 0 = `-Z`, absent = 0 (a real
+heading, not "unspecified"). Then ADD its offset from
+`zones.{spawn,encounter,special}Offsets` — the same keys mapped to
+`[dx, dy, dz]` METRES from the tile centre (`dy` from the marker height 1.4),
+absent = `[0,0,0]`; the tile centre alone ignores every hand-placed marker.
+
 ## AGENTS.md
 
 `AGENTS.md` mirrors this file so agent tooling that looks for either name finds

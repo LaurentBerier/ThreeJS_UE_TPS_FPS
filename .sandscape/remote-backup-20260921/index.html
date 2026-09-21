@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- The tab title stays blank; the branding the player sees is the title key art on the
+         menu + loading screen (assets/ui/title_art.webp, wired up in style.css). No engine or
+         template names anywhere. -->
+    <title>&#8212;</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="assets/css/style.css" />
+    <!-- The menu is the first thing revealed after boot, so fetch its backdrop alongside the
+         stylesheet rather than waiting for the CSS to discover it. -->
+    <link rel="preload" as="image" href="assets/ui/title_art.webp" />
+
+    <!--
+      Buildless ES-module setup (Sandscape game format — fully self-contained, no CDN):
+      1. importmap pins the VENDORED three@0.127.0 + addons (the examples/jsm tree
+         is mirrored under assets/vendor/three so its relative imports to
+         fflate/NURBS/the core build keep working) and three-pathfinding.
+         All bare `three` specifiers resolve to ONE module instance.
+      2. ammo.wasm.js is a classic UMD script that sets the global window.Ammo
+         factory; it MUST load before the module entry. AmmoLib.js calls it with
+         a locateFile pointing at the vendored .wasm sidecar.
+    -->
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "./assets/vendor/three/build/three.module.js",
+          "three/examples/jsm/": "./assets/vendor/three/examples/jsm/",
+          "three-pathfinding": "./assets/vendor/three-pathfinding/three-pathfinding.module.js"
+        }
+      }
+    </script>
+    <script src="assets/vendor/ammo/ammo.wasm.js"></script>
+  </head>
+
+  <body>
+    <div id="debug"></div>
+
+    <div id="menu">
+      <button id="start_game">NEW GAME</button>
+      <p class="hint">
+        WASD move &middot; Mouse look &middot; Shift sprint &middot; Space jump
+        &middot; <b>double-tap a move key</b> dodge roll &middot; R reload &middot;
+        <b>V</b> toggle TPS/FPS &middot; <b>P</b> export
+      </p>
+    </div>
+
+    <!-- Red damage vignette, flashed by UIManager.FlashDamage when the player is hit. -->
+    <div id="blood_overlay"></div>
+
+    <div id="game_hud">
+      <!-- Sci-fi aim reticle (see the #crosshair block in style.css). A fixed targeting frame
+           (rotating scanner ring + corner brackets + centre pip) around four DYNAMIC spread ticks
+           whose gap is driven by WeaponManager (wide hipfire, tight ADS, a small fire bloom) while
+           the line weight stays constant. The whole reticle shifts to an amber "lock" on ADS. -->
+      <div id="crosshair">
+        <span class="ch-frame">
+          <span class="ch-ring"></span>
+          <span class="ch-bracket ch-tl"></span>
+          <span class="ch-bracket ch-tr"></span>
+          <span class="ch-bracket ch-bl"></span>
+          <span class="ch-bracket ch-br"></span>
+        </span>
+        <span class="ch-dot"></span>
+        <span class="ch-tick ch-top"></span>
+        <span class="ch-tick ch-bottom"></span>
+        <span class="ch-tick ch-left"></span>
+        <span class="ch-tick ch-right"></span>
+      </div>
+      <div id="weapon_name"></div>
+      <div id="ammo_container">
+        <span id="current_ammo">0</span>
+        <span>|</span>
+        <span id="max_ammo">0</span>
+      </div>
+      <div id="health_container">
+        <div id="health_progress"></div>
+      </div>
+      <div id="camera_mode">TPS</div>
+
+      <!-- Journey campaign layer (see JourneyProgress.js): the objective line, the route-progress
+           bar to the citadel, and the transient event toast. -->
+      <div id="objective">REACH THE CITADEL</div>
+      <div id="journey_bar">
+        <div id="journey_fill"></div>
+      </div>
+      <div id="journey_dist"></div>
+      <div id="toast"></div>
+    </div>
+
+    <!-- Campaign overlays (DOM + CSS only; restart = a page reload = a fresh NEW GAME). -->
+    <div id="finale">
+      <div class="ov-kicker">THE CITADEL IS SILENT</div>
+      <h1>THE JOURNEY IS ENDED</h1>
+      <div class="ov-stats">
+        <span class="ov-stat"><span class="ov-num" id="finale_time">0:00</span><span class="ov-label">JOURNEY TIME</span></span>
+        <span class="ov-stat"><span class="ov-num" id="finale_kills">0</span><span class="ov-label">HOSTILES ELIMINATED</span></span>
+      </div>
+      <button id="finale_restart" onclick="window.location.reload()">RETURN TO THE DUNES</button>
+    </div>
+    <div id="death">
+      <div class="ov-kicker">THE DUNES TAKE ANOTHER</div>
+      <h1>YOU DIED</h1>
+      <div class="ov-stats">
+        <span class="ov-stat"><span class="ov-num" id="death_time">0:00</span><span class="ov-label">JOURNEY TIME</span></span>
+      </div>
+      <button id="death_restart" onclick="window.location.reload()">TRY AGAIN</button>
+    </div>
+
+    <div id="progress"></div>
+
+    <!-- Loading screen shown (under the fade curtain) between the menu and gameplay
+         while the level + entities are built. -->
+    <div id="loading">
+      <div class="spinner"></div>
+      <p>LOADING</p>
+    </div>
+
+    <!-- Full-screen black curtain used to cross-fade between onboarding states
+         (boot -> menu -> loading -> gameplay). Starts opaque so the page fades in. -->
+    <div id="fade"></div>
+
+    <script type="module" src="js/entry.js"></script>
+  </body>
+</html>
