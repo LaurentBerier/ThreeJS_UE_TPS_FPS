@@ -1,4 +1,49 @@
 {
+  "assets/CLAUDE.md.sandscape.bak": {
+    "sha256": "f15de119ac78dafe2bb616cecc965bbfe4a44b35bebfffe50c91751bc637470f",
+    "version": 1,
+    "size": 1205
+  },
+  "assets/index.html": {
+    "sha256": "ebc88036fdb608156a7c9ee268b0bcb3797e0969e7771cc9ed89803d2e81b3fa",
+    "version": 1,
+    "size": 4163
+  },
+  "assets/assets/level.glb": {
+    "sha256": "cfac531e9ead3240b7ea54e203b12353d443b75ab1bf498b3df5ad32afb333f1",
+    "version": 1,
+    "size": 8008668
+  },
+  "assets/assets/muzzle_flash.glb": {
+    "sha256": "e62088f4fa6cf1c389a40eda9eecf0bdf139e73e7f4947e3e2e3678e784b563c",
+    "version": 1,
+    "size": 338828
+  },
+  "assets/assets/navmesh.obj": {
+    "sha256": "da1c47018dc39e12eb3fa0a4d9bd1230da356a2fc02876a9321d36492897d7dd",
+    "version": 1,
+    "size": 8068
+  },
+  "assets/assets/sky.jpg": {
+    "sha256": "72365df2fa916c83934db5dd8d8f712517614ee7509295b9f73b39aa2c897bc5",
+    "version": 1,
+    "size": 453153
+  },
+  "assets/assets/TPS_FPS_Template_Spashscreen.png": {
+    "sha256": "de311475b6a6e2f9a150384493fa0d8901bd2e04590b5fd15d68d25f8965b622",
+    "version": 1,
+    "size": 2125930
+  },
+  "assets/assets/TPS_FPS_Template_Spashscreen1.png": {
+    "sha256": "7a3e88f5f318437b891cad7ef8bf29f1299f5096c6aff70431eed2e28501ca89",
+    "version": 1,
+    "size": 2412861
+  },
+  "assets/assets/ammo/AmmoBox.fbx": {
+    "sha256": "b57335764f69785f5a575bff5cfe29518ae8314cc4a69936a973d965257ea155",
+    "version": 1,
+    "size": 100428
+  },
   "assets/assets/ammo/AmmoBox_AO.tga.png": {
     "sha256": "1a62583d1a6791e5cc12d05e0c06f601d558f7b72b5465c8c11af8f23b2c96f7",
     "version": 1,
@@ -23,11 +68,6 @@
     "sha256": "95b365de3cb80d295f84468d54d12e39696630e911a3666545d2d53ca120f0ef",
     "version": 1,
     "size": 660832
-  },
-  "assets/assets/ammo/AmmoBox.fbx": {
-    "sha256": "b57335764f69785f5a575bff5cfe29518ae8314cc4a69936a973d965257ea155",
-    "version": 1,
-    "size": 100428
   },
   "assets/assets/animations/mutant breathing idle.fbx": {
     "sha256": "832c969b23aa5e13f16aeedd006a921a3b79b633b5b97438920a4a3399710dc3",
@@ -79,6 +119,11 @@
     "version": 1,
     "size": 6468604
   },
+  "assets/assets/characters/ue/anim_Slide.fbx": {
+    "sha256": "1dbba31edc79786d432987e2a06d7c9e4cd057915ee042f234650143f58df9cd",
+    "version": 1,
+    "size": 948656
+  },
   "assets/assets/characters/ue/A_Rifle_Aim.fbx": {
     "sha256": "8c92983f8da5333add87e52c7eb15086b1a504f0ff1bc62cf0428d799d6f6929",
     "version": 1,
@@ -94,15 +139,15 @@
     "version": 1,
     "size": 1559616
   },
-  "assets/assets/characters/ue/A_Rifle_Idle_.FBX": {
-    "sha256": "e4d80d70cadebbdfdd519c3b619a9225e13ac9e63c8d0d2ea8f61080deeaa0de",
-    "version": 1,
-    "size": 3616704
-  },
   "assets/assets/characters/ue/A_Rifle_Idle.fbx": {
     "sha256": "844cbc5c18e56dbaad158917e5afcd60dc98f359e4edcc3df7f76c070fff0e1c",
     "version": 1,
     "size": 2108800
+  },
+  "assets/assets/characters/ue/A_Rifle_Idle_.FBX": {
+    "sha256": "e4d80d70cadebbdfdd519c3b619a9225e13ac9e63c8d0d2ea8f61080deeaa0de",
+    "version": 1,
+    "size": 3616704
   },
   "assets/assets/characters/ue/A_Rifle_Jog_Bwd.fbx": {
     "sha256": "b51f6935621c73c7c065ddbdd7053978032a90ca0c0e427c4711bb8e98dd8acb",
@@ -134,45 +179,55 @@
     "version": 1,
     "size": 1602544
   },
-  "assets/assets/characters/ue/A_Rifle_Reload_new.fbx": {
-    "sha256": "59e380e43583949aae2df262da36f996e1f2b139a1c3b5848bdc03ba98958413",
-    "version": 1,
-    "size": 1176320
-  },
   "assets/assets/characters/ue/A_Rifle_Reload.FBX": {
     "sha256": "38dd424bda7962bf6bdcca2ba75e33b8a2092cec5e26de7a330af92897c70d4e",
     "version": 1,
     "size": 2667744
+  },
+  "assets/assets/characters/ue/A_Rifle_Reload_new.fbx": {
+    "sha256": "59e380e43583949aae2df262da36f996e1f2b139a1c3b5848bdc03ba98958413",
+    "version": 1,
+    "size": 1176320
   },
   "assets/assets/characters/ue/A_Rifle_Slide.fbx": {
     "sha256": "a47878184da49f96cee06b7846cb1dbec1a839e4968faf35b39985f8eebf88df",
     "version": 1,
     "size": 534656
   },
-  "assets/assets/characters/ue/anim_Slide.fbx": {
-    "sha256": "1dbba31edc79786d432987e2a06d7c9e4cd057915ee042f234650143f58df9cd",
-    "version": 1,
-    "size": 948656
-  },
   "assets/assets/characters/ue/CrouchIdle.glb": {
     "sha256": "20ba2643fe2d57b892affac16f4b8e45d9c36bda14bf9719d3268a7605c34d08",
     "version": 1,
     "size": 668560
-  },
-  "assets/assets/characters/ue/RollForward_InPlace.FBX": {
-    "sha256": "661e76ef759705916a8ef98eaac0c41f50c1aff5b07cffbded6d7b9438dd8edd",
-    "version": 1,
-    "size": 1654048
   },
   "assets/assets/characters/ue/RollForward.glb": {
     "sha256": "24079bec6c47d9ce465cd1b3248fb289c61c07b466d90ab7725ad4f937296974",
     "version": 1,
     "size": 271800
   },
+  "assets/assets/characters/ue/RollForward_InPlace.FBX": {
+    "sha256": "661e76ef759705916a8ef98eaac0c41f50c1aff5b07cffbded6d7b9438dd8edd",
+    "version": 1,
+    "size": 1654048
+  },
+  "assets/assets/characters/ue/SK_Mannequin.FBX": {
+    "sha256": "133acb9e38f9f2bc45b32b8db8dce9fd729e433ff810425a610c84cfb79ae5f6",
+    "version": 1,
+    "size": 4716656
+  },
+  "assets/assets/characters/ue/SK_Mannequin.glb": {
+    "sha256": "2dce8d7fb691c2b246b73aeca4c10bc1d7e7946bf29b8c5c9f4938893b6ba914",
+    "version": 1,
+    "size": 4158080
+  },
   "assets/assets/characters/ue/SK_Mannequin_new.glb": {
     "sha256": "8657bb9f68c85d2566ff46b7522a10370774606e81d5350f722735e133a75e75",
     "version": 1,
     "size": 3997792
+  },
+  "assets/assets/characters/ue/Slide.glb": {
+    "sha256": "d34f5ae7d92eda50b59ee3e392a83b48bea469a6ff46ef43cf6ed3466d9d06b1",
+    "version": 1,
+    "size": 155896
   },
   "assets/assets/characters/ue/SK_Mannequin.fbm/M_MannequinUE4_Body_BaseColor": {
     "sha256": "27cc6a03a2143a8f4b8800b443eec69cccc4721f44d791bda9f9ca320ac2f815",
@@ -204,24 +259,9 @@
     "version": 1,
     "size": 201886
   },
-  "assets/assets/characters/ue/SK_Mannequin.FBX": {
-    "sha256": "133acb9e38f9f2bc45b32b8db8dce9fd729e433ff810425a610c84cfb79ae5f6",
-    "version": 1,
-    "size": 4716656
-  },
-  "assets/assets/characters/ue/SK_Mannequin.glb": {
-    "sha256": "2dce8d7fb691c2b246b73aeca4c10bc1d7e7946bf29b8c5c9f4938893b6ba914",
-    "version": 1,
-    "size": 4158080
-  },
-  "assets/assets/characters/ue/Slide.glb": {
-    "sha256": "d34f5ae7d92eda50b59ee3e392a83b48bea469a6ff46ef43cf6ed3466d9d06b1",
-    "version": 1,
-    "size": 155896
-  },
   "assets/assets/css/style.css": {
     "sha256": "6b0a8a5850463b16af699fe4217448257872b8a636e2db36cb87be245cc5adfa",
-    "version": 2,
+    "version": 1,
     "size": 12946
   },
   "assets/assets/decals/Blood_decal_1.png": {
@@ -274,15 +314,15 @@
     "version": 1,
     "size": 7144310
   },
-  "assets/assets/guns/New/A_SK_AK47_Rifle_Reload_.fbx": {
-    "sha256": "e4f60ce8d231f444352d7561d9918ce57229fc1bbcec6af66ce5b1855f493852",
-    "version": 1,
-    "size": 54672
-  },
   "assets/assets/guns/New/AK47_Reload.glb": {
     "sha256": "633fe56c88d2d775254c3e4856ad45c3bd18942cfc4143180b91e14a2d15e724",
     "version": 1,
     "size": 15416
+  },
+  "assets/assets/guns/New/A_SK_AK47_Rifle_Reload_.fbx": {
+    "sha256": "e4f60ce8d231f444352d7561d9918ce57229fc1bbcec6af66ce5b1855f493852",
+    "version": 1,
+    "size": 54672
   },
   "assets/assets/guns/New/SK_AK47.FBX": {
     "sha256": "10e9be6d976e163c22ccc48ff879470428e785f031f825a1ccaaa7ecb233720c",
@@ -299,40 +339,10 @@
     "version": 1,
     "size": 1397783
   },
-  "assets/assets/level.glb": {
-    "sha256": "cfac531e9ead3240b7ea54e203b12353d443b75ab1bf498b3df5ad32afb333f1",
-    "version": 1,
-    "size": 8008668
-  },
-  "assets/assets/muzzle_flash.glb": {
-    "sha256": "e62088f4fa6cf1c389a40eda9eecf0bdf139e73e7f4947e3e2e3678e784b563c",
-    "version": 1,
-    "size": 338828
-  },
-  "assets/assets/navmesh.obj": {
-    "sha256": "da1c47018dc39e12eb3fa0a4d9bd1230da356a2fc02876a9321d36492897d7dd",
-    "version": 1,
-    "size": 8068
-  },
-  "assets/assets/sky.jpg": {
-    "sha256": "72365df2fa916c83934db5dd8d8f712517614ee7509295b9f73b39aa2c897bc5",
-    "version": 1,
-    "size": 453153
-  },
   "assets/assets/sounds/ak47_shot.wav": {
     "sha256": "d6d1dca02d88594ad43c1b33851a3b617983c93efd6dbfe30f65794d1e6608c7",
     "version": 1,
     "size": 84106
-  },
-  "assets/assets/TPS_FPS_Template_Spashscreen.png": {
-    "sha256": "de311475b6a6e2f9a150384493fa0d8901bd2e04590b5fd15d68d25f8965b622",
-    "version": 1,
-    "size": 2125930
-  },
-  "assets/assets/TPS_FPS_Template_Spashscreen1.png": {
-    "sha256": "7a3e88f5f318437b891cad7ef8bf29f1299f5096c6aff70431eed2e28501ca89",
-    "version": 1,
-    "size": 2412861
   },
   "assets/assets/ui/crosshair.png": {
     "sha256": "3fb94459528b3b95bbb955019b548d2ef5573ac3c2577a5cce6b7cf7ab75c295",
@@ -353,11 +363,6 @@
     "sha256": "a73b547ed4289aa174bf3424b14b3cb8addc7fe708cd2636d306b72880d6ad13",
     "version": 1,
     "size": 747690
-  },
-  "assets/assets/vendor/three-pathfinding/three-pathfinding.module.js": {
-    "sha256": "d469e81bacbaa7540e4fc34aba3cf1d04dc0a81f7498573feab555a1e230b89b",
-    "version": 1,
-    "size": 12890
   },
   "assets/assets/vendor/three/build/three.module.js": {
     "sha256": "6f274035dac82e7eb1e5f825255e173c7d1be971342400f68fd7818f7f046758",
@@ -469,6 +474,11 @@
     "version": 1,
     "size": 12013
   },
+  "assets/assets/vendor/three-pathfinding/three-pathfinding.module.js": {
+    "sha256": "d469e81bacbaa7540e4fc34aba3cf1d04dc0a81f7498573feab555a1e230b89b",
+    "version": 1,
+    "size": 12890
+  },
   "assets/assets/VFX/Blood_SpriteSheet.png": {
     "sha256": "65565569a21aeba697e1460ce00c32b0445f476317126a4faa91b4e149f92fa5",
     "version": 1,
@@ -484,12 +494,12 @@
     "version": 1,
     "size": 469280
   },
-  "assets/assets/World/heightmaps_20260609_150752_1584m_concept.png": {
+  "assets/assets/World/heightmaps_20260609_150752_1584m.png": {
     "sha256": "0fce72c61c52800d45db573a72dd688350e29c3a21a3592d125272365a9c5f34",
     "version": 1,
     "size": 7922076
   },
-  "assets/assets/World/heightmaps_20260609_150752_1584m.png": {
+  "assets/assets/World/heightmaps_20260609_150752_1584m_concept.png": {
     "sha256": "0fce72c61c52800d45db573a72dd688350e29c3a21a3592d125272365a9c5f34",
     "version": 1,
     "size": 7922076
@@ -634,11 +644,6 @@
     "version": 1,
     "size": 3036
   },
-  "assets/index.html": {
-    "sha256": "ebc88036fdb608156a7c9ee268b0bcb3797e0969e7771cc9ed89803d2e81b3fa",
-    "version": 2,
-    "size": 4163
-  },
   "assets/js/AmmoLib.js": {
     "sha256": "6500af984466a6adb68c93c167578fa166d60a0a55c9a94cbd74ed84fdcacbdb",
     "version": 1,
@@ -663,6 +668,36 @@
     "sha256": "d50e9ee8a8fd1c92405d30dbfba18eef7bd94bd6e707c1f896a3d3c5e2881940",
     "version": 1,
     "size": 682
+  },
+  "assets/js/Entity.js": {
+    "sha256": "fbade1afd2aa57fdfa73d5fca2401c26e9ef5644e93e405ab9f68da7f66cfa7e",
+    "version": 1,
+    "size": 2201
+  },
+  "assets/js/EntityManager.js": {
+    "sha256": "cf4f942744707170a95f79f7e35ae4ba0315da184b1b6b8ef99cb37813affb77",
+    "version": 1,
+    "size": 2168
+  },
+  "assets/js/entry.js": {
+    "sha256": "351242ecfd2fe008a77d7c2d6472263055c86f48ed9fac3cfee31837f94a3094",
+    "version": 1,
+    "size": 58942
+  },
+  "assets/js/FiniteStateMachine.js": {
+    "sha256": "49a97a8d29dfef771e1581e517a150dfae30d0edbe91fbeaf50588cc54969f90",
+    "version": 1,
+    "size": 800
+  },
+  "assets/js/Input.js": {
+    "sha256": "6888968ac72cf56f4cf193bf4738033e8decd6d248fdc732c8e588e1b11773fb",
+    "version": 1,
+    "size": 2587
+  },
+  "assets/js/PostFx.js": {
+    "sha256": "5b35904d4e864807113c8860dfa3bf90d13c9a6b311a7217b3a9188674bc674e",
+    "version": 1,
+    "size": 13038
   },
   "assets/js/entities/AmmoBox/AmmoBox.js": {
     "sha256": "42911f9eaf03adb5fcf131de02a12616a1b214a383b276dc4b86b95ea3230e27",
@@ -736,7 +771,7 @@
   },
   "assets/js/entities/NPC/CharacterController.js": {
     "sha256": "4e87ad19902b25cb8e559cdb4de7e668aa389ee94c0117303fb95dfc3e20de74",
-    "version": 2,
+    "version": 1,
     "size": 53870
   },
   "assets/js/entities/NPC/CharacterFSM.js": {
@@ -776,12 +811,12 @@
   },
   "assets/js/entities/NPC/UeSoldierController.js": {
     "sha256": "fc29ca1da7bee4f4c0120d793cbd39dd3f2167e02425060195e6f43e9d294967",
-    "version": 2,
+    "version": 1,
     "size": 104111
   },
   "assets/js/entities/NPC/UeSoldierFSM.js": {
     "sha256": "0ee56219d9ffd7095632fd6682665a7f380abadd8cd18ec708dcdb99f3cd3c1c",
-    "version": 2,
+    "version": 1,
     "size": 17121
   },
   "assets/js/entities/Player/FootIK.js": {
@@ -871,7 +906,7 @@
   },
   "assets/js/entities/UI/UIManager.js": {
     "sha256": "f5ae5c1ab905b46ca7d27a4eb730e4f4d90b6a7876d031c2340efd4edf8ff390",
-    "version": 2,
+    "version": 1,
     "size": 2103
   },
   "assets/js/entities/World/Atmosphere.js": {
@@ -931,7 +966,7 @@
   },
   "assets/js/entities/World/NavmeshGen.js": {
     "sha256": "2f6cdde57b5237aa309241bdfe920b333c358fb78a702d0ac96ff649a911414c",
-    "version": 2,
+    "version": 1,
     "size": 12244
   },
   "assets/js/entities/World/Structures.js": {
@@ -941,43 +976,13 @@
   },
   "assets/js/entities/World/WorldProps.js": {
     "sha256": "298b0de4855427581d1b3c62f113f85431cde5114e7cc983e44cc97db730d137",
-    "version": 2,
+    "version": 1,
     "size": 22595
-  },
-  "assets/js/Entity.js": {
-    "sha256": "fbade1afd2aa57fdfa73d5fca2401c26e9ef5644e93e405ab9f68da7f66cfa7e",
-    "version": 1,
-    "size": 2201
-  },
-  "assets/js/EntityManager.js": {
-    "sha256": "cf4f942744707170a95f79f7e35ae4ba0315da184b1b6b8ef99cb37813affb77",
-    "version": 1,
-    "size": 2168
-  },
-  "assets/js/entry.js": {
-    "sha256": "351242ecfd2fe008a77d7c2d6472263055c86f48ed9fac3cfee31837f94a3094",
-    "version": 2,
-    "size": 58942
   },
   "assets/js/export/UeExporter.js": {
     "sha256": "3b7e62b1571b8bd1f4b8804589dd13831b55a3128f2c77c0d38bf2fcf841b0ba",
     "version": 1,
     "size": 6541
-  },
-  "assets/js/FiniteStateMachine.js": {
-    "sha256": "49a97a8d29dfef771e1581e517a150dfae30d0edbe91fbeaf50588cc54969f90",
-    "version": 1,
-    "size": 800
-  },
-  "assets/js/Input.js": {
-    "sha256": "6888968ac72cf56f4cf193bf4738033e8decd6d248fdc732c8e588e1b11773fb",
-    "version": 1,
-    "size": 2587
-  },
-  "assets/js/PostFx.js": {
-    "sha256": "5b35904d4e864807113c8860dfa3bf90d13c9a6b311a7217b3a9188674bc674e",
-    "version": 1,
-    "size": 13038
   },
   "assets/js/sandscape/blockout-import.js": {
     "sha256": "ff4994b03be9a1d0d18be9262380fc4671e6e00642f33196c3ed4b0713935661",
@@ -1004,150 +1009,300 @@
     "version": 1,
     "size": 1317883
   },
+  "assets/thumbnails/01_obelisk_concept.png": {
+    "sha256": "531f542cadd751828d3b1f05423384f6ac2edbe36a0ddfcb808e78806c50e505",
+    "version": 1,
+    "size": 19504
+  },
   "assets/thumbnails/01_obelisk_thumb_d96ad9ef.png": {
     "sha256": "531f542cadd751828d3b1f05423384f6ac2edbe36a0ddfcb808e78806c50e505",
     "version": 1,
     "size": 19504
+  },
+  "assets/thumbnails/02_archway_lintel_concept.png": {
+    "sha256": "b83939d6992194e215a88b6732aad39b57958e63c5102daa989ca23e5338fb90",
+    "version": 1,
+    "size": 19855
   },
   "assets/thumbnails/02_archway_lintel_thumb_5593de92.png": {
     "sha256": "b83939d6992194e215a88b6732aad39b57958e63c5102daa989ca23e5338fb90",
     "version": 1,
     "size": 19855
   },
+  "assets/thumbnails/03_ceiling_anchor_concept.png": {
+    "sha256": "4bdfe7acde92b07ef4936c19a7e8a68001a9ad7b318c30d9bb638c2925d1e484",
+    "version": 1,
+    "size": 38195
+  },
   "assets/thumbnails/03_ceiling_anchor_thumb_66c78113.png": {
     "sha256": "4bdfe7acde92b07ef4936c19a7e8a68001a9ad7b318c30d9bb638c2925d1e484",
     "version": 1,
     "size": 38195
+  },
+  "assets/thumbnails/04_wall_broken_pipes_concept.png": {
+    "sha256": "c748d26293cb22d943be1f82bdaab2d8c13992777e1fe7ee84cca9ef45d209f4",
+    "version": 1,
+    "size": 33934
   },
   "assets/thumbnails/04_wall_broken_pipes_thumb_da440077.png": {
     "sha256": "c748d26293cb22d943be1f82bdaab2d8c13992777e1fe7ee84cca9ef45d209f4",
     "version": 1,
     "size": 33934
   },
+  "assets/thumbnails/05_barrier_wall_concept.png": {
+    "sha256": "f54cc624e5cc2a48424970153e3f2b4e77ff1b53e40b6c5203fc7cbcb82abdc8",
+    "version": 1,
+    "size": 21957
+  },
   "assets/thumbnails/05_barrier_wall_thumb_d9274206.png": {
     "sha256": "f54cc624e5cc2a48424970153e3f2b4e77ff1b53e40b6c5203fc7cbcb82abdc8",
     "version": 1,
     "size": 21957
+  },
+  "assets/thumbnails/06_portal_pad_concept.png": {
+    "sha256": "5742ca9225401d01664338cfd1f62da0430cb972c38e3f97c57f3cf20553a7f9",
+    "version": 1,
+    "size": 36776
   },
   "assets/thumbnails/06_portal_pad_thumb_8c7f3fc2.png": {
     "sha256": "5742ca9225401d01664338cfd1f62da0430cb972c38e3f97c57f3cf20553a7f9",
     "version": 1,
     "size": 36776
   },
+  "assets/thumbnails/07_platform_octagon_concept.png": {
+    "sha256": "d615fc52f0f284d217a6113dc3019503d3abd998bbc3ac64652c21dbe6d0e469",
+    "version": 1,
+    "size": 42684
+  },
   "assets/thumbnails/07_platform_octagon_thumb_ac5648fc.png": {
     "sha256": "d615fc52f0f284d217a6113dc3019503d3abd998bbc3ac64652c21dbe6d0e469",
     "version": 1,
     "size": 42684
+  },
+  "assets/thumbnails/08_tech_stairs_concept.png": {
+    "sha256": "331fed47f23a0619236b320d6a6c0fbea1e98b638a6b3e0e88948398314dae43",
+    "version": 1,
+    "size": 46355
   },
   "assets/thumbnails/08_tech_stairs_thumb_5be987ad.png": {
     "sha256": "331fed47f23a0619236b320d6a6c0fbea1e98b638a6b3e0e88948398314dae43",
     "version": 1,
     "size": 46355
   },
+  "assets/thumbnails/09_red_rock_arch_concept.png": {
+    "sha256": "5d10dece62948c495dc5cffb9634cc4fb928bb49db21626d0c1e3b67cf68f17d",
+    "version": 1,
+    "size": 39364
+  },
   "assets/thumbnails/09_red_rock_arch_thumb_da53c2d5.png": {
     "sha256": "5d10dece62948c495dc5cffb9634cc4fb928bb49db21626d0c1e3b67cf68f17d",
     "version": 1,
     "size": 39364
+  },
+  "assets/thumbnails/10_red_rock_platform_concept.png": {
+    "sha256": "df4e7090db11e3d66aa0ea749e0cac8f8c9a9066868fa5dbcb94c786a61b36fe",
+    "version": 1,
+    "size": 31446
   },
   "assets/thumbnails/10_red_rock_platform_thumb_aa23bc22.png": {
     "sha256": "df4e7090db11e3d66aa0ea749e0cac8f8c9a9066868fa5dbcb94c786a61b36fe",
     "version": 1,
     "size": 31446
   },
+  "assets/thumbnails/11_red_mesa_concept.png": {
+    "sha256": "6aa123c959820fa901b3566d9f79119055ef83263f4294e81012a727837f1b8b",
+    "version": 1,
+    "size": 38712
+  },
   "assets/thumbnails/11_red_mesa_thumb_a6c48db4.png": {
     "sha256": "6aa123c959820fa901b3566d9f79119055ef83263f4294e81012a727837f1b8b",
     "version": 1,
     "size": 38712
+  },
+  "assets/thumbnails/12_bone_tusk_concept.png": {
+    "sha256": "9ee6a7759f5cf2cd28bc369970360aefe615c28b381e88acdb89d651b4c6e437",
+    "version": 1,
+    "size": 19805
   },
   "assets/thumbnails/12_bone_tusk_thumb_23ecf805.png": {
     "sha256": "9ee6a7759f5cf2cd28bc369970360aefe615c28b381e88acdb89d651b4c6e437",
     "version": 1,
     "size": 19805
   },
+  "assets/thumbnails/13_bone_ribs_concept.png": {
+    "sha256": "6900d0991608cd145c719a09ffd349e5e36396cd4f6333f60a1986cb8f0a4985",
+    "version": 1,
+    "size": 27323
+  },
   "assets/thumbnails/13_bone_ribs_thumb_1f9e229a.png": {
     "sha256": "6900d0991608cd145c719a09ffd349e5e36396cd4f6333f60a1986cb8f0a4985",
     "version": 1,
     "size": 27323
+  },
+  "assets/thumbnails/14_dead_tree_concept.png": {
+    "sha256": "5a0bd489d5d5725c34d3deb2a1c1f58789055b68df7e51d3e8fb2144fef72da1",
+    "version": 1,
+    "size": 30576
   },
   "assets/thumbnails/14_dead_tree_thumb_3bfe25f5.png": {
     "sha256": "5a0bd489d5d5725c34d3deb2a1c1f58789055b68df7e51d3e8fb2144fef72da1",
     "version": 1,
     "size": 30576
   },
+  "assets/thumbnails/15_crystal_cluster_concept.png": {
+    "sha256": "2b8e96017e1c6ca6497bffae8da5112b087fcdcf0d858cb82a0906e29cda6f16",
+    "version": 1,
+    "size": 41185
+  },
   "assets/thumbnails/15_crystal_cluster_thumb_5e24bbe9.png": {
     "sha256": "2b8e96017e1c6ca6497bffae8da5112b087fcdcf0d858cb82a0906e29cda6f16",
     "version": 1,
     "size": 41185
+  },
+  "assets/thumbnails/16_broken_mechanism_concept.png": {
+    "sha256": "9a5b8d7160c4cec41dc0bef4554747e361e97d053e0f4274b5e3c12d6f22ed35",
+    "version": 1,
+    "size": 33093
   },
   "assets/thumbnails/16_broken_mechanism_thumb_0ba3ca5e.png": {
     "sha256": "9a5b8d7160c4cec41dc0bef4554747e361e97d053e0f4274b5e3c12d6f22ed35",
     "version": 1,
     "size": 33093
   },
+  "assets/thumbnails/17_tech_pod_concept.png": {
+    "sha256": "c3c95fb3d73ea24b0dec33272d625917954fcd312e4e9400c67f9055bb82851d",
+    "version": 1,
+    "size": 40333
+  },
   "assets/thumbnails/17_tech_pod_thumb_c625c953.png": {
     "sha256": "c3c95fb3d73ea24b0dec33272d625917954fcd312e4e9400c67f9055bb82851d",
     "version": 1,
     "size": 40333
+  },
+  "assets/thumbnails/18_wreckage_concept.png": {
+    "sha256": "0fc8d2e44b735ec5a8d4e0480dd3b0580594937cd858be9e632dfebcdffbf20e",
+    "version": 1,
+    "size": 18394
   },
   "assets/thumbnails/18_wreckage_thumb_52f7244e.png": {
     "sha256": "0fc8d2e44b735ec5a8d4e0480dd3b0580594937cd858be9e632dfebcdffbf20e",
     "version": 1,
     "size": 18394
   },
+  "assets/thumbnails/19_marker_post_concept.png": {
+    "sha256": "3a21fb74dce00da754a7e2386d569d693daa6178806454e2c2afa917ad92a0de",
+    "version": 1,
+    "size": 26196
+  },
   "assets/thumbnails/19_marker_post_thumb_f37ecaf6.png": {
     "sha256": "3a21fb74dce00da754a7e2386d569d693daa6178806454e2c2afa917ad92a0de",
     "version": 1,
     "size": 26196
+  },
+  "assets/thumbnails/20_tech_crate_concept.png": {
+    "sha256": "615448cae3fe8cd2214722d43b0cac1bee88d909afcda666103e36dfea64db98",
+    "version": 1,
+    "size": 44060
   },
   "assets/thumbnails/20_tech_crate_thumb_68af9443.png": {
     "sha256": "615448cae3fe8cd2214722d43b0cac1bee88d909afcda666103e36dfea64db98",
     "version": 1,
     "size": 44060
   },
+  "assets/thumbnails/ak47_concept.png": {
+    "sha256": "ce9d3114c8d2ff4db8539b1c03f65a75f4ce485f00ca142319143432605e6866",
+    "version": 1,
+    "size": 14262
+  },
   "assets/thumbnails/ak47_thumb_d4acd920.png": {
     "sha256": "ce9d3114c8d2ff4db8539b1c03f65a75f4ce485f00ca142319143432605e6866",
     "version": 1,
     "size": 14262
+  },
+  "assets/thumbnails/alien_rib_arch_0723220210_texture_concept.png": {
+    "sha256": "fad19fe4553def106a84ea5e4cbaf8135fe7b73b4853d73fd58e925097fe64f1",
+    "version": 1,
+    "size": 30945
   },
   "assets/thumbnails/alien_rib_arch_0723220210_texture_thumb_e3950961.png": {
     "sha256": "fad19fe4553def106a84ea5e4cbaf8135fe7b73b4853d73fd58e925097fe64f1",
     "version": 1,
     "size": 30945
   },
+  "assets/thumbnails/citadel_concept.png": {
+    "sha256": "d42686af99012ca718d7f72c542361c06177a1c0bfd885dfeb990e61d55102c2",
+    "version": 1,
+    "size": 32654
+  },
   "assets/thumbnails/citadel_thumb_281b9c86.png": {
     "sha256": "d42686af99012ca718d7f72c542361c06177a1c0bfd885dfeb990e61d55102c2",
     "version": 1,
     "size": 32654
+  },
+  "assets/thumbnails/hero_alien_rig_optimized_concept.png": {
+    "sha256": "bb3a46c60a9e9c90cc5c607b0c248377347438f3b243bdc08c427f6562d955ce",
+    "version": 1,
+    "size": 17170
   },
   "assets/thumbnails/hero_alien_rig_optimized_thumb_6b1d40ab.png": {
     "sha256": "bb3a46c60a9e9c90cc5c607b0c248377347438f3b243bdc08c427f6562d955ce",
     "version": 1,
     "size": 17170
   },
+  "assets/thumbnails/level_concept.png": {
+    "sha256": "2506a77ef781c07cd53f41461056333ef9d1ee610651455918dd9796c7578907",
+    "version": 1,
+    "size": 31859
+  },
   "assets/thumbnails/level_thumb_8953127b.png": {
     "sha256": "2506a77ef781c07cd53f41461056333ef9d1ee610651455918dd9796c7578907",
     "version": 1,
     "size": 31859
+  },
+  "assets/thumbnails/muzzle_flash_concept.png": {
+    "sha256": "418a21829133c2fba04d218b896af624ea7b3204ea8cd61a2eeba5c2294b71f9",
+    "version": 1,
+    "size": 24100
   },
   "assets/thumbnails/muzzle_flash_thumb_a9bf6054.png": {
     "sha256": "418a21829133c2fba04d218b896af624ea7b3204ea8cd61a2eeba5c2294b71f9",
     "version": 1,
     "size": 24100
   },
+  "assets/thumbnails/sandscape_frog_2_optimized_concept.png": {
+    "sha256": "4978c35b2f47d77bbd51bdc75575c677ebbb072509628f6388bf18031dce7179",
+    "version": 1,
+    "size": 20582
+  },
   "assets/thumbnails/sandscape_frog_2_optimized_thumb_b35b70de.png": {
     "sha256": "4978c35b2f47d77bbd51bdc75575c677ebbb072509628f6388bf18031dce7179",
     "version": 1,
     "size": 20582
+  },
+  "assets/thumbnails/sandscape_liz_decimated_concept.png": {
+    "sha256": "d57fab583b0d5b1f96f7fe25918896d76e84652d8ac0c2604590cdc2b29f76c1",
+    "version": 1,
+    "size": 19001
   },
   "assets/thumbnails/sandscape_liz_decimated_thumb_62318110.png": {
     "sha256": "d57fab583b0d5b1f96f7fe25918896d76e84652d8ac0c2604590cdc2b29f76c1",
     "version": 1,
     "size": 19001
   },
+  "assets/thumbnails/sk_mannequin_new_concept.png": {
+    "sha256": "5593120954086435330ba5b613e49e108a747e773f4626609991cf39480c0e89",
+    "version": 1,
+    "size": 17681
+  },
   "assets/thumbnails/sk_mannequin_new_thumb_cdc2d5d0.png": {
     "sha256": "5593120954086435330ba5b613e49e108a747e773f4626609991cf39480c0e89",
     "version": 1,
     "size": 17681
+  },
+  "assets/thumbnails/sk_vortexblaster_concept.png": {
+    "sha256": "17b72b1a3edac3a9d4a4026fdeb68c3ab57286f6eb231eac7f9b52ee0ae069f2",
+    "version": 1,
+    "size": 9949
   },
   "assets/thumbnails/sk_vortexblaster_thumb_7a4156ba.png": {
     "sha256": "17b72b1a3edac3a9d4a4026fdeb68c3ab57286f6eb231eac7f9b52ee0ae069f2",

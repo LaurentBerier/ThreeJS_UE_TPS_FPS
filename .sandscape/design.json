@@ -10,7 +10,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:07.746733",
+      "modified_at": "2026-09-21T15:04:30.069739",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -21,7 +21,27 @@
       "model_3d_path": "assets/assets/World/props/01_Obelisk.glb",
       "thumbnail_path": "assets/thumbnails/01_obelisk_thumb_d96ad9ef.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:07.746733"
+      "last_updated": "2026-09-21T15:04:30.069739",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "01_obelisk_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "531f542cadd751828d3b1f05423384f6ac2edbe36a0ddfcb808e78806c50e505",
+              "created_at": "2026-09-21T19:04:30.016701+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/01_obelisk_thumb_d96ad9ef.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/01_obelisk_concept.png"
     },
     {
       "id": "4165ac7f-1cae-407b-b6b8-40cb5593de92",
@@ -33,7 +53,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:07.866600",
+      "modified_at": "2026-09-21T15:04:30.149732",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -44,7 +64,27 @@
       "model_3d_path": "assets/assets/World/props/02_Archway_Lintel.glb",
       "thumbnail_path": "assets/thumbnails/02_archway_lintel_thumb_5593de92.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:07.866600"
+      "last_updated": "2026-09-21T15:04:30.149732",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "02_archway_lintel_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "b83939d6992194e215a88b6732aad39b57958e63c5102daa989ca23e5338fb90",
+              "created_at": "2026-09-21T19:04:30.097948+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/02_archway_lintel_thumb_5593de92.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/02_archway_lintel_concept.png"
     },
     {
       "id": "4219fa58-c24e-4637-a9e2-2e0b66c78113",
@@ -56,7 +96,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:07.958888",
+      "modified_at": "2026-09-21T15:04:30.229928",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -67,7 +107,27 @@
       "model_3d_path": "assets/assets/World/props/03_Ceiling_Anchor.glb",
       "thumbnail_path": "assets/thumbnails/03_ceiling_anchor_thumb_66c78113.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:07.958888"
+      "last_updated": "2026-09-21T15:04:30.229928",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "03_ceiling_anchor_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "4bdfe7acde92b07ef4936c19a7e8a68001a9ad7b318c30d9bb638c2925d1e484",
+              "created_at": "2026-09-21T19:04:30.177735+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/03_ceiling_anchor_thumb_66c78113.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/03_ceiling_anchor_concept.png"
     },
     {
       "id": "0f651e28-ba90-4a88-8855-00a6da440077",
@@ -79,7 +139,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:07.817167",
+      "modified_at": "2026-09-21T15:04:30.308925",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -90,7 +150,27 @@
       "model_3d_path": "assets/assets/World/props/04_Wall_Broken_Pipes.glb",
       "thumbnail_path": "assets/thumbnails/04_wall_broken_pipes_thumb_da440077.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:07.817167"
+      "last_updated": "2026-09-21T15:04:30.308925",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "04_wall_broken_pipes_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "c748d26293cb22d943be1f82bdaab2d8c13992777e1fe7ee84cca9ef45d209f4",
+              "created_at": "2026-09-21T19:04:30.257632+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/04_wall_broken_pipes_thumb_da440077.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/04_wall_broken_pipes_concept.png"
     },
     {
       "id": "032cf1a6-b1f4-4659-b3c6-3575d9274206",
@@ -102,7 +182,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:07.782504",
+      "modified_at": "2026-09-21T15:04:30.388359",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -113,7 +193,27 @@
       "model_3d_path": "assets/assets/World/props/05_Barrier_Wall.glb",
       "thumbnail_path": "assets/thumbnails/05_barrier_wall_thumb_d9274206.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:07.782504"
+      "last_updated": "2026-09-21T15:04:30.388359",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "05_barrier_wall_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "f54cc624e5cc2a48424970153e3f2b4e77ff1b53e40b6c5203fc7cbcb82abdc8",
+              "created_at": "2026-09-21T19:04:30.337494+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/05_barrier_wall_thumb_d9274206.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/05_barrier_wall_concept.png"
     },
     {
       "id": "8a222a38-c9de-422c-9459-3f0a8c7f3fc2",
@@ -125,7 +225,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:07.993101",
+      "modified_at": "2026-09-21T15:04:30.468271",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -136,7 +236,27 @@
       "model_3d_path": "assets/assets/World/props/06_Portal_Pad.glb",
       "thumbnail_path": "assets/thumbnails/06_portal_pad_thumb_8c7f3fc2.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:07.993101"
+      "last_updated": "2026-09-21T15:04:30.468271",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "06_portal_pad_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "5742ca9225401d01664338cfd1f62da0430cb972c38e3f97c57f3cf20553a7f9",
+              "created_at": "2026-09-21T19:04:30.416236+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/06_portal_pad_thumb_8c7f3fc2.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/06_portal_pad_concept.png"
     },
     {
       "id": "ded714af-95aa-4d55-bc64-71eeac5648fc",
@@ -148,7 +268,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:08.229413",
+      "modified_at": "2026-09-21T15:04:30.554956",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -159,7 +279,27 @@
       "model_3d_path": "assets/assets/World/props/07_Platform_Octagon.glb",
       "thumbnail_path": "assets/thumbnails/07_platform_octagon_thumb_ac5648fc.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:08.229413"
+      "last_updated": "2026-09-21T15:04:30.554956",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "07_platform_octagon_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "d615fc52f0f284d217a6113dc3019503d3abd998bbc3ac64652c21dbe6d0e469",
+              "created_at": "2026-09-21T19:04:30.499055+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/07_platform_octagon_thumb_ac5648fc.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/07_platform_octagon_concept.png"
     },
     {
       "id": "68a73328-9e76-4603-b15d-f3c45be987ad",
@@ -171,7 +311,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:08.026997",
+      "modified_at": "2026-09-21T15:04:30.643019",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -182,7 +322,27 @@
       "model_3d_path": "assets/assets/World/props/08_Tech_Stairs.glb",
       "thumbnail_path": "assets/thumbnails/08_tech_stairs_thumb_5be987ad.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:08.026997"
+      "last_updated": "2026-09-21T15:04:30.643019",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "08_tech_stairs_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "331fed47f23a0619236b320d6a6c0fbea1e98b638a6b3e0e88948398314dae43",
+              "created_at": "2026-09-21T19:04:30.585457+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/08_tech_stairs_thumb_5be987ad.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/08_tech_stairs_concept.png"
     },
     {
       "id": "d20cafda-800f-42a2-9377-b293da53c2d5",
@@ -194,7 +354,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:08.073665",
+      "modified_at": "2026-09-21T15:04:30.732085",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -205,7 +365,27 @@
       "model_3d_path": "assets/assets/World/props/09_Red_Rock_Arch.glb",
       "thumbnail_path": "assets/thumbnails/09_red_rock_arch_thumb_da53c2d5.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:08.073665"
+      "last_updated": "2026-09-21T15:04:30.732085",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "09_red_rock_arch_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "5d10dece62948c495dc5cffb9634cc4fb928bb49db21626d0c1e3b67cf68f17d",
+              "created_at": "2026-09-21T19:04:30.674824+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/09_red_rock_arch_thumb_da53c2d5.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/09_red_rock_arch_concept.png"
     },
     {
       "id": "5f3c1443-950c-4774-b5bd-9c29aa23bc22",
@@ -217,7 +397,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:08.138612",
+      "modified_at": "2026-09-21T15:04:30.816690",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -228,7 +408,27 @@
       "model_3d_path": "assets/assets/World/props/10_Red_Rock_Platform.glb",
       "thumbnail_path": "assets/thumbnails/10_red_rock_platform_thumb_aa23bc22.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:08.138612"
+      "last_updated": "2026-09-21T15:04:30.816690",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "10_red_rock_platform_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "df4e7090db11e3d66aa0ea749e0cac8f8c9a9066868fa5dbcb94c786a61b36fe",
+              "created_at": "2026-09-21T19:04:30.764376+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/10_red_rock_platform_thumb_aa23bc22.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/10_red_rock_platform_concept.png"
     },
     {
       "id": "236ba4dd-7fde-45f5-98cc-ccc4a6c48db4",
@@ -240,7 +440,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:08.191768",
+      "modified_at": "2026-09-21T15:04:30.897502",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -251,7 +451,27 @@
       "model_3d_path": "assets/assets/World/props/11_Red_Mesa.glb",
       "thumbnail_path": "assets/thumbnails/11_red_mesa_thumb_a6c48db4.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:08.191768"
+      "last_updated": "2026-09-21T15:04:30.897502",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "11_red_mesa_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "6aa123c959820fa901b3566d9f79119055ef83263f4294e81012a727837f1b8b",
+              "created_at": "2026-09-21T19:04:30.844955+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/11_red_mesa_thumb_a6c48db4.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/11_red_mesa_concept.png"
     },
     {
       "id": "24a66ba3-a037-4edc-988c-ca3923ecf805",
@@ -263,7 +483,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:08.267396",
+      "modified_at": "2026-09-21T15:04:30.983182",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -274,7 +494,27 @@
       "model_3d_path": "assets/assets/World/props/12_Bone_Tusk.glb",
       "thumbnail_path": "assets/thumbnails/12_bone_tusk_thumb_23ecf805.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:08.267396"
+      "last_updated": "2026-09-21T15:04:30.983182",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "12_bone_tusk_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "9ee6a7759f5cf2cd28bc369970360aefe615c28b381e88acdb89d651b4c6e437",
+              "created_at": "2026-09-21T19:04:30.925554+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/12_bone_tusk_thumb_23ecf805.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/12_bone_tusk_concept.png"
     },
     {
       "id": "2e5c5ca5-3cd9-4186-a095-5dbd1f9e229a",
@@ -286,7 +526,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:08.307037",
+      "modified_at": "2026-09-21T15:04:31.080432",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -297,7 +537,27 @@
       "model_3d_path": "assets/assets/World/props/13_Bone_Ribs.glb",
       "thumbnail_path": "assets/thumbnails/13_bone_ribs_thumb_1f9e229a.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:08.307037"
+      "last_updated": "2026-09-21T15:04:31.080432",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "13_bone_ribs_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "6900d0991608cd145c719a09ffd349e5e36396cd4f6333f60a1986cb8f0a4985",
+              "created_at": "2026-09-21T19:04:31.016949+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/13_bone_ribs_thumb_1f9e229a.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/13_bone_ribs_concept.png"
     },
     {
       "id": "7e394cfe-e70e-434a-abb8-b8ef3bfe25f5",
@@ -309,7 +569,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:08.422201",
+      "modified_at": "2026-09-21T15:04:31.159190",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -320,7 +580,27 @@
       "model_3d_path": "assets/assets/World/props/14_Dead_Tree.glb",
       "thumbnail_path": "assets/thumbnails/14_dead_tree_thumb_3bfe25f5.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:08.422201"
+      "last_updated": "2026-09-21T15:04:31.159190",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "14_dead_tree_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "5a0bd489d5d5725c34d3deb2a1c1f58789055b68df7e51d3e8fb2144fef72da1",
+              "created_at": "2026-09-21T19:04:31.108565+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/14_dead_tree_thumb_3bfe25f5.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/14_dead_tree_concept.png"
     },
     {
       "id": "7cc3e53a-b540-4bd6-8382-95235e24bbe9",
@@ -332,7 +612,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:08.365522",
+      "modified_at": "2026-09-21T15:04:31.240963",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -343,7 +623,27 @@
       "model_3d_path": "assets/assets/World/props/15_Crystal_Cluster.glb",
       "thumbnail_path": "assets/thumbnails/15_crystal_cluster_thumb_5e24bbe9.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:08.365522"
+      "last_updated": "2026-09-21T15:04:31.240963",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "15_crystal_cluster_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "2b8e96017e1c6ca6497bffae8da5112b087fcdcf0d858cb82a0906e29cda6f16",
+              "created_at": "2026-09-21T19:04:31.187785+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/15_crystal_cluster_thumb_5e24bbe9.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/15_crystal_cluster_concept.png"
     },
     {
       "id": "448f44f6-e6cd-4bf5-ad17-be710ba3ca5e",
@@ -355,7 +655,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:08.591878",
+      "modified_at": "2026-09-21T15:04:31.322065",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -366,7 +666,27 @@
       "model_3d_path": "assets/assets/World/props/16_Broken_Mechanism.glb",
       "thumbnail_path": "assets/thumbnails/16_broken_mechanism_thumb_0ba3ca5e.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:08.591878"
+      "last_updated": "2026-09-21T15:04:31.322065",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "16_broken_mechanism_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "9a5b8d7160c4cec41dc0bef4554747e361e97d053e0f4274b5e3c12d6f22ed35",
+              "created_at": "2026-09-21T19:04:31.269205+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/16_broken_mechanism_thumb_0ba3ca5e.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/16_broken_mechanism_concept.png"
     },
     {
       "id": "25ba10c8-ef02-4849-bbbf-0adec625c953",
@@ -378,7 +698,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:08.562288",
+      "modified_at": "2026-09-21T15:04:31.403221",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -389,7 +709,27 @@
       "model_3d_path": "assets/assets/World/props/17_Tech_Pod.glb",
       "thumbnail_path": "assets/thumbnails/17_tech_pod_thumb_c625c953.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:08.562288"
+      "last_updated": "2026-09-21T15:04:31.403221",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "17_tech_pod_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "c3c95fb3d73ea24b0dec33272d625917954fcd312e4e9400c67f9055bb82851d",
+              "created_at": "2026-09-21T19:04:31.349972+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/17_tech_pod_thumb_c625c953.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/17_tech_pod_concept.png"
     },
     {
       "id": "281d42c3-93ba-4083-bad0-5d8552f7244e",
@@ -401,7 +741,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:08.697018",
+      "modified_at": "2026-09-21T15:04:31.485539",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -412,7 +752,27 @@
       "model_3d_path": "assets/assets/World/props/18_Wreckage.glb",
       "thumbnail_path": "assets/thumbnails/18_wreckage_thumb_52f7244e.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:08.697018"
+      "last_updated": "2026-09-21T15:04:31.485539",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "18_wreckage_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "0fc8d2e44b735ec5a8d4e0480dd3b0580594937cd858be9e632dfebcdffbf20e",
+              "created_at": "2026-09-21T19:04:31.432213+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/18_wreckage_thumb_52f7244e.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/18_wreckage_concept.png"
     },
     {
       "id": "b80f4d3d-2d01-4251-affe-c7dcf37ecaf6",
@@ -424,7 +784,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:08.458971",
+      "modified_at": "2026-09-21T15:04:31.568005",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -435,7 +795,27 @@
       "model_3d_path": "assets/assets/World/props/19_Marker_Post.glb",
       "thumbnail_path": "assets/thumbnails/19_marker_post_thumb_f37ecaf6.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:08.458971"
+      "last_updated": "2026-09-21T15:04:31.568005",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "19_marker_post_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "3a21fb74dce00da754a7e2386d569d693daa6178806454e2c2afa917ad92a0de",
+              "created_at": "2026-09-21T19:04:31.514969+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/19_marker_post_thumb_f37ecaf6.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/19_marker_post_concept.png"
     },
     {
       "id": "86560ef3-3b0d-44ce-9992-c04968af9443",
@@ -447,7 +827,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:08.742781",
+      "modified_at": "2026-09-21T15:04:31.650675",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -458,7 +838,27 @@
       "model_3d_path": "assets/assets/World/props/20_Tech_Crate.glb",
       "thumbnail_path": "assets/thumbnails/20_tech_crate_thumb_68af9443.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:08.742781"
+      "last_updated": "2026-09-21T15:04:31.650675",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "20_tech_crate_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "615448cae3fe8cd2214722d43b0cac1bee88d909afcda666103e36dfea64db98",
+              "created_at": "2026-09-21T19:04:31.597453+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/20_tech_crate_thumb_68af9443.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/20_tech_crate_concept.png"
     },
     {
       "id": "4df81377-247a-4bbc-af9a-ad34706a4641",
@@ -750,7 +1150,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:17.728283",
+      "modified_at": "2026-09-21T15:04:31.730482",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -761,7 +1161,27 @@
       "model_3d_path": "assets/assets/guns/ak47/ak47.glb",
       "thumbnail_path": "assets/thumbnails/ak47_thumb_d4acd920.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:17.728283"
+      "last_updated": "2026-09-21T15:04:31.730482",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "ak47_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "ce9d3114c8d2ff4db8539b1c03f65a75f4ce485f00ca142319143432605e6866",
+              "created_at": "2026-09-21T19:04:31.679704+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/ak47_thumb_d4acd920.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/ak47_concept.png"
     },
     {
       "id": "7701fd30-afe6-44f6-ba8b-f3ef8e034e96",
@@ -827,7 +1247,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:10.649949",
+      "modified_at": "2026-09-21T15:04:31.811179",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -838,7 +1258,27 @@
       "model_3d_path": "assets/assets/World/Alien_Rib_Arch_0723220210_texture.glb",
       "thumbnail_path": "assets/thumbnails/alien_rib_arch_0723220210_texture_thumb_e3950961.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:10.649949"
+      "last_updated": "2026-09-21T15:04:31.811179",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "alien_rib_arch_0723220210_texture_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "fad19fe4553def106a84ea5e4cbaf8135fe7b73b4853d73fd58e925097fe64f1",
+              "created_at": "2026-09-21T19:04:31.758851+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/alien_rib_arch_0723220210_texture_thumb_e3950961.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/alien_rib_arch_0723220210_texture_concept.png"
     },
     {
       "id": "3c1f8d2a-eaf5-4098-a53e-c7c3c3e8a7f7",
@@ -1070,7 +1510,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:16.429782",
+      "modified_at": "2026-09-21T15:04:31.901950",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -1081,7 +1521,27 @@
       "model_3d_path": "assets/assets/World/props/Citadel.glb",
       "thumbnail_path": "assets/thumbnails/citadel_thumb_281b9c86.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:16.429782"
+      "last_updated": "2026-09-21T15:04:31.901950",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "citadel_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "d42686af99012ca718d7f72c542361c06177a1c0bfd885dfeb990e61d55102c2",
+              "created_at": "2026-09-21T19:04:31.841986+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/citadel_thumb_281b9c86.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/citadel_concept.png"
     },
     {
       "id": "72acb4a8-bb50-4ce6-9300-d420f836a26f",
@@ -1273,7 +1733,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:19.113722",
+      "modified_at": "2026-09-21T15:04:31.985917",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -1284,7 +1744,27 @@
       "model_3d_path": "assets/assets/characters/Hero_alien_rig_optimized.glb",
       "thumbnail_path": "assets/thumbnails/hero_alien_rig_optimized_thumb_6b1d40ab.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:19.113722"
+      "last_updated": "2026-09-21T15:04:31.985917",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "hero_alien_rig_optimized_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "bb3a46c60a9e9c90cc5c607b0c248377347438f3b243bdc08c427f6562d955ce",
+              "created_at": "2026-09-21T19:04:31.933273+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/hero_alien_rig_optimized_thumb_6b1d40ab.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/hero_alien_rig_optimized_concept.png"
     },
     {
       "id": "19ad0f88-dd9b-40b1-aabe-ab108953127b",
@@ -1296,7 +1776,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:17.124685",
+      "modified_at": "2026-09-21T15:04:32.066561",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -1307,7 +1787,27 @@
       "model_3d_path": "assets/assets/level.glb",
       "thumbnail_path": "assets/thumbnails/level_thumb_8953127b.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:17.124685"
+      "last_updated": "2026-09-21T15:04:32.066561",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "level_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "2506a77ef781c07cd53f41461056333ef9d1ee610651455918dd9796c7578907",
+              "created_at": "2026-09-21T19:04:32.015214+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/level_thumb_8953127b.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/level_concept.png"
     },
     {
       "id": "83197189-d8b3-4d63-8006-cc911f0ef842",
@@ -1439,7 +1939,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:16.798411",
+      "modified_at": "2026-09-21T15:04:32.146175",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -1450,7 +1950,27 @@
       "model_3d_path": "assets/assets/muzzle_flash.glb",
       "thumbnail_path": "assets/thumbnails/muzzle_flash_thumb_a9bf6054.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:16.798411"
+      "last_updated": "2026-09-21T15:04:32.146175",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "muzzle_flash_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "418a21829133c2fba04d218b896af624ea7b3204ea8cd61a2eeba5c2294b71f9",
+              "created_at": "2026-09-21T19:04:32.094693+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/muzzle_flash_thumb_a9bf6054.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/muzzle_flash_concept.png"
     },
     {
       "id": "542afa6e-4095-441f-b079-1427f39b9f42",
@@ -1542,7 +2062,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:18.702152",
+      "modified_at": "2026-09-21T15:04:32.225438",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -1553,7 +2073,27 @@
       "model_3d_path": "assets/assets/characters/Sandscape_Frog_2_optimized.glb",
       "thumbnail_path": "assets/thumbnails/sandscape_frog_2_optimized_thumb_b35b70de.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:18.702152"
+      "last_updated": "2026-09-21T15:04:32.225438",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "sandscape_frog_2_optimized_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "4978c35b2f47d77bbd51bdc75575c677ebbb072509628f6388bf18031dce7179",
+              "created_at": "2026-09-21T19:04:32.173610+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/sandscape_frog_2_optimized_thumb_b35b70de.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/sandscape_frog_2_optimized_concept.png"
     },
     {
       "id": "58e56241-2652-4eba-a27f-af9762318110",
@@ -1565,7 +2105,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:16.655502",
+      "modified_at": "2026-09-21T15:04:32.311604",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -1576,7 +2116,27 @@
       "model_3d_path": "assets/assets/characters/Sandscape_Liz_decimated.glb",
       "thumbnail_path": "assets/thumbnails/sandscape_liz_decimated_thumb_62318110.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:16.655502"
+      "last_updated": "2026-09-21T15:04:32.311604",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "sandscape_liz_decimated_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "d57fab583b0d5b1f96f7fe25918896d76e84652d8ac0c2604590cdc2b29f76c1",
+              "created_at": "2026-09-21T19:04:32.256126+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/sandscape_liz_decimated_thumb_62318110.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/sandscape_liz_decimated_concept.png"
     },
     {
       "id": "50fafdc6-9726-4f62-a6cd-4d6262e6b28a",
@@ -1628,7 +2188,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:16.582567",
+      "modified_at": "2026-09-21T15:04:32.393737",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -1639,7 +2199,27 @@
       "model_3d_path": "assets/assets/characters/ue/SK_Mannequin_new.glb",
       "thumbnail_path": "assets/thumbnails/sk_mannequin_new_thumb_cdc2d5d0.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:16.582567"
+      "last_updated": "2026-09-21T15:04:32.393737",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "sk_mannequin_new_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "5593120954086435330ba5b613e49e108a747e773f4626609991cf39480c0e89",
+              "created_at": "2026-09-21T19:04:32.341389+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/sk_mannequin_new_thumb_cdc2d5d0.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/sk_mannequin_new_concept.png"
     },
     {
       "id": "93064f9d-53ac-42bf-bd1f-87f87a4156ba",
@@ -1651,7 +2231,7 @@
       "priority": "medium",
       "assigned_agent": "asset_generator",
       "created_at": "2026-09-01T11:55:43.294453",
-      "modified_at": "2026-09-09T16:05:16.511446",
+      "modified_at": "2026-09-21T15:04:32.473742",
       "modified_by": "user",
       "material_properties": {
         "metalness": "0.5",
@@ -1662,7 +2242,27 @@
       "model_3d_path": "assets/assets/guns/New/SK_VortexBlaster.glb",
       "thumbnail_path": "assets/thumbnails/sk_vortexblaster_thumb_7a4156ba.png",
       "thumbnail_version": 1,
-      "last_updated": "2026-09-09T16:05:16.511446"
+      "last_updated": "2026-09-21T15:04:32.473742",
+      "versioning": {
+        "concept_art_path": {
+          "stable_name": "sk_vortexblaster_concept.png",
+          "versions": [
+            {
+              "version": 1,
+              "generation_id": "17b72b1a3edac3a9d4a4026fdeb68c3ab57286f6eb231eac7f9b52ee0ae069f2",
+              "created_at": "2026-09-21T19:04:32.421989+00:00",
+              "outputs": {
+                "raw_file": "assets/thumbnails/sk_vortexblaster_thumb_7a4156ba.png",
+                "final_file": null,
+                "prompt": null
+              }
+            }
+          ],
+          "current_version": 1
+        }
+      },
+      "current_version": 1,
+      "concept_art_path": "assets/thumbnails/sk_vortexblaster_concept.png"
     },
     {
       "id": "e1810826-844d-4d54-9c52-52d5b522709e",
@@ -1825,21 +2425,6 @@
       "concept_art_path": "assets/assets/guns/ak47/weapon_ak47_N_S.tga.png"
     },
     {
-      "id": "ff01eb92-68e3-4e46-9f73-d3a1397f3a58",
-      "asset_name": "title_art",
-      "asset_type": "texture_2d",
-      "description": "Title Art",
-      "priority": "medium",
-      "format": "webp",
-      "assigned_agent": "asset_generator",
-      "dependencies": [],
-      "created_at": "2026-09-01T12:13:08.496377",
-      "modified_at": "2026-09-01T12:13:08.496377",
-      "modified_by": "import_sync",
-      "last_updated": "2026-09-01T12:13:08.496377",
-      "concept_art_path": "assets/assets/ui/title_art.webp"
-    },
-    {
       "id": "f8e05b92-28c8-4c00-89bc-5d502a167cf4",
       "asset_name": "journey_level",
       "asset_type": "scene",
@@ -1853,6 +2438,48 @@
       "modified_by": "editor",
       "last_updated": "2026-09-09T19:07:36.015129",
       "asset_path": "assets/scenes/journey_level.json"
+    },
+    {
+      "id": "5ecb19aa-7022-43b5-8a96-883ea7d1994d",
+      "asset_name": "heightmaps_20260609_150752_1584m_concept",
+      "asset_type": "texture_2d",
+      "description": "Heightmaps 20260609 150752 1584M Concept",
+      "priority": "medium",
+      "format": "png",
+      "assigned_agent": "asset_generator",
+      "dependencies": [],
+      "created_at": "2026-09-21T15:00:33.829622",
+      "modified_at": "2026-09-21T15:00:33.829622",
+      "modified_by": "import_sync",
+      "last_updated": "2026-09-21T15:00:33.829622",
+      "material_properties": {
+        "metalness": "0.5",
+        "roughness": "0.5",
+        "emissive": "none",
+        "transparency": "none"
+      },
+      "concept_art_path": "assets/assets/World/heightmaps_20260609_150752_1584m_concept.png"
+    },
+    {
+      "id": "ff01eb92-68e3-4e46-9f73-d3a1397f3a58",
+      "asset_name": "title_art",
+      "asset_type": "ui_element_2d",
+      "description": "Title Art",
+      "priority": "medium",
+      "format": "webp",
+      "assigned_agent": "asset_generator",
+      "dependencies": [],
+      "created_at": "2026-09-01T12:13:08.496377",
+      "modified_at": "2026-09-21T15:00:33.840688",
+      "modified_by": "import_sync",
+      "last_updated": "2026-09-21T15:00:33.840688",
+      "concept_art_path": "assets/assets/ui/title_art.webp",
+      "material_properties": {
+        "metalness": "0.5",
+        "roughness": "0.5",
+        "emissive": "none",
+        "transparency": "none"
+      }
     }
   ],
   "game_design_concept": {
